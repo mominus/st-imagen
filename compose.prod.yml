@@ -1,0 +1,56 @@
+# st-imagen 生产部署编排（2c2g / 200Mbps 单机）：
+#   docker compose -f compose.prod.yml up -d --build
+#
+# 结构：nginx 前置（直出 /uploads 与 /static + gzip + SSE 透传）→ app 单 worker。
+# 注意：app 的流量守卫（限流/熔断）是进程内状态，务必保持 UVICORN_WORKERS=1。
+# 域名/HTTPS 请在 nginx 配置（deploy/nginx.conf）或云 LB 上自行追加。
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: st-imagen-app
+    env_file:
+      - .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8001"
+      DEBUG: "false"
+      UVICORN_WORKERS: "1"
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./data:/app/data
+    cpus: 1.6
+    mem_limit: 1400m
+    memswap_limit: 1400m
+    pids_limit: 512
+    ulimits:
+      nofile:
+        soft: 8192
+        hard: 8192
+    stop_grace_period: 15s
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=5).read()"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: st-imagen-nginx
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./data/uploads:/srv/uploads:ro
+      - ./app/static:/srv/static:ro
+    ports:
+      - "80:80"
+    cpus: 0.4
+    mem_limit: 300m
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy

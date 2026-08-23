@@ -1,0 +1,44 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: st-imagen-vps-2c2g
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8001"
+      DEBUG: "false"
+      # 进程内锁/冷却状态决定只能单 worker；压测环境与安全配置对齐
+      UVICORN_WORKERS: "${UVICORN_WORKERS:-1}"
+      HTTP_MAX_CONNECTIONS: "${HTTP_MAX_CONNECTIONS:-40}"
+      HTTP_MAX_KEEPALIVE: "${HTTP_MAX_KEEPALIVE:-20}"
+      DB_POOL_SIZE: "${DB_POOL_SIZE:-16}"
+      DB_MAX_OVERFLOW: "${DB_MAX_OVERFLOW:-8}"
+      DB_POOL_TIMEOUT_SECONDS: "${DB_POOL_TIMEOUT_SECONDS:-30}"
+      # 压测测原始容量：关闭流量守卫
+      GENERATION_GLOBAL_MAX_CONCURRENT: "0"
+      USER_RPM_LIMIT: "0"
+      CIRCUIT_BREAKER_FAILURES: "0"
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./data:/app/data
+    ports:
+      - "18001:8001"
+    cpus: 2.0
+    mem_limit: 2g
+    memswap_limit: 2g
+    pids_limit: 512
+    ulimits:
+      nofile:
+        soft: 8192
+        hard: 8192
+    stop_grace_period: 15s
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=5).read()"
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
