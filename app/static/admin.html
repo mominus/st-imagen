@@ -89,8 +89,6 @@
             <h2>后台</h2>
             <div class="hero-pill-row admin-sidebar-status">
               <span id="adminIdentityBadge" class="hero-pill">管理员</span>
-              <span id="systemPulseBadge" class="hero-pill hero-pill-accent">未同步</span>
-              <span id="consoleUpdatedAt" class="hero-pill">未刷新</span>
             </div>
           </div>
 
@@ -134,7 +132,7 @@
                 <h2>概览</h2>
               </div>
               <div class="overview-meta-row">
-                <p id="overviewUptime" class="overview-uptime mono">已运行: --</p>
+                <p id="overviewUptime" class="overview-uptime mono">未同步</p>
                 <p id="overviewMeta" class="muted mono">加载中…</p>
               </div>
             </div>
@@ -142,7 +140,7 @@
             <div class="stat-grid" id="overview"></div>
 
             <div class="insight-grid">
-              <article id="runtimeStatusPanel" class="insight-card"></article>
+              <article id="runtimeStatusPanel" class="insight-card insight-card-runtime"></article>
               <article id="opsSnapshot" class="insight-card"></article>
               <article id="accountHealthPanel" class="insight-card"></article>
               <article id="logHealthPanel" class="insight-card"></article>
@@ -391,7 +389,7 @@
                 <div>
                   <p class="panel-kicker">Settings</p>
                   <h2>设置</h2>
-                  <p class="panel-summary">图片保存与磁盘清理策略</p>
+                  <p class="panel-summary">图片保存策略与当前进程并发参数</p>
                 </div>
                 <div class="panel-actions">
                   <button id="reloadSettingsBtn" class="btn btn-ghost" type="button">刷新</button>
@@ -421,6 +419,18 @@
                       <button id="resetReferenceRetentionBtn" class="btn btn-ghost" type="button">恢复默认</button>
                     </div>
                     <p class="settings-field-hint">图生图上传参考图的磁盘保留期；0 = 永久保留。</p>
+                  </div>
+                </div>
+                <div class="settings-runtime-block">
+                  <div class="settings-field-head">
+                    <div>
+                      <label>并发与运行参数</label>
+                      <p class="settings-field-hint">以下为当前进程实际生效值，只读；修改环境变量后需重启服务。满载时生图请求直接返回 HTTP 429，不在服务端等待。</p>
+                    </div>
+                    <span id="runtimeConfigMeta" class="muted mono">加载中…</span>
+                  </div>
+                  <div id="runtimeConfigPanel" class="runtime-config-grid">
+                    <p class="muted">加载中…</p>
                   </div>
                 </div>
               </div>
@@ -557,8 +567,8 @@
             </select>
           </div>
           <div class="modal-field" style="margin-top: 0">
-            <label>最大并发</label>
-            <input id="m_max_inflight" type="number" min="1" max="200" placeholder="10" />
+            <label>最大并发（新账号默认 2）</label>
+            <input id="m_max_inflight" type="number" min="1" max="200" placeholder="2" />
           </div>
         </div>
 
@@ -640,7 +650,7 @@
         <div class="modal-field-row">
           <div class="modal-field" style="margin-top: 0">
             <label>每日额度</label>
-            <input id="u_daily_quota" type="number" min="0" max="1000000" />
+            <input id="u_daily_quota" type="number" min="0" max="1000000" value="10" />
             <p class="muted" style="margin-top: 8px">0 表示不限制。</p>
           </div>
           <div class="modal-field" style="margin-top: 0">
@@ -699,7 +709,7 @@
 
         <div class="modal-field">
           <label>每日额度</label>
-          <input id="i_daily_quota" type="number" min="0" max="1000000" value="0" />
+          <input id="i_daily_quota" type="number" min="0" max="1000000" value="10" />
           <p class="muted" style="margin-top: 8px">0 表示不限制。</p>
         </div>
 

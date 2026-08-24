@@ -4,6 +4,8 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from pydantic import ValidationError
 
@@ -17,6 +19,7 @@ from app.routers.admin import (
     StorageCleanupRequest,
     _dir_stats,
     _purge_dir_files,
+    _runtime_config_payload,
     _setting_item,
 )
 
@@ -162,6 +165,25 @@ class SettingsValidationTests(unittest.TestCase):
         req = AppSettingsUpdateRequest(generated_image_retention_days=1)
         provided = req.model_dump(exclude_unset=True)
         self.assertNotIn("reference_upload_retention_days", provided)
+
+
+class RuntimeConfigPayloadTests(unittest.TestCase):
+    def test_reports_live_capacity_policy_as_read_only_direct_rejection(self) -> None:
+        guard = SimpleNamespace(
+            generation_admission=SimpleNamespace(max_concurrent=32),
+            user_rpm=SimpleNamespace(limit=12),
+        )
+        pool = SimpleNamespace(DEFAULT_MAX_INFLIGHT=2)
+        client = SimpleNamespace(max_connections=40, max_keepalive_connections=40)
+
+        with patch("app.routers.admin.get_stackai_client", return_value=client):
+            payload = _runtime_config_payload(guard, pool)
+
+        self.assertEqual(payload["generation"]["admission_mode"], "reject_when_full")
+        self.assertEqual(payload["generation"]["busy_status_code"], 429)
+        self.assertEqual(payload["generation"]["global_max_concurrent"], 32)
+        self.assertEqual(payload["generation"]["account_default_max_inflight"], 2)
+        self.assertEqual(payload["network"]["http_max_connections"], 40)
 
 
 if __name__ == "__main__":

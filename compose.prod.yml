@@ -17,7 +17,26 @@ services:
       PORT: "8001"
       DEBUG: "false"
       UVICORN_WORKERS: "1"
+      GENERATION_GLOBAL_MAX_CONCURRENT: "60"
+      ACCOUNT_MAX_INFLIGHT: "2"
+      HTTP_MAX_CONNECTIONS: "96"
+      HTTP_MAX_KEEPALIVE: "96"
+      GENERATED_IMAGE_DOWNLOAD_CONCURRENCY: "32"
+      GENERATED_IMAGE_MIN_FREE_BYTES: "8589934592"
+      DB_POOL_SIZE: "4"
+      DB_MAX_OVERFLOW: "0"
+      DB_POOL_TIMEOUT_SECONDS: "3"
+      # 可选：如果宿主机只能经本机代理访问上游，启动时设置
+      # VPS_HTTP_PROXY/VPS_HTTPS_PROXY；未设置时保持直连。
+      HTTP_PROXY: "${VPS_HTTP_PROXY:-}"
+      HTTPS_PROXY: "${VPS_HTTPS_PROXY:-}"
+      NO_PROXY: "${VPS_NO_PROXY:-localhost,127.0.0.1,::1}"
+      http_proxy: "${VPS_HTTP_PROXY:-}"
+      https_proxy: "${VPS_HTTPS_PROXY:-}"
+      no_proxy: "${VPS_NO_PROXY:-localhost,127.0.0.1,::1}"
       PYTHONUNBUFFERED: "1"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./data:/app/data
     cpus: 1.6

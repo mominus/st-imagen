@@ -7,7 +7,7 @@ import os
 import re
 import secrets
 import uuid
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import List, Optional, Tuple
 
 from fastapi import Response
@@ -75,7 +75,16 @@ def build_user_usage_snapshot(user: User, *, now: Optional[datetime] = None) -> 
     current = now or datetime.utcnow()
     same_day = bool(user.last_used_at and user.last_used_at.date() == current.date())
     daily_used = max(0, int(user.daily_used or 0)) if same_day else 0
-    in_flight = max(0, int(user.in_flight or 0))
+    runtime_in_flight = 0
+    runtime_daily_used = 0
+    try:
+        service = get_user_auth_service()
+        runtime_in_flight = service.runtime_in_flight(user.id)
+        runtime_daily_used = service.runtime_daily_used(user.id, now=current)
+    except Exception:
+        runtime_in_flight = max(0, int(user.in_flight or 0))
+    daily_used = max(daily_used, runtime_daily_used)
+    in_flight = max(0, runtime_in_flight)
     daily_quota = max(0, int(user.daily_quota or 0))
     quota_remaining = None if daily_quota <= 0 else max(0, daily_quota - daily_used - in_flight)
     return {
@@ -119,13 +128,41 @@ class UserAuthService:
         self._session_domain = (os.getenv("USER_SESSION_DOMAIN") or "").strip() or None
         self._default_user_daily_quota = max(
             0,
-            int(os.getenv("DEFAULT_USER_DAILY_QUOTA", "0")),
+            int(os.getenv("DEFAULT_USER_DAILY_QUOTA", "10")),
         )
         self._default_user_max_inflight = max(
             1,
             int(os.getenv("DEFAULT_USER_MAX_INFLIGHT", "2")),
         )
         self._user_schema_checked = False
+        self._runtime_lock = asyncio.Lock()
+        self._runtime_in_flight: dict[str, int] = {}
+        # Completed usage is kept in memory until a background writer flushes
+        # it.  This preserves quota correctness without putting a SQLite write
+        # on the generation response's critical path.
+        self._runtime_daily_used: dict[str, tuple[date, int]] = {}
+        self._usage_tasks: set[asyncio.Task] = set()
+        self._usage_persist_lock = asyncio.Lock()
+
+    def runtime_in_flight(self, user_id: str) -> int:
+        return max(0, int(self._runtime_in_flight.get(str(user_id), 0)))
+
+    def runtime_daily_used(self, user_id: str, *, now: Optional[datetime] = None) -> int:
+        current_date = (now or datetime.utcnow()).date()
+        entry = self._runtime_daily_used.get(str(user_id))
+        if entry is None or entry[0] != current_date:
+            if entry is not None:
+                self._runtime_daily_used.pop(str(user_id), None)
+            return 0
+        return max(0, int(entry[1]))
+
+    def _schedule_usage_persist(self, user_id: str) -> None:
+        try:
+            task = asyncio.create_task(self._record_generation_usage(user_id))
+        except RuntimeError:
+            return
+        self._usage_tasks.add(task)
+        task.add_done_callback(self._usage_tasks.discard)
 
     @property
     def session_cookie_name(self) -> str:
@@ -167,11 +204,6 @@ class UserAuthService:
     def _generate_batch_password(length: int = 12) -> str:
         alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
         return "".join(secrets.choice(alphabet) for _ in range(max(8, length)))
-
-    @staticmethod
-    def _generate_invite_guest_username() -> str:
-        # 仅作为数据库内部主键替代值，绝不展示或返回给访客。
-        return f"guest-{secrets.token_hex(12)}"
 
     @staticmethod
     def _make_invite_code() -> str:
@@ -605,23 +637,38 @@ class UserAuthService:
             if invite.used_count >= invite.max_uses:
                 raise InviteCodeExhaustedError("邀请码已达到使用上限")
 
-            user = User(
-                id=str(uuid.uuid4()),
-                username=self._generate_invite_guest_username(),
-                password_hash=CryptoService.hash_password(secrets.token_urlsafe(32)),
-                status="active",
-                auth_kind="invite_guest",
-                invite_code_id=invite.id,
-                daily_quota=max(0, int(invite.daily_quota or 0)),
-                daily_used=0,
-                total_requests=0,
-                last_login_at=now,
-                in_flight=0,
-                max_inflight=max(1, int(invite.max_inflight or self._default_user_max_inflight)),
+            existing = await session.execute(
+                select(User).where(
+                    User.invite_code_id == invite.id,
+                    User.auth_kind == "invite_guest",
+                )
             )
+            user = existing.scalar_one_or_none()
+            if user is None:
+                # 生成的邀请码由 sti_ + URL-safe token 组成，长度和字符集
+                # 均满足 users.username 的存储要求；保留原始大小写以便
+                # 管理后台能直接对应邀请码。
+                user = User(
+                    id=str(uuid.uuid4()),
+                    username=(invite_code or "").strip(),
+                    password_hash=CryptoService.hash_password(secrets.token_urlsafe(32)),
+                    status="active",
+                    auth_kind="invite_guest",
+                    invite_code_id=invite.id,
+                    daily_quota=max(0, int(invite.daily_quota or 0)),
+                    daily_used=0,
+                    total_requests=0,
+                    last_login_at=now,
+                    in_flight=0,
+                    max_inflight=max(1, int(invite.max_inflight or self._default_user_max_inflight)),
+                )
+                session.add(user)
+            else:
+                self._ensure_user_can_access(user, now=now)
+                user.last_login_at = now
+                user.updated_at = now
             invite.used_count += 1
             invite.updated_at = now
-            session.add(user)
             raw_token = await self._create_session(
                 session,
                 user=user,
@@ -745,39 +792,48 @@ class UserAuthService:
         )
         await session.flush()
 
-    async def acquire_generation_slot(self, session: AsyncSession, user_id: str) -> User:
+    async def acquire_generation_slot(
+        self,
+        session: AsyncSession,
+        user_id: str,
+        *,
+        user: Optional[User] = None,
+    ) -> User:
+        """Acquire a per-user slot without a database write transaction.
+
+        Authentication already loaded the user row.  The database remains the
+        source of truth for quota and account status, while only the volatile
+        in-flight counter lives in this single-worker process.
+        """
         del session
-        return await self._acquire_generation_slot_once(user_id=user_id)
+        if user is None:
+            from app.models.database import get_session_factory
 
-    async def _acquire_generation_slot_once(self, *, user_id: str) -> User:
-        from app.models.database import get_session_factory  # 延迟导入避免循环
-
-        now = datetime.utcnow()
-        today = now.date()
-        factory = get_session_factory()
-        async with self._usage_lock:
+            factory = get_session_factory()
             async with factory() as inner:
                 user = await self.get_user(inner, user_id)
-                if user is None:
-                    raise UserDisabledError("用户不存在")
-                self._ensure_user_can_access(user, now=now)
+        if user is None:
+            raise UserDisabledError("用户不存在")
 
-                same_day = bool(user.last_used_at and user.last_used_at.date() == today)
-                current_daily_used = user.daily_used if same_day else 0
-                current_in_flight = max(0, int(user.in_flight or 0))
-
-                if current_in_flight >= max(1, int(user.max_inflight or 1)):
-                    raise UserConcurrencyExceededError("当前账号并发已达上限，请稍后重试")
-                if user.daily_quota > 0 and current_daily_used + current_in_flight >= user.daily_quota:
-                    raise UserQuotaExceededError("今日生成额度已用尽")
-
-                if not same_day:
-                    user.daily_used = 0
-                user.in_flight = current_in_flight + 1
-                user.updated_at = now
-                await inner.commit()
-                await inner.refresh(user)
-                return user
+        now = datetime.utcnow()
+        self._ensure_user_can_access(user, now=now)
+        same_day = bool(user.last_used_at and user.last_used_at.date() == now.date())
+        current_daily_used = max(0, int(user.daily_used or 0)) if same_day else 0
+        async with self._runtime_lock:
+            current_in_flight = self.runtime_in_flight(user.id)
+            current_daily_used = max(
+                current_daily_used,
+                self.runtime_daily_used(user.id, now=now),
+            )
+            if current_in_flight >= max(1, int(user.max_inflight or 1)):
+                raise UserConcurrencyExceededError("当前账号并发已达上限，请稍后重试")
+            if user.daily_quota > 0 and current_daily_used + current_in_flight >= user.daily_quota:
+                raise UserQuotaExceededError("今日生成额度已用尽")
+            self._runtime_in_flight[user.id] = current_in_flight + 1
+            # Keep the loaded ORM object coherent for callers/admin responses;
+            # this volatile field is intentionally not committed here.
+            user.in_flight = current_in_flight + 1
+        return user
 
     async def release_generation_slot(
         self,
@@ -786,63 +842,57 @@ class UserAuthService:
         *,
         count_usage: bool,
     ) -> None:
-        """释放用户在途名额，并在需要时累计一次使用。
-
-        流式生成的 finally 可能在请求已被 cancel 后执行。若继续依赖请求级 session，
-        await 会直接被 CancelledError 打断，导致 users.in_flight 泄漏。
-        这里改成：
-        - 独立 session，脱离请求生命周期
-        - asyncio.shield，确保外层 task 被 cancel 时内部释放仍能完成
-        """
+        """Release volatile user capacity and optionally persist usage."""
         del session
-        try:
-            await asyncio.shield(
-                self._release_generation_slot_once(
-                    user_id=user_id,
-                    count_usage=count_usage,
+        async with self._runtime_lock:
+            current = self.runtime_in_flight(user_id)
+            if current <= 1:
+                self._runtime_in_flight.pop(str(user_id), None)
+            else:
+                self._runtime_in_flight[str(user_id)] = current - 1
+            if count_usage:
+                usage_now = datetime.utcnow()
+                self._runtime_daily_used[str(user_id)] = (
+                    usage_now.date(),
+                    self.runtime_daily_used(user_id, now=usage_now) + 1,
                 )
-            )
-        except asyncio.CancelledError:
-            # shield 内部任务会继续完成；这里吞掉 cancel，避免 finally 清理被中断。
-            pass
-        except Exception as exc:
-            logger.warning("release_generation_slot(%s) outer failed: %s", user_id, exc)
+        if count_usage:
+            self._schedule_usage_persist(user_id)
 
-    async def _release_generation_slot_once(
-        self,
-        *,
-        user_id: str,
-        count_usage: bool,
-    ) -> None:
-        from app.models.database import get_session_factory  # 延迟导入避免循环
+    async def _record_generation_usage(self, user_id: str) -> None:
+        from app.models.database import get_session_factory
 
-        now = datetime.utcnow()
-        today = now.date()
-        factory = get_session_factory()
-        async with self._usage_lock:
-            async with factory() as inner:
-                try:
+        # SQLite has one writer at a time.  Serializing these tiny, deferred
+        # usage updates avoids making every generation compete for a write lock.
+        try:
+            async with self._usage_persist_lock:
+                now = datetime.utcnow()
+                factory = get_session_factory()
+                async with factory() as inner:
                     user = await self.get_user(inner, user_id)
                     if user is None:
                         return
-
-                    same_day = bool(user.last_used_at and user.last_used_at.date() == today)
-                    if not same_day:
+                    if not user.last_used_at or user.last_used_at.date() != now.date():
                         user.daily_used = 0
-                    if user.in_flight > 0:
-                        user.in_flight -= 1
-                    if count_usage:
-                        user.daily_used += 1
-                        user.total_requests += 1
-                        user.last_used_at = now
+                    user.daily_used += 1
+                    user.total_requests += 1
+                    user.last_used_at = now
                     user.updated_at = now
                     await inner.commit()
-                except Exception as exc:
-                    try:
-                        await inner.rollback()
-                    except Exception:
-                        logger.warning("release_generation_slot(%s) rollback failed", user_id)
-                    logger.warning("release_generation_slot(%s) commit failed: %s", user_id, exc)
+        except Exception as exc:
+            logger.warning("record user usage failed: user=%s error=%s", user_id[:8], exc)
+
+    async def drain_usage_persistence(self, timeout: float = 3.0) -> None:
+        tasks = [task for task in self._usage_tasks if not task.done()]
+        if not tasks:
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True),
+                timeout=max(0.0, float(timeout)),
+            )
+        except asyncio.TimeoutError:
+            logger.warning("user usage persistence drain timed out; pending=%s", len(tasks))
 
 
 _user_auth_service: Optional[UserAuthService] = None

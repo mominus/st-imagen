@@ -1,6 +1,6 @@
 """SQLAlchemy 模型 + SQLite 异步连接管理。
 
-借鉴 st-api 的精简版：仅保留账号、管理员、生成日志三张表。
+项目使用 SQLAlchemy 管理账号、用户、健康状态、会话、设置和生成日志等持久化表。
 """
 from __future__ import annotations
 
@@ -40,9 +40,9 @@ DATABASE_URL = os.getenv(
     "DATABASE_URL",
     "sqlite+aiosqlite:///./data/image_gen.db",
 )
-DB_POOL_SIZE = max(1, int(os.getenv("DB_POOL_SIZE", "64")))
-DB_MAX_OVERFLOW = max(0, int(os.getenv("DB_MAX_OVERFLOW", "64")))
-DB_POOL_TIMEOUT_SECONDS = max(1.0, float(os.getenv("DB_POOL_TIMEOUT_SECONDS", "60")))
+DB_POOL_SIZE = max(1, int(os.getenv("DB_POOL_SIZE", "4")))
+DB_MAX_OVERFLOW = max(0, int(os.getenv("DB_MAX_OVERFLOW", "0")))
+DB_POOL_TIMEOUT_SECONDS = max(1.0, float(os.getenv("DB_POOL_TIMEOUT_SECONDS", "3")))
 
 
 class Account(Base):
@@ -60,14 +60,43 @@ class Account(Base):
     # 与 inference 用的 Public Key 权限隔离，缺省可空。
     private_api_key_encrypted = Column(Text, nullable=True)
     status = Column(String(20), default="active", nullable=False)  # active / disabled
-    daily_quota = Column(Integer, default=0, nullable=False)  # 0 表示无限制
+    # Historical columns retained for existing SQLite databases. Account-level
+    # daily quotas are no longer a runtime feature; capacity is controlled by
+    # max_inflight and the process-local admission gate.
+    daily_quota = Column(Integer, default=0, nullable=False)
     daily_used = Column(Integer, default=0, nullable=False)
     total_requests = Column(Integer, default=0, nullable=False)
     last_used_at = Column(DateTime, nullable=True)
-    # 调度字段：在途请求数 + 单账号并发上限
-    in_flight = Column(Integer, default=0, nullable=False)
-    max_inflight = Column(Integer, default=10, nullable=False)
+    # 实时在途数只保存在单 worker 进程内；数据库仅保存账号并发上限。
+    max_inflight = Column(Integer, default=2, nullable=False)
     created_at = Column(DateTime, default=_utcnow, nullable=False)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow, nullable=False)
+
+
+class AccountHealth(Base):
+    """Persisted account isolation state; transient failure counters stay in memory."""
+
+    __tablename__ = "account_health"
+
+    account_id = Column(String(36), primary_key=True)
+    state = Column(String(20), nullable=False, default="healthy")
+    reason = Column(Text, nullable=True)
+    last_failure_scope = Column(String(40), nullable=True)
+    retry_after_at = Column(DateTime, nullable=True, index=True)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow, nullable=False)
+
+
+class RouteHealth(Base):
+    """Persisted model/flow route breaker state."""
+
+    __tablename__ = "route_health"
+
+    route_key = Column(String(512), primary_key=True)
+    state = Column(String(20), nullable=False, default="closed")
+    failure_count = Column(Integer, nullable=False, default=0)
+    window_started_at = Column(DateTime, nullable=True)
+    opened_at = Column(DateTime, nullable=True, index=True)
+    retry_after_at = Column(DateTime, nullable=True, index=True)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow, nullable=False)
 
 
@@ -95,7 +124,7 @@ class InviteCode(Base):
     note = Column(String(255), nullable=True)
     max_uses = Column(Integer, default=1, nullable=False)
     used_count = Column(Integer, default=0, nullable=False)
-    daily_quota = Column(Integer, default=0, nullable=False)
+    daily_quota = Column(Integer, default=10, nullable=False)
     max_inflight = Column(Integer, default=2, nullable=False)
     expires_at = Column(DateTime, nullable=True, index=True)
     revoked_at = Column(DateTime, nullable=True, index=True)
@@ -114,7 +143,7 @@ class User(Base):
     status = Column(String(20), default="active", nullable=False)  # active / disabled
     auth_kind = Column(String(24), default="password", nullable=False)  # password / invite_guest
     invite_code_id = Column(String(36), nullable=True, index=True)
-    daily_quota = Column(Integer, default=0, nullable=False)
+    daily_quota = Column(Integer, default=10, nullable=False)
     daily_used = Column(Integer, default=0, nullable=False)
     total_requests = Column(Integer, default=0, nullable=False)
     last_used_at = Column(DateTime, nullable=True)
@@ -222,7 +251,7 @@ async def init_database() -> None:
     def _set_sqlite_pragma(dbapi_connection, _connection_record):
         cursor = dbapi_connection.cursor()
         try:
-            cursor.execute("PRAGMA busy_timeout=30000")
+            cursor.execute("PRAGMA busy_timeout=10000")
             # WAL 下 synchronous=NORMAL：commit 不再逐次 fsync，写入吞吐显著提升；
             # 应用崩溃不丢已提交事务（仅掉电可能丢最后一批 WAL），对本项目可接受。
             cursor.execute("PRAGMA synchronous=NORMAL")
@@ -235,8 +264,6 @@ async def init_database() -> None:
         await _ensure_columns(conn)
         # journal_mode 是数据库级设置，设一次持久生效
         await conn.execute(text("PRAGMA journal_mode=WAL"))
-        # 进程启动时重置 in_flight：防上次崩溃/kill 遗留的残留计数
-        await conn.execute(text("UPDATE accounts SET in_flight = 0 WHERE in_flight <> 0"))
         await conn.execute(text("UPDATE users SET in_flight = 0 WHERE in_flight <> 0"))
 
 
@@ -244,8 +271,7 @@ async def _ensure_columns(conn) -> None:
     """对老库做增量字段补齐。新增字段时在这里登记一次即可。"""
     pending = [
         ("accounts", "private_api_key_encrypted", "TEXT"),
-        ("accounts", "in_flight", "INTEGER NOT NULL DEFAULT 0"),
-        ("accounts", "max_inflight", "INTEGER NOT NULL DEFAULT 10"),
+        ("accounts", "max_inflight", "INTEGER NOT NULL DEFAULT 2"),
         ("admins", "token_version", "INTEGER NOT NULL DEFAULT 0"),
         ("invite_codes", "code_suffix", "VARCHAR(16)"),
         ("users", "expires_at", "DATETIME"),

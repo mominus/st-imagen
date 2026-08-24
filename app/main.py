@@ -21,15 +21,18 @@ from app.env import (
     is_standard_fernet_key,
     load_project_env,
 )
+
+# Load project configuration before importing modules that snapshot environment
+# backed constants (SQLite pool, account defaults, stream limits, etc.).
+ENV_PATH_LOADED, FORCED_ENV_KEYS = load_project_env()
+
 from app.models.database import close_database, init_database
 from app.routers import admin_router, generate_router, user_auth_router
 from app.routers.generate import close_downloads_client
 from app.services.auth import get_auth_service
+from app.services.account_pool import get_account_pool_service
 from app.services.stackai_client import close_stackai_client
-
-
-ENV_PATH_LOADED, FORCED_ENV_KEYS = load_project_env()
-
+from app.services.user_auth import get_user_auth_service
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -50,9 +53,9 @@ logger.info(
 logger.info(
     "runtime config: DEBUG=%s STACKAI_TIMEOUT_SECONDS=%s STACKAI_CONNECT_TIMEOUT_SECONDS=%s STACKAI_STREAM_READ_TIMEOUT_SECONDS=%s",
     (os.getenv("DEBUG") or "false").strip().lower(),
-    os.getenv("STACKAI_TIMEOUT_SECONDS", "240"),
+    os.getenv("STACKAI_TIMEOUT_SECONDS", "270"),
     os.getenv("STACKAI_CONNECT_TIMEOUT_SECONDS", "10"),
-    os.getenv("STACKAI_STREAM_READ_TIMEOUT_SECONDS", "300"),
+    os.getenv("STACKAI_STREAM_READ_TIMEOUT_SECONDS", "330"),
 )
 raw_encryption_key = (os.getenv("ENCRYPTION_KEY") or "").strip()
 if not raw_encryption_key:
@@ -115,6 +118,11 @@ async def lifespan(_app: FastAPI):
         await close_downloads_client()
     except Exception:
         logger.exception("Failed to close downloads client")
+    try:
+        await get_account_pool_service().drain_usage_persistence()
+        await get_user_auth_service().drain_usage_persistence()
+    except Exception:
+        logger.exception("Failed to drain usage persistence workers")
     await close_database()
 
 

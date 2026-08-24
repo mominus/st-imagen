@@ -28,21 +28,18 @@ const state = {
   previewIndex: -1,
   previewReturnFocus: null,
   previewCopyResetTimer: null,
+  errorHideTimer: null,
 };
 
 const MAX_REFERENCE_IMAGES = 5;
 const REFERENCE_UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
 const REFERENCE_UPLOAD_DEFAULT_TEXT = "";
 const RECENT_IMAGES_LIMIT = 24;
-const GENERATE_STREAM_IDLE_TIMEOUT_MS = 170 * 1000;
+// 服务端特殊模型允许 200s 无进度；浏览器再留 20s 保护余量。
+const GENERATE_STREAM_IDLE_TIMEOUT_MS = 220 * 1000;
 const IMG2IMG_PREVIEW_DEFAULT_ASPECT_RATIO = "1:1";
 const IMG2IMG_PREVIEW_DEFAULT_RESOLUTION = "2K";
 const GPT_IMAGE_2_MODEL = "GPT Image 2";
-// 短时限流/拥塞的重试等待增加少量随机抖动，避免多个客户端同时重试。
-// 长时间配额冷却（例如 86400s）不加抖动，保持服务端给出的语义准确。
-const RETRY_JITTER_MAX_SECONDS = 3;
-const RETRY_JITTER_MAX_BASE_SECONDS = 3600;
-
 function parseApiDate(value) {
   if (window.STImagen?.parseApiDate) {
     return window.STImagen.parseApiDate(value);
@@ -116,67 +113,10 @@ function nodeLabel(name) {
   return NODE_LABELS[norm] || name;
 }
 
-let retryCountdownTimer = null;
-let retryCountdownRemaining = 0;
-
-function shouldApplyRetryJitter(statusCode, seconds) {
-  const status = Number(statusCode);
-  const base = Number(seconds);
-  return (
-    Number.isFinite(base) &&
-    base > 0 &&
-    base < RETRY_JITTER_MAX_BASE_SECONDS &&
-    [429, 502, 503, 504].includes(status)
-  );
-}
-
-function startRetryCountdown(seconds, { jitter = false } = {}) {
-  stopRetryCountdown();
-  const parsedSeconds = Number(seconds);
-  const base = Number.isFinite(parsedSeconds) ? Math.max(0, parsedSeconds) : 0;
-  // 倒计时按整秒显示，因此使用 0/1/2/3 秒四个等概率档位，且绝不早于
-  // 服务端建议的最小等待时间。
-  const jitterSeconds = jitter
-    ? Math.floor(Math.random() * (RETRY_JITTER_MAX_SECONDS + 1))
-    : 0;
-  const total = Math.ceil(base) + jitterSeconds;
-  if (total <= 0) return;
-  retryCountdownRemaining = Math.min(total, 24 * 3600);
-  if (jitterSeconds > 0) {
-    console.info(
-      `[generate] retry backoff: base=${base.toFixed(1)}s, ` +
-        `jitter=${jitterSeconds.toFixed(2)}s, total=${total}s`
-    );
-  }
-  const btn = $("#generateBtn");
-  const label = $("#genLabel");
-  const tick = () => {
-    if (retryCountdownRemaining <= 0) {
-      stopRetryCountdown();
-      setLoading(false);
-      return;
-    }
-    btn.disabled = true;
-    label.textContent = `请等待 ${retryCountdownRemaining}s`;
-    retryCountdownRemaining -= 1;
-  };
-  tick();
-  retryCountdownTimer = window.setInterval(tick, 1000);
-}
-
-function stopRetryCountdown() {
-  if (retryCountdownTimer) {
-    window.clearInterval(retryCountdownTimer);
-    retryCountdownTimer = null;
-  }
-  retryCountdownRemaining = 0;
-}
-
 function setLoading(loading) {
   const btn = $("#generateBtn");
   const label = $("#genLabel");
-  btn.disabled = loading || !state.authenticated || retryCountdownRemaining > 0;
-  if (retryCountdownRemaining > 0) return; // 倒计时期间文案由倒计时维护
+  btn.disabled = loading || !state.authenticated;
   label.innerHTML = loading
     ? '<span class="spinner"></span> 生成中…'
     : "开始生成";
@@ -197,8 +137,12 @@ function syncModalBodyState() {
   document.body.classList.toggle("modal-open", state.authGateVisible || state.previewVisible);
 }
 
-function showError(msg) {
+function showError(msg, { autoHide = true } = {}) {
   const el = $("#errorBox");
+  if (state.errorHideTimer) {
+    window.clearTimeout(state.errorHideTimer);
+    state.errorHideTimer = null;
+  }
   if (!msg) {
     el.classList.add("is-hidden");
     el.textContent = "";
@@ -206,6 +150,15 @@ function showError(msg) {
   }
   el.textContent = msg;
   el.classList.remove("is-hidden");
+  if (!autoHide) return;
+  state.errorHideTimer = window.setTimeout(() => {
+    // 只有当前仍是同一条提示时才自动隐藏，避免覆盖后来出现的新提示。
+    if (el.textContent === msg) {
+      el.classList.add("is-hidden");
+      el.textContent = "";
+    }
+    state.errorHideTimer = null;
+  }, 3000);
 }
 
 async function readSseChunkWithIdleTimeout(reader, abortCtrl, timeoutMs) {
@@ -665,6 +618,8 @@ function normalizeResultEntries(items) {
       }
       const url = String(item.image_url || item.url || "").trim();
       if (!url) return null;
+      const model = String(item.model || "").trim();
+      const isGptImage2 = model === GPT_IMAGE_2_MODEL;
       return {
         id: String(item.id || "").trim(),
         generationId: String(item.generation_id || item.generationId || "").trim(),
@@ -672,9 +627,17 @@ function normalizeResultEntries(items) {
         timestamp: String(item.timestamp || "").trim(),
         promptPreview: String(item.prompt || item.prompt_preview || item.promptPreview || "").trim(),
         mode: String(item.mode || "").trim(),
-        model: String(item.model || "").trim(),
-        aspectRatio: String(item.aspect_ratio || item.aspectRatio || "").trim(),
-        resolution: String(item.resolution || "").trim(),
+        model,
+        aspectRatio: String(
+          isGptImage2
+            ? item.size || item.aspect_ratio || item.aspectRatio || ""
+            : item.aspect_ratio || item.aspectRatio || item.size || "",
+        ).trim(),
+        resolution: String(
+          isGptImage2 ? item.quality || item.resolution || "" : item.resolution || item.quality || "",
+        ).trim(),
+        size: String(item.size || "").trim(),
+        quality: String(item.quality || "").trim(),
         responseTimeMs: Number(item.response_time_ms || item.responseTimeMs || 0) || null,
       };
     })
@@ -689,8 +652,13 @@ function formatModeLabel(mode) {
 
 function formatResolutionSummary(entry) {
   const parts = [];
-  if (entry?.resolution) parts.push(entry.resolution);
-  if (entry?.aspectRatio) parts.push(entry.aspectRatio);
+  if (entry?.model === GPT_IMAGE_2_MODEL) {
+    if (entry?.aspectRatio) parts.push(entry.aspectRatio);
+    if (entry?.resolution) parts.push(entry.resolution);
+  } else {
+    if (entry?.resolution) parts.push(entry.resolution);
+    if (entry?.aspectRatio) parts.push(entry.aspectRatio);
+  }
   return parts.join(" · ");
 }
 
@@ -1195,8 +1163,8 @@ function renderPreviewModal() {
   $("#previewPrompt").textContent = promptText;
   $("#previewModeChip").textContent = modeText;
   $("#previewModelChip").textContent = modelText;
-  $("#previewResolutionChip").textContent = resolutionText;
   $("#previewAspectChip").textContent = aspectRatioText;
+  $("#previewResolutionChip").textContent = resolutionText;
   $("#previewResponseTime").textContent = responseTimeText;
   $("#previewTimestamp").textContent = timestampText;
 
@@ -1335,10 +1303,6 @@ async function loadRecentImages({ metaText = "", quiet = true } = {}) {
 
 async function generate() {
   if (state.isGenerating) return;
-  if (retryCountdownRemaining > 0) {
-    showError(`请求受限，请 ${retryCountdownRemaining} 秒后再试`);
-    return;
-  }
 
   showError("");
   if (!state.authenticated) {
@@ -1378,7 +1342,7 @@ async function generate() {
     return;
   }
   if (requestMode === "img2img" && manualImageUrl) {
-    showError("请按回车将参考图 URL（可逗号分隔）加入下方缩略图后再生成");
+    showError("请按回车将参考图 URL 加入为缩略图后再生成");
     return;
   }
   if (requestMode === "img2img" && getTotalReferenceCount() === 0) {
@@ -1437,20 +1401,14 @@ async function generate() {
     if (!r.ok || !r.body) {
       // 初始响应就带错（例如 422 参数错误）
       let msg = `HTTP ${r.status}`;
-      let retryAfter = 0;
       try {
         const j = await r.json();
         msg = j?.detail?.message || (typeof j?.detail === "string" ? j.detail : msg);
-        retryAfter = Number(j?.detail?.retry_after) || 0;
       } catch (_) {}
       if (r.status === 401) {
         await handleUnauthorized("登录已失效，请重新登录");
       }
-      if (retryAfter > 0) {
-        startRetryCountdown(retryAfter, {
-          jitter: shouldApplyRetryJitter(r.status, retryAfter),
-        });
-      }
+      if (r.status === 429) showError(msg || "当前繁忙，请稍后手动重试", { autoHide: false });
       throw new Error(msg);
     }
     shouldRefreshQuota = state.authKind === "user";
@@ -1550,11 +1508,8 @@ async function generate() {
       if (errored.status_code === 401) {
         await handleUnauthorized("登录已失效，请重新登录");
       }
-      const retryAfter = Number(errored.retry_after) || 0;
-      if (retryAfter > 0) {
-        startRetryCountdown(retryAfter, {
-          jitter: shouldApplyRetryJitter(errored.status_code, retryAfter),
-        });
+      if (Number(errored.status_code) === 429) {
+        showError(errored.message || "当前繁忙，请稍后手动重试", { autoHide: false });
       }
       throw new Error(errored.message || `生成失败 (${errored.status_code || "?"})`);
     }
@@ -1574,8 +1529,10 @@ async function generate() {
           prompt_preview: prompt,
           mode: requestMode,
           model,
-          aspect_ratio: requestAspectRatio,
-          resolution: requestResolution,
+          aspect_ratio: isGptImage2 ? requestSize : requestAspectRatio,
+          resolution: isGptImage2 ? requestQuality : requestResolution,
+          size: requestSize,
+          quality: requestQuality,
           response_time_ms: elapsed,
         })),
         meta,
@@ -1592,12 +1549,12 @@ async function generate() {
     setTimeout(() => setProgress({ visible: false }), 800);
   } catch (err) {
     if (err.name === "StreamIdleTimeoutError") {
-      showError(err.message || "长时间未收到生成进度更新，请重试");
+      showError(err.message || "长时间未收到生成进度更新，请重试", { autoHide: false });
     } else if (err.name === "AbortError") {
-      showError("已取消");
+      showError("已取消", { autoHide: false });
     } else {
       // banner 直接展示后端给的精简错误（红色样式已传达失败语义，无需"生成失败："前缀）
-      showError(err.message || "生成失败");
+      showError(err.message || "生成失败", { autoHide: false });
     }
     setProgress({ visible: false });
   } finally {

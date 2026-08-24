@@ -862,7 +862,7 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
     parser.add_argument("--aspect-ratio", default="1:1")
     parser.add_argument("--resolution", default="2K")
     parser.add_argument("--http-timeout", type=float, default=30.0)
-    parser.add_argument("--generate-timeout", type=float, default=240.0)
+    parser.add_argument("--generate-timeout", type=float, default=300.0)
     parser.add_argument("--preflight-timeout", type=float, default=90.0)
     parser.add_argument("--generate-stagger-ms", type=float, default=0.0)
     parser.add_argument("--stage-pause-seconds", type=float, default=0.0)

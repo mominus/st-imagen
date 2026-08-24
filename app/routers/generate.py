@@ -10,6 +10,8 @@ import json
 import logging
 import os
 import re
+import shutil
+import tempfile
 import time
 import uuid
 from contextlib import suppress
@@ -25,7 +27,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.database import GenerationLog, get_session
+from app.models.database import Account, GenerationLog, get_session
 from app.services.deps import GenerationPrincipal, require_generation_principal
 from app.services import app_settings
 from app.services.guard import get_generation_guard
@@ -33,6 +35,13 @@ from app.services.account_pool import (
     NoAvailableAccountError,
     NoCapacityError,
     get_account_pool_service,
+)
+from app.services.failure_classifier import (
+    ACCOUNT_SCOPE,
+    ROUTE_CONFIG_SCOPE,
+    UPSTREAM_ROUTE_SCOPE,
+    classify_stackai_error,
+    route_key as build_route_key,
 )
 from app.services.outbound_url import (
     UnsafeOutboundURLError,
@@ -44,7 +53,11 @@ from app.services.stackai_client import (
     extract_image_urls,
     get_stackai_client,
 )
-from app.services.upstream_redaction import redact_upstream_data, redact_upstream_text
+from app.services.upstream_redaction import (
+    redact_upstream_data,
+    redact_upstream_event_text,
+    redact_upstream_text,
+)
 from app.services.user_auth import (
     UserConcurrencyExceededError,
     UserDisabledError,
@@ -112,8 +125,8 @@ def _concise_upstream_error(text: str) -> str:
     # 若形如 "Error in Node ... (...): <core>"，取冒号之后的核心
     m = re.search(r"Error in Node[^:]*:\s*(.+)", s, flags=re.DOTALL)
     if m:
-        return redact_upstream_text(m.group(1).strip())
-    return redact_upstream_text(s)
+        return redact_upstream_event_text(m.group(1).strip())
+    return redact_upstream_event_text(s)
 
 
 def _is_zero_stage_failure(total_nodes: Optional[int], completed_nodes: Optional[int]) -> bool:
@@ -125,29 +138,8 @@ def _is_zero_stage_failure(total_nodes: Optional[int], completed_nodes: Optional
     )
 
 
-async def _commit_request_session_before_release(session: AsyncSession) -> None:
-    """在释放账号前先结束当前请求事务，避免 SQLite 写锁冲突。"""
-    if not session.in_transaction():
-        return
-    try:
-        await session.commit()
-    except asyncio.CancelledError:
-        logger.warning("request session commit before release cancelled")
-        try:
-            await session.rollback()
-        except Exception:
-            logger.warning("request session rollback after cancelled commit also failed")
-        raise
-    except Exception as exc:
-        logger.warning("request session commit before release failed: %s", exc)
-        try:
-            await session.rollback()
-        except Exception:
-            logger.warning("request session rollback after failed commit also failed")
-
-
 async def _rollback_request_session_before_release(session: AsyncSession) -> None:
-    """在终态 SSE 事件前快速结束请求级事务，避免卡在 commit 上。"""
+    """End any request-scoped transaction so its SQLite connection returns to the pool."""
     if not session.in_transaction():
         return
     try:
@@ -196,6 +188,10 @@ REFERENCE_UPLOAD_DIR = Path(
 ).resolve()
 GENERATED_IMAGE_DIR = (REFERENCE_UPLOAD_DIR / "generated").resolve()
 GENERATED_IMAGE_MAX_BYTES = int(os.getenv("GENERATED_IMAGE_MAX_BYTES", str(50 * 1024 * 1024)))
+GENERATED_IMAGE_MIN_FREE_BYTES = max(
+    0,
+    int(os.getenv("GENERATED_IMAGE_MIN_FREE_BYTES", str(8 * 1024 * 1024 * 1024))),
+)
 GENERATED_IMAGE_TIMEOUT_SECONDS = float(os.getenv("GENERATED_IMAGE_TIMEOUT_SECONDS", "60"))
 GENERATED_IMAGE_SAVE_TOTAL_TIMEOUT_SECONDS = max(
     GENERATED_IMAGE_TIMEOUT_SECONDS,
@@ -207,11 +203,11 @@ GENERATED_IMAGE_SAVE_TOTAL_TIMEOUT_SECONDS = max(
     ),
 )
 GENERATE_STREAM_IDLE_TIMEOUT_SECONDS = float(
-    os.getenv("GENERATE_STREAM_IDLE_TIMEOUT_SECONDS", "90")
+    os.getenv("GENERATE_STREAM_IDLE_TIMEOUT_SECONDS", "150")
 )
 GENERATE_STREAM_TOTAL_TIMEOUT_SECONDS = max(
     GENERATE_STREAM_IDLE_TIMEOUT_SECONDS + 1.0,
-    float(os.getenv("GENERATE_STREAM_TOTAL_TIMEOUT_SECONDS", "200")),
+    float(os.getenv("GENERATE_STREAM_TOTAL_TIMEOUT_SECONDS", "230")),
 )
 GENERATE_STREAM_KEEPALIVE_INTERVAL_SECONDS = max(
     1.0,
@@ -219,19 +215,15 @@ GENERATE_STREAM_KEEPALIVE_INTERVAL_SECONDS = max(
 )
 GENERATE_STREAM_TEXT2IMG_4K_IDLE_TIMEOUT_SECONDS = max(
     GENERATE_STREAM_IDLE_TIMEOUT_SECONDS,
-    float(os.getenv("GENERATE_STREAM_TEXT2IMG_4K_IDLE_TIMEOUT_SECONDS", "150")),
+    float(os.getenv("GENERATE_STREAM_TEXT2IMG_4K_IDLE_TIMEOUT_SECONDS", "200")),
 )
 GENERATE_STREAM_GPT_IMAGE_2_IDLE_TIMEOUT_SECONDS = max(
     GENERATE_STREAM_IDLE_TIMEOUT_SECONDS,
-    float(os.getenv("GENERATE_STREAM_GPT_IMAGE_2_IDLE_TIMEOUT_SECONDS", "150")),
+    float(os.getenv("GENERATE_STREAM_GPT_IMAGE_2_IDLE_TIMEOUT_SECONDS", "200")),
 )
-ACCOUNT_RETRYABLE_COOLDOWN_SECONDS = max(
+ACCOUNT_FAILURE_ISOLATION_SECONDS = max(
     1.0,
-    float(os.getenv("ACCOUNT_RETRYABLE_COOLDOWN_SECONDS", "120")),
-)
-ACCOUNT_BROKEN_COOLDOWN_SECONDS = max(
-    ACCOUNT_RETRYABLE_COOLDOWN_SECONDS,
-    float(os.getenv("ACCOUNT_BROKEN_COOLDOWN_SECONDS", "300")),
+    float(os.getenv("ACCOUNT_FAILURE_ISOLATION_SECONDS", "300")),
 )
 GENERATED_IMAGE_DOWNLOAD_ATTEMPTS = max(1, int(os.getenv("GENERATED_IMAGE_DOWNLOAD_ATTEMPTS", "3")))
 GENERATED_IMAGE_DOWNLOAD_RETRY_BACKOFF_SECONDS = float(
@@ -413,12 +405,26 @@ class GenerateRequest(BaseModel):
     max_failover: int = Field(default=2, ge=0, le=5)
 
 
+def _generation_log_dimensions(req: GenerateRequest) -> tuple[str, str]:
+    """Return the two dimension slots shown in creation history.
+
+    The database keeps the original two generic slots for compatibility:
+    Nano Banana Pro uses aspect ratio/resolution, while GPT Image 2 uses
+    size/quality in those same positions.
+    """
+    if req.mode == "text2img" and req.model == GPT_IMAGE_2_MODEL:
+        return req.size.strip(), (req.quality or "auto").strip().lower()
+    return req.aspect_ratio.strip(), req.resolution.strip()
+
+
 class GenerateResponse(BaseModel):
     success: bool
     images: List[str] = []
     account_id: Optional[str] = None
     response_time_ms: Optional[int] = None
     message: Optional[str] = None
+    retry_after: Optional[int] = None
+    failure_scope: Optional[str] = None
 
 
 class ReferenceUrlRequest(BaseModel):
@@ -434,11 +440,13 @@ class GeneratedImageSaveError(Exception):
         self.status_code = status_code
 
 
-def _public_base_url(request: Request) -> str:
+def _public_base_url(request: Optional[Request]) -> str:
     configured = (os.getenv("PUBLIC_BASE_URL") or "").strip()
     if configured:
         return configured.rstrip("/") + "/"
 
+    if request is None:
+        return "http://127.0.0.1:8001/"
     forwarded_host = (request.headers.get("x-forwarded-host") or "").split(",", 1)[0].strip()
     forwarded_proto = (request.headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip()
     if forwarded_host:
@@ -488,6 +496,29 @@ def _image_extension_from_url(url: str) -> Optional[str]:
     return None
 
 
+def _generated_disk_snapshot() -> Dict[str, Any]:
+    """Return a cheap local-disk admission snapshot for generated images."""
+    try:
+        GENERATED_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+        usage = shutil.disk_usage(GENERATED_IMAGE_DIR)
+        writable_bytes = max(0, int(usage.free) - GENERATED_IMAGE_MIN_FREE_BYTES)
+        return {
+            "free_bytes": int(usage.free),
+            "min_free_bytes": GENERATED_IMAGE_MIN_FREE_BYTES,
+            "writable_bytes": writable_bytes,
+            "can_write": writable_bytes >= GENERATED_IMAGE_MAX_BYTES,
+        }
+    except OSError as exc:
+        logger.warning("generated image disk probe failed: %s", exc)
+        return {
+            "free_bytes": 0,
+            "min_free_bytes": GENERATED_IMAGE_MIN_FREE_BYTES,
+            "writable_bytes": 0,
+            "can_write": False,
+            "error": "disk_probe_failed",
+        }
+
+
 # 生成图下载共享 client：避免每张图/每次重试都重建 TCP/TLS 连接。
 # 超时按请求覆盖（open_safe_stream 的 timeout 参数）。
 _downloads_client: Optional[httpx.AsyncClient] = None
@@ -514,7 +545,12 @@ async def close_downloads_client() -> None:
         await client.aclose()
 
 
-async def _save_generated_image(request: Request, source_url: str) -> str:
+async def _save_generated_image(
+    request: Optional[Request],
+    source_url: str,
+    *,
+    public_base_url: Optional[str] = None,
+) -> str:
     url = str(source_url or "").strip()
     if not url:
         raise GeneratedImageSaveError("生成成功，但保存图片失败：图片地址为空")
@@ -528,9 +564,34 @@ async def _save_generated_image(request: Request, source_url: str) -> str:
     deadline = time.monotonic() + GENERATED_IMAGE_SAVE_TOTAL_TIMEOUT_SECONDS
     headers = {"User-Agent": "stackai-image-gen/1.0 (+generated-image-downloader)"}
     content_type = ""
-    data = b""
+    temp_path: Optional[Path] = None
+    file_handle = None
+    prefix = bytearray()
+    total_bytes = 0
+
+    async def _discard_temp_file() -> None:
+        nonlocal temp_path, file_handle
+        if file_handle is not None:
+            file_handle.close()
+            file_handle = None
+        if temp_path is not None:
+            with suppress(FileNotFoundError):
+                temp_path.unlink()
+            temp_path = None
+
+    # disk_usage is a single statvfs call; keeping it synchronous avoids
+    # consuming the default thread pool for every completed image.
+    disk_snapshot = _generated_disk_snapshot()
+    if not disk_snapshot["can_write"]:
+        raise GeneratedImageSaveError(
+            "生成成功，但保存图片失败：服务器磁盘空间不足，请稍后重试",
+            status_code=503,
+        )
 
     for attempt in range(1, GENERATED_IMAGE_DOWNLOAD_ATTEMPTS + 1):
+        await _discard_temp_file()
+        prefix = bytearray()
+        total_bytes = 0
         remaining_budget = deadline - time.monotonic()
         if remaining_budget <= 0:
             raise GeneratedImageSaveError(
@@ -568,8 +629,13 @@ async def _save_generated_image(request: Request, source_url: str) -> str:
                     raise err
 
                 content_type = (resp.headers.get("content-type") or "").strip()
-                data_parts: List[bytes] = []
-                total_bytes = 0
+                fd, temp_name = tempfile.mkstemp(
+                    prefix=".gen-",
+                    dir=str(GENERATED_IMAGE_DIR),
+                )
+                os.close(fd)
+                temp_path = Path(temp_name)
+                file_handle = temp_path.open("wb")
                 async for chunk in resp.aiter_bytes():
                     total_bytes += len(chunk)
                     if total_bytes > GENERATED_IMAGE_MAX_BYTES:
@@ -577,20 +643,31 @@ async def _save_generated_image(request: Request, source_url: str) -> str:
                         raise GeneratedImageSaveError(
                             f"生成成功，但保存图片失败：图片超过 {limit_mb} MB 上限"
                         )
-                    data_parts.append(chunk)
-                data = b"".join(data_parts)
+                    if len(prefix) < 32:
+                        prefix.extend(chunk[: 32 - len(prefix)])
+                    # The chunk is bounded by httpx and the write is local;
+                    # yielding between network chunks keeps 60 streams
+                    # responsive without creating one executor task per chunk.
+                    file_handle.write(chunk)
+                file_handle.flush()
+                os.fsync(file_handle.fileno())
+                file_handle.close()
+                file_handle = None
                 break
             finally:
                 await resp.aclose()
-            if data:
+            if total_bytes:
                 break
         except UnsafeOutboundURLError as exc:
+            await _discard_temp_file()
             raise GeneratedImageSaveError(
                 f"生成成功，但保存图片失败：下载地址不安全（{exc}）"
             ) from exc
         except GeneratedImageSaveError:
+            await _discard_temp_file()
             raise
         except httpx.TimeoutException as exc:
+            await _discard_temp_file()
             if attempt < GENERATED_IMAGE_DOWNLOAD_ATTEMPTS and deadline - time.monotonic() > 0:
                 sleep_seconds = min(
                     GENERATED_IMAGE_DOWNLOAD_RETRY_BACKOFF_SECONDS * attempt,
@@ -608,6 +685,7 @@ async def _save_generated_image(request: Request, source_url: str) -> str:
                 continue
             raise GeneratedImageSaveError(f"生成成功，但保存图片失败：下载图片超时（{exc}）") from exc
         except httpx.HTTPError as exc:
+            await _discard_temp_file()
             if attempt < GENERATED_IMAGE_DOWNLOAD_ATTEMPTS and deadline - time.monotonic() > 0:
                 sleep_seconds = min(
                     GENERATED_IMAGE_DOWNLOAD_RETRY_BACKOFF_SECONDS * attempt,
@@ -624,32 +702,44 @@ async def _save_generated_image(request: Request, source_url: str) -> str:
                     await asyncio.sleep(sleep_seconds)
                 continue
             raise GeneratedImageSaveError(f"生成成功，但保存图片失败：下载图片异常（{exc}）") from exc
+        except Exception:
+            await _discard_temp_file()
+            raise
 
-    if not data:
+    if not temp_path or total_bytes <= 0:
+        await _discard_temp_file()
         raise GeneratedImageSaveError("生成成功，但保存图片失败：下载到的图片为空")
 
-    detected_suffix = _detect_uploaded_image_extension(data)
+    detected_suffix = _detect_uploaded_image_extension(bytes(prefix))
     content_type_suffix = _image_extension_from_content_type(content_type)
     normalized_content_type = content_type.lower().split(";", 1)[0].strip()
     if detected_suffix is None and normalized_content_type and not normalized_content_type.startswith("image/"):
+        await _discard_temp_file()
         raise GeneratedImageSaveError(
             f"生成成功，但保存图片失败：下载内容不是图片（Content-Type={normalized_content_type}）"
         )
 
     suffix = detected_suffix or content_type_suffix or _image_extension_from_url(url)
     if suffix is None:
+        await _discard_temp_file()
         raise GeneratedImageSaveError("生成成功，但保存图片失败：无法识别图片格式")
 
-    GENERATED_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
     filename = f"gen-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex}{suffix}"
     target = GENERATED_IMAGE_DIR / filename
-    await asyncio.to_thread(target.write_bytes, data)
+    try:
+        os.replace(temp_path, target)
+        temp_path = None
+    finally:
+        if temp_path is not None:
+            with suppress(FileNotFoundError):
+                temp_path.unlink()
     await _maybe_cleanup_uploads()
-    return f"{_public_base_url(request)}uploads/generated/{filename}"
+    base_url = (public_base_url or _public_base_url(request)).rstrip("/") + "/"
+    return f"{base_url}uploads/generated/{filename}"
 
 
 GENERATED_IMAGE_DOWNLOAD_CONCURRENCY = max(
-    1, int(os.getenv("GENERATED_IMAGE_DOWNLOAD_CONCURRENCY", "3"))
+    1, int(os.getenv("GENERATED_IMAGE_DOWNLOAD_CONCURRENCY", "32"))
 )
 _downloads_semaphore: Optional[asyncio.Semaphore] = None
 
@@ -661,14 +751,19 @@ def _get_downloads_semaphore() -> asyncio.Semaphore:
     return _downloads_semaphore
 
 
-async def _save_generated_images(request: Request, image_urls: List[str]) -> List[str]:
+async def _save_generated_images(
+    request: Optional[Request],
+    image_urls: List[str],
+    *,
+    public_base_url: Optional[str] = None,
+) -> List[str]:
     # 并行下载多张图（并发受信号量限制）；任一失败则整体失败。
     if not image_urls:
         return []
 
     async def _save_one(url: str) -> str:
         async with _get_downloads_semaphore():
-            return await _save_generated_image(request, url)
+            return await _save_generated_image(request, url, public_base_url=public_base_url)
 
     results = await asyncio.gather(*[_save_one(u) for u in image_urls], return_exceptions=True)
     first_error: Optional[BaseException] = None
@@ -680,8 +775,118 @@ async def _save_generated_images(request: Request, image_urls: List[str]) -> Lis
         else:
             saved_urls.append(item)
     if first_error is not None:
+        # Do not leave orphaned files when one image in a multi-image result
+        # fails after another image was already committed.
+        for saved_url in saved_urls:
+            parsed_path = urlparse(str(saved_url))
+            relative_path = parsed_path.path.removeprefix("/uploads/")
+            candidate = (REFERENCE_UPLOAD_DIR / relative_path).resolve()
+            if candidate.parent == GENERATED_IMAGE_DIR:
+                with suppress(FileNotFoundError):
+                    await asyncio.to_thread(candidate.unlink)
         raise first_error
     return saved_urls
+
+
+_image_log_tasks: set[asyncio.Task] = set()
+_image_log_started = 0
+_image_log_completed = 0
+_image_log_failed = 0
+
+
+def image_persistence_snapshot() -> Dict[str, Any]:
+    """Return local-storage status for the admin console.
+
+    Image files are saved in the request coroutine; only history rows are
+    best-effort background work.
+    """
+    return {
+        "enabled": True,
+        "history_log_async": True,
+        "active_tasks": len(_image_log_tasks),
+        "started": _image_log_started,
+        "completed": _image_log_completed,
+        "failed": _image_log_failed,
+    }
+
+
+async def _stop_image_persistence() -> None:
+    """Wait briefly for currently scheduled history writes during shutdown."""
+    if _image_log_tasks:
+        await asyncio.gather(*list(_image_log_tasks), return_exceptions=True)
+
+
+async def _write_generation_log(job: Dict[str, Any], saved_images: List[str], status: str, error_message: Optional[str]) -> None:
+    global _image_log_completed, _image_log_failed
+    try:
+        from app.models.database import get_session_factory
+
+        factory = get_session_factory()
+        async with factory() as persist_session:
+            persist_session.add(
+                GenerationLog(
+                    id=job["generation_id"],
+                    timestamp=datetime.utcnow(),
+                    user_id=job["user_id"],
+                    account_id=job["account_id"],
+                    mode=job["mode"],
+                    model=job["model"],
+                    aspect_ratio=job["aspect_ratio"],
+                    resolution=job["resolution"],
+                    prompt_preview=job["prompt_preview"],
+                    image_url=job["reference_url"],
+                    output_preview=(saved_images[0] if saved_images else None),
+                    output_images=_serialize_output_images(saved_images),
+                    response_time_ms=job["response_time_ms"],
+                    status=status,
+                    error_message=error_message,
+                    is_stream=job["is_stream"],
+                )
+            )
+            await persist_session.commit()
+            _image_log_completed += 1
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        _image_log_failed += 1
+        logger.exception("best-effort generation log write failed")
+
+
+def _schedule_generation_log(job: Dict[str, Any], saved_images: List[str], status: str, error_message: Optional[str]) -> None:
+    global _image_log_started
+    try:
+        task = asyncio.create_task(
+            _write_generation_log(job, saved_images, status, error_message),
+            name="generation-log-write",
+        )
+    except RuntimeError:
+        return
+    _image_log_started += 1
+    _image_log_tasks.add(task)
+    task.add_done_callback(_image_log_tasks.discard)
+
+
+async def _save_and_log_images(job: Dict[str, Any]) -> List[str]:
+    """Save generated images locally, then schedule only the history row.
+
+    The caller waits only for the image files to be atomically committed; the
+    history row is best-effort.
+    """
+    try:
+        saved_images = await _save_generated_images(
+            None,
+            job["source_images"],
+            public_base_url=job["public_base_url"],
+        )
+    except GeneratedImageSaveError as exc:
+        _schedule_generation_log(job, [], "error", exc.message[:1000])
+        raise
+    except Exception as exc:
+        error = GeneratedImageSaveError("生成成功，但保存图片失败：本地持久化异常")
+        _schedule_generation_log(job, [], "error", str(exc)[:1000])
+        raise error from exc
+    _schedule_generation_log(job, saved_images, "success", None)
+    return saved_images
 
 
 def _normalize_reference_urls(req: GenerateRequest) -> List[str]:
@@ -792,6 +997,49 @@ async def options() -> Dict[str, Any]:
     }
 
 
+@router.get("/generate/capacity")
+async def generation_capacity(
+    session: AsyncSession = Depends(get_session),
+    current_principal: GenerationPrincipal = Depends(require_generation_principal),
+) -> Dict[str, Any]:
+    """Read-only capacity hint for the UI; submit-time admission is authoritative."""
+    pool = get_account_pool_service()
+    guard = get_generation_guard()
+    rows = await session.execute(select(Account).where(Account.status == "active"))
+    accounts = list(rows.scalars().all())
+    account_capacity = sum(
+        max(0, int(account.max_inflight or 1)) - pool.runtime_in_flight(account.id)
+        for account in accounts
+    )
+    admission = guard.generation_admission.snapshot()
+    available = max(
+        0,
+        min(
+            account_capacity,
+            max(0, guard.generation_admission.max_concurrent - int(admission["in_flight"])),
+        ),
+    )
+    user_available = True
+    if current_principal.user is not None:
+        user = current_principal.user
+        user_available = (
+            get_user_auth_service().runtime_in_flight(user.id) < max(1, int(user.max_inflight or 1))
+        )
+    disk = _generated_disk_snapshot()
+    return {
+        "available_slots": available,
+        "in_flight": int(admission["in_flight"]),
+        "max_concurrent": guard.generation_admission.max_concurrent,
+        "active_accounts": len(accounts),
+        "account_available": max(0, account_capacity),
+        "user_available": user_available,
+        "disk_free_bytes": disk["free_bytes"],
+        "disk_min_free_bytes": disk["min_free_bytes"],
+        "disk_writable_bytes": disk["writable_bytes"],
+        "disk_available": disk["can_write"],
+    }
+
+
 @router.get("/recent-images")
 async def recent_images(
     limit: int = 24,
@@ -829,6 +1077,7 @@ async def recent_images(
         if not images:
             continue
         for idx, image_url in enumerate(images):
+            is_gpt_image_2 = log.model == GPT_IMAGE_2_MODEL
             items.append(
                 {
                     "id": f"{log.id}:{idx}",
@@ -840,6 +1089,8 @@ async def recent_images(
                     "model": log.model,
                     "aspect_ratio": log.aspect_ratio,
                     "resolution": log.resolution,
+                    "size": log.aspect_ratio if is_gpt_image_2 else None,
+                    "quality": log.resolution if is_gpt_image_2 else None,
                     "response_time_ms": log.response_time_ms,
                 }
             )
@@ -1078,8 +1329,14 @@ async def generate(
     principal_log_name = _principal_log_name(current_principal)
     reference_urls = _normalize_reference_urls(req)
     reference_log_value = _reference_log_value(reference_urls)
+    log_aspect_ratio, log_resolution = _generation_log_dimensions(req)
     user_slot_acquired = False
     user_should_count_usage = False
+
+    # Authentication performs a read through the request-scoped session. End
+    # that read transaction before URL validation, admission, or
+    # upstream call so pooled SQLite connections are not held by idle requests.
+    await _rollback_request_session_before_release(session)
 
     if req.mode not in {"text2img", "img2img"}:
         raise HTTPException(status_code=400, detail="mode 只能是 text2img 或 img2img")
@@ -1099,6 +1356,7 @@ async def generate(
             detail={
                 "message": "上游服务暂时不可用，请稍后重试",
                 "retry_after": int(breaker_remaining) + 1,
+                "failure_scope": UPSTREAM_ROUTE_SCOPE,
             },
         )
     if current_user_id is not None and guard.user_rpm.enabled:
@@ -1109,19 +1367,47 @@ async def generate(
                 detail={
                     "message": f"请求过于频繁，请 {int(rpm_retry_after) + 1} 秒后再试",
                     "retry_after": int(rpm_retry_after) + 1,
+                    "failure_scope": "user_rate",
                 },
             )
-    global_slot_acquired = await guard.global_gate.acquire()
-    if not global_slot_acquired:
-        raise HTTPException(
-            status_code=429,
-            detail={"message": "服务繁忙，请稍后重试", "retry_after": 10},
-        )
+    # One shared admission controls both model scheduling and
+    # global generation capacity.  Image downloads happen after this slot is
+    # released and therefore do not consume generation capacity.
+    generation_slot_acquired = False
 
     try:
+        await guard.load_persisted_route_health()
+        # Reject at the cheapest process-local gate before touching the user
+        # concurrency row or the account pool. This keeps a saturated worker
+        # from creating avoidable SQLite work.
+        if not await guard.generation_admission.try_acquire(req.model):
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "GENERATION_BUSY",
+                    "message": "生成调度繁忙，请稍后重试",
+                    "retry_after": 5,
+                    "failure_scope": "generation_capacity",
+                },
+                headers={"Retry-After": "5"},
+            )
+        generation_slot_acquired = True
+        if not _generated_disk_snapshot()["can_write"]:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "IMAGE_STORAGE_BUSY",
+                    "message": "服务器图片存储空间不足，请稍后重试",
+                    "failure_scope": "image_storage",
+                },
+            )
         if current_user_id is not None:
             try:
-                await user_auth.acquire_generation_slot(session, current_user_id)
+                await user_auth.acquire_generation_slot(
+                    session,
+                    current_user_id,
+                    user=current_principal.user,
+                )
                 user_slot_acquired = True
             except UserDisabledError as exc:
                 raise HTTPException(status_code=403, detail=str(exc))
@@ -1136,31 +1422,85 @@ async def generate(
         last_error: Optional[StackAIError] = None
         started = time.time()
 
-        for attempt in range(req.max_failover + 1):
-            # 选号（第二层流控：超容量时短暂等待，不立刻 429）
+        # A credential/configuration fault may use one alternate account. A
+        # public route fault never fans out across the whole pool.
+        for attempt in range(min(req.max_failover, 1) + 1):
+            if not generation_slot_acquired and not await guard.generation_admission.try_acquire(req.model):
+                raise HTTPException(
+                    status_code=429,
+                    detail={
+                        "code": "GENERATION_BUSY",
+                        "message": "生成调度繁忙，请稍后重试",
+                        "retry_after": 5,
+                        "failure_scope": "generation_capacity",
+                    },
+                    headers={"Retry-After": "5"},
+                )
+            generation_slot_acquired = True
             try:
-                account = await pool.select_account_or_wait(session, exclude_ids=tried_ids)
+                account = await pool.select_account(
+                    session,
+                    exclude_ids=tried_ids,
+                )
             except NoAvailableAccountError as exc:
+                guard.generation_admission.release(req.model)
+                generation_slot_acquired = False
                 if last_error is not None:
-                    # 之前已经尝试过账号，全失败了：回传最后一次上游错误
-                    # 先 commit 失败日志（HTTPException 会触发 dep 的 rollback，否则日志丢失）
                     await session.commit()
                     raise HTTPException(
                         status_code=last_error.status_code or 502,
-                        detail={"message": last_error.message},
+                        detail={
+                            "message": last_error.message,
+                            "retry_after": _retry_after_for_stackai_error(last_error),
+                            "failure_scope": _failure_scope_for_stackai_error(last_error),
+                        },
                     )
-                raise HTTPException(status_code=503, detail=str(exc))
+                raise HTTPException(
+                    status_code=503,
+                    detail={"message": str(exc), "failure_scope": exc.failure_scope},
+                )
             except NoCapacityError as exc:
-                # 瞬时过载（所有账号都打满）→ 429 让客户端短暂重试
-                await session.commit()
+                guard.generation_admission.release(req.model)
+                generation_slot_acquired = False
                 raise HTTPException(
                     status_code=429,
-                    detail={"message": str(exc), "retry_after": 5},
+                    detail={
+                        "code": "GENERATION_BUSY",
+                        "message": str(exc),
+                        "retry_after": max(1, int(float(exc.retry_after or 5) + 0.999)),
+                        "failure_scope": exc.failure_scope,
+                    },
+                    headers={"Retry-After": str(max(1, int(float(exc.retry_after or 5) + 0.999)))},
                 )
 
             tried_ids.append(account.id)
             account_id = account.id
             request_started = time.time()
+            route = build_route_key(
+                base_url=client.base_url,
+                org_id=account.org_id,
+                flow_id=account.flow_id,
+                mode=req.mode,
+                model=req.model,
+            )
+            route_remaining = guard.check_upstream(route)
+            if route_remaining > 0:
+                await _rollback_request_session_before_release(session)
+                await pool.release_account(
+                    session,
+                    account.id,
+                    count_request=False,
+                    slot_token=getattr(account, "_slot_token", None),
+                )
+                account_id = None
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "message": "该模型路由暂时不可用，请稍后重试",
+                        "retry_after": max(1, int(route_remaining + 0.999)),
+                        "failure_scope": UPSTREAM_ROUTE_SCOPE,
+                    },
+                )
             try:
                 api_key = pool.decrypt_api_key(account)
             except ValueError as exc:
@@ -1176,11 +1516,11 @@ async def generate(
                     account.id[:8],
                     exc,
                 )
-                _cooldown_account(
+                _isolate_account(
                     pool,
                     account.id,
                     account.name,
-                    seconds=ACCOUNT_BROKEN_COOLDOWN_SECONDS,
+                    seconds=ACCOUNT_FAILURE_ISOLATION_SECONDS,
                     reason=f"decrypt_failed:{type(exc).__name__}",
                 )
                 session.add(
@@ -1191,8 +1531,8 @@ async def generate(
                         account_id=account.id,
                         mode=req.mode,
                         model=req.model,
-                        aspect_ratio=req.aspect_ratio,
-                        resolution=req.resolution,
+                        aspect_ratio=log_aspect_ratio,
+                        resolution=log_resolution,
                         prompt_preview=req.prompt,
                         image_url=reference_log_value,
                         output_preview=None,
@@ -1203,6 +1543,17 @@ async def generate(
                     )
                 )
                 await session.commit()
+                await _rollback_request_session_before_release(session)
+                await pool.release_account(
+                    session,
+                    account.id,
+                    count_request=False,
+                    slot_token=getattr(account, "_slot_token", None),
+                )
+                account_id = None
+                if generation_slot_acquired:
+                    guard.generation_admission.release(req.model)
+                    generation_slot_acquired = False
                 continue
             # Private API Key 仅用于失败后拉 analytics；stackai 对 inference key 返回 401
             private_api_key = pool.decrypt_private_api_key(account)
@@ -1297,8 +1648,8 @@ async def generate(
                             account_id=account.id,
                             mode=req.mode,
                             model=req.model,
-                            aspect_ratio=req.aspect_ratio,
-                            resolution=req.resolution,
+                            aspect_ratio=log_aspect_ratio,
+                            resolution=log_resolution,
                             prompt_preview=req.prompt,
                             image_url=reference_log_value,
                             output_preview=None,
@@ -1309,91 +1660,87 @@ async def generate(
                         )
                     )
                     await session.commit()
+                    # A successful HTTP response without an image is a route
+                    # diagnostic, never proof that this account is broken.
+                    guard.record_upstream_failure(route)
                     raise HTTPException(
                         status_code=502,
-                        detail={"message": shown_msg, "elapsed_ms": elapsed_ms},
+                        detail={
+                            "message": shown_msg,
+                            "elapsed_ms": elapsed_ms,
+                            "failure_scope": UPSTREAM_ROUTE_SCOPE,
+                        },
                     )
 
                 # 成功：先释放账号槽（统计记为成功），下载落盘不再占用账号容量。
                 # 上游已出图，后续保存失败也算一次真实消耗。
                 await _rollback_request_session_before_release(session)
-                await pool.release_account(session, account.id, mark_used=True)
+                await pool.release_account(
+                    session,
+                    account.id,
+                    count_request=True,
+                    slot_token=getattr(account, "_slot_token", None),
+                )
                 account_id = None
-                guard.record_upstream_success()
+                guard.record_upstream_success(route)
+                if generation_slot_acquired:
+                    guard.generation_admission.release(req.model)
+                    generation_slot_acquired = False
 
+                if user_slot_acquired and current_user_id is not None:
+                    await user_auth.release_generation_slot(
+                        session,
+                        current_user_id,
+                        count_usage=user_should_count_usage,
+                    )
+                    user_slot_acquired = False
+
+                generation_id = str(uuid.uuid4())
                 try:
-                    images = await _save_generated_images(request, images)
+                    local_images = await _save_and_log_images(
+                        {
+                            "generation_id": generation_id,
+                            "source_images": list(images),
+                            "public_base_url": _public_base_url(request),
+                            "user_id": current_user_id,
+                            "account_id": account.id,
+                            "mode": req.mode,
+                            "model": req.model,
+                            "aspect_ratio": log_aspect_ratio,
+                            "resolution": log_resolution,
+                            "prompt_preview": req.prompt,
+                            "reference_url": reference_log_value,
+                            "response_time_ms": elapsed_ms,
+                            "is_stream": False,
+                        }
+                    )
                 except GeneratedImageSaveError as exc:
-                    logger.warning(
-                        "generate save image failed: principal=%s account=%s mode=%s model=%s error=%s",
-                        principal_log_name,
-                        account.id[:8],
-                        req.mode,
-                        req.model,
-                        exc.message,
-                    )
-                    session.add(
-                        GenerationLog(
-                            id=str(uuid.uuid4()),
-                            timestamp=datetime.utcnow(),
-                            user_id=current_user_id,
-                            account_id=account.id,
-                            mode=req.mode,
-                            model=req.model,
-                            aspect_ratio=req.aspect_ratio,
-                            resolution=req.resolution,
-                            prompt_preview=req.prompt,
-                            image_url=reference_log_value,
-                            output_preview=None,
-                            response_time_ms=elapsed_ms,
-                            status="error",
-                            error_message=exc.message[:1000],
-                            is_stream=False,
-                        )
-                    )
-                    await session.commit()
                     raise HTTPException(
                         status_code=exc.status_code,
-                        detail={"message": exc.message, "elapsed_ms": elapsed_ms},
-                    )
-
-                session.add(
-                    GenerationLog(
-                        id=str(uuid.uuid4()),
-                        timestamp=datetime.utcnow(),
-                        user_id=current_user_id,
-                        account_id=account.id,
-                        mode=req.mode,
-                        model=req.model,
-                        aspect_ratio=req.aspect_ratio,
-                        resolution=req.resolution,
-                        prompt_preview=req.prompt,
-                        image_url=reference_log_value,
-                        output_preview=(images[0] if images else None),
-                        output_images=_serialize_output_images(images),
-                        response_time_ms=elapsed_ms,
-                        status="success",
-                        error_message=None,
-                        is_stream=False,
-                    )
-                )
-                await session.commit()
+                        detail={
+                            "message": exc.message,
+                            "failure_scope": "image_persistence",
+                            "elapsed_ms": elapsed_ms,
+                        },
+                    ) from exc
                 return GenerateResponse(
                     success=True,
-                    images=images,
+                    images=local_images,
                     account_id=account.id,
                     response_time_ms=elapsed_ms,
                 )
             except StackAIError as exc:
                 elapsed_ms = int((time.time() - request_started) * 1000)
                 last_error = exc
-                if _should_failover_stackai_error(exc):
-                    guard.record_upstream_failure()
-                    _cooldown_account(
+                decision = classify_stackai_error(exc)
+                if decision.count_route_failure:
+                    guard.record_upstream_failure(route, retry_after=exc.retry_after)
+                if decision.isolate_account:
+                    _isolate_account(
                         pool,
                         account.id,
                         account.name,
-                        seconds=_cooldown_seconds_for_stackai_error(exc),
+                        seconds=ACCOUNT_FAILURE_ISOLATION_SECONDS,
                         reason=f"{exc.status_code or '?'} {exc.message}",
                     )
                 session.add(
@@ -1404,8 +1751,8 @@ async def generate(
                         account_id=account.id,
                         mode=req.mode,
                         model=req.model,
-                        aspect_ratio=req.aspect_ratio,
-                        resolution=req.resolution,
+                        aspect_ratio=log_aspect_ratio,
+                        resolution=log_resolution,
                         prompt_preview=req.prompt,
                         image_url=reference_log_value,
                         output_preview=None,
@@ -1417,12 +1764,16 @@ async def generate(
                 )
                 # 仅保留明确的请求参数错误在当前账号直接返回；
                 # 401/403/404/429/5xx 更像账号配置或上游瞬时故障，允许切号。
-                if not _should_failover_stackai_error(exc):
+                if not decision.failover:
                     # 先 commit 失败日志（避免被 dep 的 rollback 冲掉）
                     await session.commit()
                     raise HTTPException(
-                        status_code=exc.status_code,
-                        detail={"message": exc.message},
+                        status_code=exc.status_code or 502,
+                        detail={
+                            "message": exc.message,
+                            "retry_after": _retry_after_for_stackai_error(exc),
+                            "failure_scope": decision.scope,
+                        },
                     )
                 logger.warning(
                     "generate failed on principal=%s account=%s attempt=%s: %s %s",
@@ -1441,7 +1792,15 @@ async def generate(
                     try:
                         await _rollback_request_session_before_release(session)
                     finally:
-                        await pool.release_account(session, account_id, mark_used=False)
+                        await pool.release_account(
+                            session,
+                            account_id,
+                            count_request=False,
+                            slot_token=getattr(account, "_slot_token", None),
+                        )
+                if generation_slot_acquired:
+                    guard.generation_admission.release(req.model)
+                    generation_slot_acquired = False
 
         # 所有尝试失败
         total_ms = int((time.time() - started) * 1000)
@@ -1450,17 +1809,24 @@ async def generate(
             await session.commit()
             raise HTTPException(
                 status_code=last_error.status_code or 502,
-                detail={"message": last_error.message, "elapsed_ms": total_ms},
+                detail={
+                    "message": last_error.message,
+                    "elapsed_ms": total_ms,
+                    "retry_after": _retry_after_for_stackai_error(last_error),
+                    "failure_scope": _failure_scope_for_stackai_error(last_error),
+                },
             )
         raise HTTPException(status_code=500, detail="生成失败：未知错误")
     finally:
+        if generation_slot_acquired:
+            guard.generation_admission.release(req.model)
+            generation_slot_acquired = False
         if user_slot_acquired and current_user_id is not None:
             await user_auth.release_generation_slot(
                 session,
                 current_user_id,
                 count_usage=user_should_count_usage,
             )
-        guard.global_gate.release()
 
 
 # ===================== 流式生图 (SSE) =====================
@@ -1573,23 +1939,17 @@ async def _iter_upstream_line_with_keepalive(
                 await line_task
 
 
-def _should_failover_stackai_error(exc: StackAIError) -> bool:
-    status = exc.status_code
-    if status is None:
-        return True
-    if status in {401, 403, 404, 408, 429}:
-        return True
-    return status >= 500
+def _failure_scope_for_stackai_error(exc: StackAIError) -> str:
+    return classify_stackai_error(exc).scope
 
 
-def _cooldown_seconds_for_stackai_error(exc: StackAIError) -> float:
-    status = exc.status_code
-    if status in {401, 403, 404}:
-        return ACCOUNT_BROKEN_COOLDOWN_SECONDS
-    return ACCOUNT_RETRYABLE_COOLDOWN_SECONDS
+def _retry_after_for_stackai_error(exc: StackAIError) -> Optional[int]:
+    if exc.retry_after is None:
+        return None
+    return max(1, int(float(exc.retry_after) + 0.999))
 
 
-def _cooldown_account(
+def _isolate_account(
     pool,
     account_id: Optional[str],
     account_name: Optional[str],
@@ -1600,13 +1960,13 @@ def _cooldown_account(
     normalized_id = str(account_id or "").strip()
     if not normalized_id:
         return
-    pool.mark_account_cooldown(
+    pool.mark_account_isolated(
         normalized_id,
         seconds=seconds,
         reason=reason[:200],
     )
     logger.warning(
-        "account cooled down: account=%s name=%s seconds=%.1f reason=%s",
+        "account failure isolated: account=%s name=%s seconds=%.1f reason=%s",
         normalized_id[:8],
         account_name or "<unknown>",
         seconds,
@@ -1634,6 +1994,12 @@ async def generate_stream(
     principal_log_name = _principal_log_name(current_principal)
     reference_urls = _normalize_reference_urls(req)
     reference_log_value = _reference_log_value(reference_urls)
+    log_aspect_ratio, log_resolution = _generation_log_dimensions(req)
+
+    # Release the auth lookup transaction before returning StreamingResponse.
+    # The stream body can live for minutes; it must not inherit a checked-out DB
+    # connection from dependency resolution.
+    await _rollback_request_session_before_release(session)
 
     if req.mode not in {"text2img", "img2img"}:
         raise HTTPException(status_code=400, detail="mode 只能是 text2img 或 img2img")
@@ -1644,62 +2010,186 @@ async def generate_stream(
         await _validate_reference_urls(reference_urls)
 
     payload = _build_payload(req)
-    # —— 流量守卫：熔断快速失败 → 每用户 RPM → 全局并发闸门 ——
+    # —— 流量守卫：在返回 StreamingResponse 前完成全部容量准入 ——
     guard = get_generation_guard()
 
+    generation_slot_acquired = False
+    user_slot_acquired = False
+    user_should_count_usage = False
+    admitted_account = None
+    admitted_route: Optional[str] = None
+
+    await guard.load_persisted_route_health()
+    breaker_remaining = guard.check_upstream()
+    if breaker_remaining > 0:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": "上游服务暂时不可用，请稍后重试",
+                "retry_after": int(breaker_remaining) + 1,
+                "failure_scope": UPSTREAM_ROUTE_SCOPE,
+            },
+        )
+    if current_user_id is not None and guard.user_rpm.enabled:
+        rpm_retry_after = await guard.check_user_rate(f"user:{current_user_id}")
+        if rpm_retry_after > 0:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "message": f"请求过于频繁，请 {int(rpm_retry_after) + 1} 秒后再试",
+                    "retry_after": int(rpm_retry_after) + 1,
+                    "failure_scope": "user_rate",
+                },
+                headers={"Retry-After": str(int(rpm_retry_after) + 1)},
+            )
+
+    try:
+        # Global admission is the first mutable gate. A full worker returns
+        # before acquiring per-user or account state from SQLite.
+        if not await guard.generation_admission.try_acquire(req.model):
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "GENERATION_BUSY",
+                    "message": "生成调度繁忙，请稍后重试",
+                    "retry_after": 5,
+                    "failure_scope": "generation_capacity",
+                },
+                headers={"Retry-After": "5"},
+            )
+        generation_slot_acquired = True
+        if not _generated_disk_snapshot()["can_write"]:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "IMAGE_STORAGE_BUSY",
+                    "message": "服务器图片存储空间不足，请稍后重试",
+                    "failure_scope": "image_storage",
+                },
+            )
+        if current_user_id is not None:
+            try:
+                await user_auth.acquire_generation_slot(
+                    session,
+                    current_user_id,
+                )
+                user_slot_acquired = True
+            except UserDisabledError as exc:
+                raise HTTPException(status_code=403, detail=str(exc)) from exc
+            except UserExpiredError as exc:
+                raise HTTPException(status_code=403, detail=str(exc)) from exc
+            except UserQuotaExceededError as exc:
+                raise HTTPException(
+                    status_code=429,
+                    detail={"message": str(exc), "retry_after": 86400},
+                    headers={"Retry-After": "86400"},
+                ) from exc
+            except UserConcurrencyExceededError as exc:
+                raise HTTPException(
+                    status_code=429,
+                    detail={
+                        "code": "USER_GENERATION_BUSY",
+                        "message": str(exc),
+                        "retry_after": 5,
+                        "failure_scope": "user_capacity",
+                    },
+                    headers={"Retry-After": "5"},
+                ) from exc
+
+        # The global slot was acquired before user/account admission.
+        assert generation_slot_acquired
+        admitted_account = await get_account_pool_service().select_account(
+            session,
+        )
+        admitted_route = build_route_key(
+            base_url=client.base_url,
+            org_id=admitted_account.org_id,
+            flow_id=admitted_account.flow_id,
+            mode=req.mode,
+            model=req.model,
+        )
+        admitted_route_remaining = guard.check_upstream(admitted_route)
+        if admitted_route_remaining > 0:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "message": "该模型路由暂时不可用，请稍后重试",
+                    "retry_after": max(1, int(admitted_route_remaining + 0.999)),
+                    "failure_scope": UPSTREAM_ROUTE_SCOPE,
+                },
+            )
+    except HTTPException:
+        if admitted_account is not None:
+            await get_account_pool_service().release_account(
+                session,
+                admitted_account.id,
+                count_request=False,
+                slot_token=getattr(admitted_account, "_slot_token", None),
+            )
+            admitted_account = None
+        if generation_slot_acquired:
+            guard.generation_admission.release(req.model)
+            generation_slot_acquired = False
+        if user_slot_acquired and current_user_id is not None:
+            await user_auth.release_generation_slot(
+                session,
+                current_user_id,
+                count_usage=False,
+            )
+            user_slot_acquired = False
+        raise
+    except NoAvailableAccountError as exc:
+        if generation_slot_acquired:
+            guard.generation_admission.release(req.model)
+            generation_slot_acquired = False
+        if user_slot_acquired and current_user_id is not None:
+            await user_auth.release_generation_slot(session, current_user_id, count_usage=False)
+            user_slot_acquired = False
+        raise HTTPException(status_code=503, detail={"message": str(exc), "failure_scope": exc.failure_scope}) from exc
+    except NoCapacityError as exc:
+        if generation_slot_acquired:
+            guard.generation_admission.release(req.model)
+            generation_slot_acquired = False
+        if user_slot_acquired and current_user_id is not None:
+            await user_auth.release_generation_slot(session, current_user_id, count_usage=False)
+            user_slot_acquired = False
+        retry_after = max(1, int(float(exc.retry_after or 5) + 0.999))
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": "GENERATION_BUSY",
+                "message": str(exc),
+                "retry_after": retry_after,
+                "failure_scope": exc.failure_scope,
+            },
+            headers={"Retry-After": str(retry_after)},
+        ) from exc
+
     async def event_source() -> AsyncGenerator[str, None]:
-        global_slot_acquired = False
-        user_slot_acquired = False
-        user_should_count_usage = False
+        nonlocal generation_slot_acquired, user_slot_acquired, user_should_count_usage, admitted_account
 
         async def _release_user_slot_if_needed() -> None:
             nonlocal user_slot_acquired
             if not user_slot_acquired or current_user_id is None:
                 return
-            await user_auth.release_generation_slot(
-                session,
-                current_user_id,
-                count_usage=user_should_count_usage,
+            # The client may cancel an SSE task while this cleanup is running.
+            # Keep the volatile counter release alive independently of the
+            # cancelled response task.
+            release_task = asyncio.create_task(
+                user_auth.release_generation_slot(
+                    session,
+                    current_user_id,
+                    count_usage=user_should_count_usage,
+                )
             )
+            try:
+                await asyncio.shield(release_task)
+            except asyncio.CancelledError:
+                logger.debug("SSE client cancelled while releasing user slot")
             user_slot_acquired = False
 
         try:
-            breaker_remaining = guard.check_upstream()
-            if breaker_remaining > 0:
-                yield _sse(
-                    {
-                        "type": "error",
-                        "status_code": 503,
-                        "message": "上游服务暂时不可用，请稍后重试",
-                        "retry_after": int(breaker_remaining) + 1,
-                    }
-                )
-                return
-            if current_user_id is not None and guard.user_rpm.enabled:
-                rpm_retry_after = await guard.check_user_rate(f"user:{current_user_id}")
-                if rpm_retry_after > 0:
-                    yield _sse(
-                        {
-                            "type": "error",
-                            "status_code": 429,
-                            "message": f"请求过于频繁，请 {int(rpm_retry_after) + 1} 秒后再试",
-                            "retry_after": int(rpm_retry_after) + 1,
-                        }
-                    )
-                    return
-            if not await guard.global_gate.acquire():
-                yield _sse(
-                    {
-                        "type": "error",
-                        "status_code": 429,
-                        "message": "服务繁忙，请稍后重试",
-                        "retry_after": 10,
-                    }
-                )
-                return
-            global_slot_acquired = True
-
-            async def _release_account_if_needed(account_obj, *, mark_used=None):
+            async def _release_account_if_needed(account_obj, *, count_request=None, slot_token=None):
                 if account_obj is None:
                     return None
                 account_id = str(account_obj).strip()
@@ -1708,49 +2198,106 @@ async def generate_stream(
                 try:
                     await _rollback_request_session_before_release(session)
                 finally:
-                    await pool.release_account(session, account_id, mark_used=mark_used)
+                    # Account capacity is in memory and must be returned even
+                    # when the browser closes the SSE connection mid-request.
+                    release_task = asyncio.create_task(
+                        pool.release_account(
+                            session,
+                            account_id,
+                            count_request=count_request,
+                            slot_token=slot_token,
+                        )
+                    )
+                    try:
+                        await asyncio.shield(release_task)
+                    except asyncio.CancelledError:
+                        logger.debug("SSE client cancelled while releasing account slot")
                 return None
 
-            if current_user_id is not None:
-                try:
-                    await user_auth.acquire_generation_slot(session, current_user_id)
-                    user_slot_acquired = True
-                except UserDisabledError as exc:
-                    yield _sse({"type": "error", "message": str(exc), "status_code": 403})
-                    return
-                except UserExpiredError as exc:
-                    yield _sse({"type": "error", "message": str(exc), "status_code": 403})
-                    return
-                except UserQuotaExceededError as exc:
-                    yield _sse({"type": "error", "message": str(exc), "status_code": 429, "retry_after": 86400})
-                    return
-                except UserConcurrencyExceededError as exc:
-                    yield _sse({"type": "error", "message": str(exc), "status_code": 429, "retry_after": 5})
-                    return
-
             tried_ids: List[str] = []
-            for attempt in range(req.max_failover + 1):
-                account = None
-                account_id = None
+            for attempt in range(min(req.max_failover, 1) + 1):
+                account = admitted_account if attempt == 0 else None
+                account_id = account.id if account is not None else None
                 account_name = None
                 account_short = None
+                generation_slot_acquired = account is not None and attempt == 0
                 try:
-                    try:
-                        account = await pool.select_account_or_wait(session, exclude_ids=tried_ids)
-                    except NoAvailableAccountError as exc:
-                        await _release_user_slot_if_needed()
-                        yield _sse({"type": "error", "message": str(exc), "status_code": 503})
-                        return
-                    except NoCapacityError as exc:
-                        await _release_user_slot_if_needed()
-                        yield _sse(
-                            {"type": "error", "message": str(exc), "status_code": 429, "retry_after": 5}
-                        )
-                        return
+                    if account is None:
+                        if not await guard.generation_admission.try_acquire(req.model):
+                            await _release_user_slot_if_needed()
+                            yield _sse(
+                                {
+                                    "type": "error",
+                                    "message": "生成调度繁忙，请稍后重试",
+                                    "status_code": 429,
+                                    "retry_after": 5,
+                                    "failure_scope": "generation_capacity",
+                                }
+                            )
+                            return
+                        generation_slot_acquired = True
+                        try:
+                            account = await pool.select_account(
+                                session,
+                                exclude_ids=tried_ids,
+                            )
+                        except NoAvailableAccountError as exc:
+                            guard.generation_admission.release(req.model)
+                            generation_slot_acquired = False
+                            await _release_user_slot_if_needed()
+                            yield _sse(
+                                {
+                                    "type": "error",
+                                    "message": str(exc),
+                                    "status_code": 503,
+                                    "failure_scope": exc.failure_scope,
+                                }
+                            )
+                            return
+                        except NoCapacityError as exc:
+                            guard.generation_admission.release(req.model)
+                            generation_slot_acquired = False
+                            await _release_user_slot_if_needed()
+                            yield _sse(
+                                {
+                                    "type": "error",
+                                    "message": str(exc),
+                                    "status_code": 429,
+                                    "retry_after": 5,
+                                    "failure_scope": exc.failure_scope,
+                                }
+                            )
+                            return
 
                     tried_ids.append(account.id)
                     account_id = account.id
                     account_name = account.name
+                    route = build_route_key(
+                        base_url=client.base_url,
+                        org_id=account.org_id,
+                        flow_id=account.flow_id,
+                        mode=req.mode,
+                        model=req.model,
+                    )
+                    # The first account was admitted before StreamingResponse
+                    # was returned.  Re-checking it here would consume/deny a
+                    # half-open route-breaker probe twice.  Failover accounts
+                    # are checked normally after they are selected.
+                    if attempt == 0 and admitted_route == route:
+                        route_remaining = 0.0
+                    else:
+                        route_remaining = guard.check_upstream(route)
+                    if route_remaining > 0:
+                        yield _sse(
+                            {
+                                "type": "error",
+                                "status_code": 503,
+                                "message": "该模型路由暂时不可用，请稍后重试",
+                                "retry_after": max(1, int(route_remaining + 0.999)),
+                                "failure_scope": UPSTREAM_ROUTE_SCOPE,
+                            }
+                        )
+                        return
                     try:
                         api_key = pool.decrypt_api_key(account)
                     except ValueError as exc:
@@ -1761,11 +2308,11 @@ async def generate_stream(
                             account.id[:8],
                             exc,
                         )
-                        _cooldown_account(
+                        _isolate_account(
                             pool,
                             account.id,
                             account.name,
-                            seconds=ACCOUNT_BROKEN_COOLDOWN_SECONDS,
+                            seconds=ACCOUNT_FAILURE_ISOLATION_SECONDS,
                             reason=f"decrypt_failed:{type(exc).__name__}",
                         )
                         session.add(
@@ -1776,8 +2323,8 @@ async def generate_stream(
                                 account_id=account.id,
                                 mode=req.mode,
                                 model=req.model,
-                                aspect_ratio=req.aspect_ratio,
-                                resolution=req.resolution,
+                                aspect_ratio=log_aspect_ratio,
+                                resolution=log_resolution,
                                 prompt_preview=req.prompt,
                                 image_url=reference_log_value,
                                 output_preview=None,
@@ -1843,7 +2390,7 @@ async def generate_stream(
                                 if not line_received:
                                     break
                                 saw_upstream_event = True
-                                safe_line = redact_upstream_text(line)
+                                safe_line = redact_upstream_event_text(line)
                                 yield _sse({"type": "upstream", "line": safe_line})
                                 if len(recent_raw_lines) >= raw_lines_limit:
                                     recent_raw_lines.pop(0)
@@ -1880,13 +2427,15 @@ async def generate_stream(
                             await upstream_stream.aclose()
                     except StackAIError as exc:
                         elapsed_ms = int((time.time() - started) * 1000)
-                        if _should_failover_stackai_error(exc):
-                            guard.record_upstream_failure()
-                            _cooldown_account(
+                        decision = classify_stackai_error(exc)
+                        if decision.count_route_failure:
+                            guard.record_upstream_failure(route, retry_after=exc.retry_after)
+                        if decision.isolate_account:
+                            _isolate_account(
                                 pool,
                                 account.id,
                                 account_name,
-                                seconds=_cooldown_seconds_for_stackai_error(exc),
+                                seconds=ACCOUNT_FAILURE_ISOLATION_SECONDS,
                                 reason=f"{exc.status_code or '?'} {exc.message}",
                             )
                         session.add(
@@ -1897,8 +2446,8 @@ async def generate_stream(
                                 account_id=account.id,
                                 mode=req.mode,
                                 model=req.model,
-                                aspect_ratio=req.aspect_ratio,
-                                resolution=req.resolution,
+                                aspect_ratio=log_aspect_ratio,
+                                resolution=log_resolution,
                                 prompt_preview=req.prompt,
                                 image_url=reference_log_value,
                                 output_preview=None,
@@ -1909,7 +2458,7 @@ async def generate_stream(
                             )
                         )
                         await session.commit()
-                        if not saw_upstream_event and _should_failover_stackai_error(exc) and attempt < req.max_failover:
+                        if not saw_upstream_event and decision.failover and attempt < min(req.max_failover, 1):
                             logger.warning(
                                 "generate stream prestart failover: principal=%s account=%s attempt=%s status=%s message=%s",
                                 principal_log_name,
@@ -1919,7 +2468,11 @@ async def generate_stream(
                                 exc.message,
                             )
                             continue
-                        account_id = await _release_account_if_needed(account_id, mark_used=False)
+                        account_id = await _release_account_if_needed(
+                            account_id,
+                            count_request=False,
+                            slot_token=getattr(account, "_slot_token", None),
+                        )
                         account = None
                         await _release_user_slot_if_needed()
                         yield _sse(
@@ -1928,6 +2481,8 @@ async def generate_stream(
                                 "status_code": exc.status_code,
                                 "message": exc.message,
                                 "elapsed_ms": elapsed_ms,
+                                "retry_after": _retry_after_for_stackai_error(exc),
+                                "failure_scope": decision.scope,
                             }
                         )
                         return
@@ -2024,14 +2579,9 @@ async def generate_stream(
                                     len(tail),
                                     "\n".join(tail),
                                 )
-                        if is_zero_stage_failure:
-                            _cooldown_account(
-                                pool,
-                                account.id,
-                                account_name,
-                                seconds=ACCOUNT_BROKEN_COOLDOWN_SECONDS,
-                                reason=log_msg,
-                            )
+                        # Zero-stage/no-image results are ambiguous route/model
+                        # failures, not evidence that the selected account is bad.
+                        guard.record_upstream_failure(route)
 
                         session.add(
                             GenerationLog(
@@ -2041,8 +2591,8 @@ async def generate_stream(
                                 account_id=account.id,
                                 mode=req.mode,
                                 model=req.model,
-                                aspect_ratio=req.aspect_ratio,
-                                resolution=req.resolution,
+                                aspect_ratio=log_aspect_ratio,
+                                resolution=log_resolution,
                                 prompt_preview=req.prompt,
                                 image_url=reference_log_value,
                                 output_preview=None,
@@ -2053,7 +2603,11 @@ async def generate_stream(
                             )
                         )
                         await session.commit()
-                        account_id = await _release_account_if_needed(account_id, mark_used=False)
+                        account_id = await _release_account_if_needed(
+                            account_id,
+                            count_request=False,
+                            slot_token=getattr(account, "_slot_token", None),
+                        )
                         account = None
                         await _release_user_slot_if_needed()
                         yield _sse(
@@ -2062,6 +2616,7 @@ async def generate_stream(
                                 "status_code": 502,
                                 "message": shown_msg,
                                 "elapsed_ms": elapsed_ms,
+                                "failure_scope": UPSTREAM_ROUTE_SCOPE,
                             }
                         )
                         return
@@ -2069,88 +2624,67 @@ async def generate_stream(
                     # 成功：先释放账号槽（统计记为成功），下载落盘不再占用账号容量。
                     # 上游已出图，后续保存失败也算一次真实消耗。
                     completed_account_id = account_id
-                    account_id = await _release_account_if_needed(account_id, mark_used=True)
-                    guard.record_upstream_success()
+                    completed_slot_token = getattr(account, "_slot_token", None)
+                    account_id = await _release_account_if_needed(
+                        account_id,
+                            count_request=True,
+                        slot_token=completed_slot_token,
+                    )
+                    guard.record_upstream_success(route)
+                    if generation_slot_acquired:
+                        guard.generation_admission.release(req.model)
+                        generation_slot_acquired = False
 
+                    await _release_user_slot_if_needed()
                     try:
-                        images = await _save_generated_images(request, images)
+                        local_images = await _save_and_log_images(
+                            {
+                                "generation_id": str(uuid.uuid4()),
+                                "source_images": list(images),
+                                "public_base_url": _public_base_url(request),
+                                "user_id": current_user_id,
+                                "account_id": completed_account_id,
+                                "mode": req.mode,
+                                "model": req.model,
+                                "aspect_ratio": log_aspect_ratio,
+                                "resolution": log_resolution,
+                                "prompt_preview": req.prompt,
+                                "reference_url": reference_log_value,
+                                "response_time_ms": elapsed_ms,
+                                "is_stream": True,
+                            }
+                        )
                     except GeneratedImageSaveError as exc:
-                        logger.warning(
-                            "generate stream save image failed: principal=%s account=%s mode=%s model=%s error=%s",
-                            principal_log_name,
-                            (completed_account_id or "")[:8],
-                            req.mode,
-                            req.model,
-                            exc.message,
-                        )
-                        session.add(
-                            GenerationLog(
-                                id=str(uuid.uuid4()),
-                                timestamp=datetime.utcnow(),
-                                user_id=current_user_id,
-                                account_id=completed_account_id,
-                                mode=req.mode,
-                                model=req.model,
-                                aspect_ratio=req.aspect_ratio,
-                                resolution=req.resolution,
-                                prompt_preview=req.prompt,
-                                image_url=reference_log_value,
-                                output_preview=None,
-                                response_time_ms=elapsed_ms,
-                                status="error",
-                                error_message=exc.message[:1000],
-                                is_stream=True,
-                            )
-                        )
-                        await session.commit()
-                        account_id = await _release_account_if_needed(account_id)
-                        account = None
-                        await _release_user_slot_if_needed()
                         yield _sse(
                             {
                                 "type": "error",
                                 "status_code": exc.status_code,
                                 "message": exc.message,
+                                "failure_scope": "image_persistence",
                                 "elapsed_ms": elapsed_ms,
                             }
                         )
                         return
-
-                    session.add(
-                        GenerationLog(
-                            id=str(uuid.uuid4()),
-                            timestamp=datetime.utcnow(),
-                            user_id=current_user_id,
-                            account_id=completed_account_id,
-                            mode=req.mode,
-                            model=req.model,
-                            aspect_ratio=req.aspect_ratio,
-                            resolution=req.resolution,
-                            prompt_preview=req.prompt,
-                            image_url=reference_log_value,
-                            output_preview=(images[0] if images else None),
-                            output_images=_serialize_output_images(images),
-                            response_time_ms=elapsed_ms,
-                            status="success",
-                            error_message=None,
-                            is_stream=True,
-                        )
-                    )
-                    await session.commit()
                     complete_event = {
                         "type": "complete",
-                        "images": images,
+                        "images": local_images,
                         "account_id": completed_account_id,
                         "account_name": account_name,
                         "account_short": account_short,
                         "response_time_ms": elapsed_ms,
                     }
-                    await _release_user_slot_if_needed()
                     yield _sse(complete_event)
                     return
                 finally:
                     if account_id is not None:
-                        account_id = await _release_account_if_needed(account_id, mark_used=False)
+                        account_id = await _release_account_if_needed(
+                            account_id,
+                            count_request=False,
+                            slot_token=getattr(account, "_slot_token", None),
+                        )
+                    if generation_slot_acquired:
+                        guard.generation_admission.release(req.model)
+                        generation_slot_acquired = False
             await _release_user_slot_if_needed()
             yield _sse(
                 {
@@ -2161,9 +2695,10 @@ async def generate_stream(
             )
             return
         finally:
+            if generation_slot_acquired:
+                guard.generation_admission.release(req.model)
+                generation_slot_acquired = False
             await _release_user_slot_if_needed()
-            if global_slot_acquired:
-                guard.global_gate.release()
     return StreamingResponse(
         event_source(),
         media_type="text/event-stream",

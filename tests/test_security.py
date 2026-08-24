@@ -211,7 +211,7 @@ class UserAuthServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(user.auth_kind, "invite_guest")
-        self.assertTrue(user.username.startswith("guest-"))
+        self.assertEqual(user.username, "sti_guest_code")
         self.assertEqual(user.invite_code_id, invite.id)
         self.assertEqual(user.daily_quota, 12)
         self.assertEqual(user.max_inflight, 1)
@@ -471,11 +471,12 @@ class StackAIClientTests(unittest.IsolatedAsyncioTestCase):
             "https://stackai.example/inference/v0/stream/org-1/flow-1",
         )
 
-    async def test_stream_inference_img2img_uses_dedicated_async_client(self) -> None:
+    async def test_stream_inference_img2img_reuses_shared_client(self) -> None:
         FakeAsyncClient.instances = []
         client = stackai_client_mod.StackAIClient(base_url="https://stackai.example")
+        shared_client = FakeAsyncClient()
 
-        with patch.object(client, "_get_client", side_effect=AssertionError("should not reuse shared client")):
+        with patch.object(client, "_get_client", return_value=shared_client):
             with patch("app.services.stackai_client.httpx.AsyncClient", FakeAsyncClient):
                 agen = client.stream_inference(
                     "org-1",
@@ -490,9 +491,9 @@ class StackAIClientTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(first, '{"ok": true}')
         self.assertEqual(len(FakeAsyncClient.instances), 1)
-        self.assertEqual(FakeAsyncClient.instances[0].calls[0]["method"], "POST")
+        self.assertEqual(shared_client.calls[0]["method"], "POST")
         self.assertEqual(
-            FakeAsyncClient.instances[0].calls[0]["url"],
+            shared_client.calls[0]["url"],
             "https://stackai.example/inference/v0/stream/org-1/flow-1",
         )
 
@@ -564,7 +565,7 @@ class AuthServiceTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AccountPoolTests(unittest.IsolatedAsyncioTestCase):
-    async def test_account_selection_no_longer_checks_daily_quota(self) -> None:
+    async def test_account_selection_uses_runtime_capacity(self) -> None:
         account = Account(
             id="account-1",
             name="quota@test.local",
@@ -572,9 +573,6 @@ class AccountPoolTests(unittest.IsolatedAsyncioTestCase):
             flow_id="flow-1",
             api_key_encrypted="enc",
             status="active",
-            daily_quota=1,
-            daily_used=1,
-            in_flight=0,
             max_inflight=10,
             last_used_at=datetime.utcnow(),
             created_at=datetime.utcnow(),

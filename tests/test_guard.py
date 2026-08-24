@@ -6,7 +6,7 @@ import unittest
 
 from app.services.guard import (
     CircuitBreaker,
-    GlobalConcurrencyGate,
+    GenerationAdmission,
     LoginThrottle,
     SlidingWindowRateLimiter,
 )
@@ -82,23 +82,6 @@ class CircuitBreakerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(breaker.allow(now=2.0), (True, 0.0))
 
 
-class GlobalConcurrencyGateTests(unittest.IsolatedAsyncioTestCase):
-    async def test_acquire_release_cycles(self) -> None:
-        gate = GlobalConcurrencyGate(max_concurrent=2, wait_seconds=0.1)
-        self.assertTrue(await gate.acquire())
-        self.assertTrue(await gate.acquire())
-        # 第三个在等待期内拿不到
-        self.assertFalse(await gate.acquire())
-        gate.release()
-        self.assertTrue(await gate.acquire())
-
-    async def test_disabled_passes_through(self) -> None:
-        gate = GlobalConcurrencyGate(max_concurrent=0, wait_seconds=0.1)
-        for _ in range(10):
-            self.assertTrue(await gate.acquire())
-        gate.release()  # 关闭状态下 release 不应抛错
-
-
 class LoginThrottleTests(unittest.TestCase):
     def test_locks_after_consecutive_failures(self) -> None:
         throttle = LoginThrottle(max_failures=3, lockout_seconds=60.0)
@@ -120,15 +103,16 @@ class LoginThrottleTests(unittest.TestCase):
         self.assertEqual(throttle.check_locked("admin", now=3.0), 0.0)
 
 
-class SemaphoreBackpressureTests(unittest.IsolatedAsyncioTestCase):
+class ImmediateAdmissionTests(unittest.IsolatedAsyncioTestCase):
   async def test_gate_limits_true_concurrency(self) -> None:
-      gate = GlobalConcurrencyGate(max_concurrent=2, wait_seconds=5.0)
+      gate = GenerationAdmission(total_slots=2)
       active = 0
       peak = 0
 
       async def worker() -> None:
           nonlocal active, peak
-          self.assertTrue(await gate.acquire())
+          if not await gate.try_acquire():
+              return
           active += 1
           peak = max(peak, active)
           await asyncio.sleep(0.02)
@@ -137,20 +121,21 @@ class SemaphoreBackpressureTests(unittest.IsolatedAsyncioTestCase):
 
       await asyncio.gather(*[worker() for _ in range(6)])
       self.assertLessEqual(peak, 2)
+      self.assertEqual(gate.rejected, 4)
 
 
 class GuardObservabilityTests(unittest.IsolatedAsyncioTestCase):
   async def test_gate_tracks_in_flight_and_rejections(self) -> None:
-      gate = GlobalConcurrencyGate(max_concurrent=1, wait_seconds=0.05)
+      gate = GenerationAdmission(total_slots=1)
       self.assertEqual(gate.in_flight, 0)
-      self.assertTrue(await gate.acquire())
+      self.assertTrue(await gate.try_acquire())
       self.assertEqual(gate.in_flight, 1)
       # 满载时第三个请求等待超时 → rejected 计数
-      self.assertFalse(await gate.acquire())
+      self.assertFalse(await gate.try_acquire())
       self.assertEqual(gate.rejected, 1)
       gate.release()
       self.assertEqual(gate.in_flight, 0)
-      self.assertTrue(await gate.acquire())
+      self.assertTrue(await gate.try_acquire())
       gate.release()
 
   async def test_guard_snapshot_shape_and_rpm_counter(self) -> None:
@@ -158,11 +143,12 @@ class GuardObservabilityTests(unittest.IsolatedAsyncioTestCase):
 
       guard = GenerationGuard()
       snapshot = guard.status_snapshot()
-      self.assertIn("global_gate", snapshot)
+      self.assertIn("generation_admission", snapshot)
+      self.assertNotIn("admission", snapshot)
       self.assertIn("circuit_breaker", snapshot)
       self.assertIn("user_rpm", snapshot)
-      for key in ("enabled", "max_concurrent", "in_flight", "rejected"):
-          self.assertIn(key, snapshot["global_gate"])
+      for key in ("enabled", "total_slots", "max_concurrent", "in_flight", "rejected", "models"):
+          self.assertIn(key, snapshot["generation_admission"])
       for key in ("enabled", "is_open", "consecutive_failures", "remaining_seconds"):
           self.assertIn(key, snapshot["circuit_breaker"])
 
@@ -186,22 +172,22 @@ class GuardObservabilityTests(unittest.IsolatedAsyncioTestCase):
       self.assertEqual(snap["consecutive_failures"], 0)
 
 
-class CooldownSnapshotTests(unittest.TestCase):
-  def test_snapshot_lists_active_cooldowns_only(self) -> None:
+class IsolationSnapshotTests(unittest.TestCase):
+  def test_snapshot_lists_active_isolations_only(self) -> None:
       import time as time_mod
 
       from app.services.account_pool import AccountPoolService
 
       pool = AccountPoolService()
       now = time_mod.monotonic()
-      pool._account_cooldowns["acc-1"] = (now + 50.0, "429 rate limited")
-      pool._account_cooldowns["acc-expired"] = (now - 1.0, "old reason")
+      pool._account_isolations["acc-1"] = (now + 50.0, "invalid API key")
+      pool._account_isolations["acc-expired"] = (now - 1.0, "old reason")
 
-      snapshot = pool.cooldown_snapshot()
+      snapshot = pool.isolation_snapshot()
 
       self.assertIn("acc-1", snapshot)
       self.assertNotIn("acc-expired", snapshot)
-      self.assertEqual(snapshot["acc-1"]["reason"], "429 rate limited")
+      self.assertEqual(snapshot["acc-1"]["reason"], "invalid API key")
       self.assertLessEqual(snapshot["acc-1"]["remaining_seconds"], 50.0)
 
 

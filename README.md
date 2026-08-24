@@ -4,12 +4,12 @@
 
 - **前端**：文生图（Nano Banana Pro、GPT Image 2）/ 图生图（Nano Banana Pro、gpt-image-1.5），SSE 流式进度。
 - **后台**：多账号管理（增删改查、启停）、生成日志（点击「查看」当前页弹出预览）。
-- **存储**：生成结果会自动下载到项目内 `data/uploads/generated/`，接口返回本站 `/uploads/generated/...` 公开链接。
+- **存储**：上游生成完成后，图片先流式下载到服务器临时文件并原子改名；本地文件落盘完成后才返回本站图片 URL，生成日志随后异步写入数据库。
 - **架构**：浏览器 → 本服务（FastAPI，SSE 转发）→ StackAI 工作流 API。
 
-> 管理后台仍保留账号 `daily_quota` 字段，但当前生图调度**不再按账号配额限流**；实际调度仅看账号状态、并发上限与冷却状态。
+> 账号级每日额度不是当前功能。账号调度只看账号状态、进程内并发上限与故障隔离状态；用户级每日额度仍由用户权限配置控制。
 
-> StackAI 的 Bearer Token **绝不暴露给浏览器**。前端只调用本服务的 `/api/generate`，由后端选号并代理上游。
+> StackAI 的 Bearer Token **绝不暴露给浏览器**。前端只调用本服务的 `/api/*` 接口，由后端选号并代理上游。
 
 ---
 
@@ -30,24 +30,36 @@
 ## 目录结构
 
 ```
-stackai-image-gen/
+st-imagen/
 ├── app/
 │   ├── main.py                 # FastAPI 主入口
 │   ├── models/database.py      # SQLAlchemy 模型 + SQLite
 │   ├── routers/
 │   │   ├── admin.py            # 管理 API（登录 / 账号 CRUD / 日志）
-│   │   └── generate.py         # 生图 API
+│   │   ├── generate.py         # 生图 API
+│   │   └── user_auth.py        # 用户登录、邀请码与会话
 │   ├── services/
 │   │   ├── auth.py             # JWT + bcrypt 管理员认证
 │   │   ├── crypto.py           # Fernet 加密 api_key
 │   │   ├── stackai_client.py   # StackAI 异步 HTTP 客户端
-│   │   ├── account_pool.py     # 账号池 + 简单选号策略
-│   │   └── deps.py             # 通用依赖（require_admin）
+│   │   ├── account_pool.py     # 账号池、并发槽位与故障隔离
+│   │   ├── guard.py            # 全局并发、限流与熔断
+│   │   ├── app_settings.py     # 管理后台运行时设置
+│   │   ├── user_auth.py        # 用户、邀请码与用户额度
+│   │   ├── deps.py             # 通用认证依赖
+│   │   ├── outbound_url.py     # 出站 URL 安全校验
+│   │   └── upstream_redaction.py # 上游错误脱敏
 │   └── static/                 # 前端静态文件（无构建步骤）
 │       ├── index.html / app.js
 │       └── admin.html / admin.js
 │       └── style.css
-├── data/                        # SQLite 持久化目录
+├── deploy/nginx.conf            # 生产反向代理与 SSE 配置
+├── scripts/                     # 压测与压测数据清理工具
+├── tests/                       # 单元测试与韧性测试
+├── compose.prod.yml             # 生产 Docker Compose
+├── compose.vps-stress.yml       # 2c2g 容器压测 Compose
+├── Dockerfile
+├── data/                        # SQLite、上传和生成图片持久化目录
 ├── requirements.txt
 ├── .env.example
 └── run.py
@@ -60,7 +72,7 @@ stackai-image-gen/
 ### 1. 安装依赖
 
 ```bash
-cd stackai-image-gen
+cd st-imagen
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -117,7 +129,7 @@ http://localhost:8001/<你的 ADMIN_PATH>
 - **API Key**：StackAI 给的 Bearer Token（`sk-...`，粘贴时无需加 `Bearer `）。这是 inference 用的 Public Key。
 - **Private API Key**（可选）：StackAI 控制台 → API Keys 里另外创建一个 **Private** 类型的 Key，仅用于失败时调用 `/analytics` 拉取运行详情里的 `Errors` 字段（节点真实报错）。**不填**也能跑，失败时只看到通用兜底文案。
 
-> 同一套工作流模板：所有账号共享 in-0~in-6 输入约定。每日配额由服务端统一锁死为 1M，无需在表单里填。
+> 同一套工作流模板：所有账号共享 in-0~in-6 输入约定。账号调度不使用账号级每日额度；账号主要配置工作流、密钥、状态和并发上限。用户级每日额度由用户/邀请码配置控制。
 
 ### 5. 生图
 
@@ -125,7 +137,23 @@ http://localhost:8001/<你的 ADMIN_PATH>
 
 - **登录**：已有账号可使用用户名和密码登录；持有邀请码时选择「邀请码进入」，只输入邀请码即可创建访客会话并生图，无需注册或保存用户名和密码。
 - **文生图**：默认模式，可选择 Nano Banana Pro（画幅、清晰度）或 GPT Image 2（Size、Quality）。GPT Image 2 的 Size 默认为 `1024x1024`。
-- **图生图**：切换到「图生图」Tab，模型 = Nano Banana Pro 或 `gpt-image-1.5`；参考图必须是公网可访问 URL，可在 URL 输入框以逗号分隔多张图片后按回车加入。
+- **图生图**：切换到「图生图」Tab，模型 = Nano Banana Pro 或 `gpt-image-1.5`；可以上传本地图片，也可以添加公网图片直链，最多 5 张。服务器上传的参考图必须通过 `PUBLIC_BASE_URL` 对 StackAI 公网可达。
+
+## 生产部署（Docker Compose）
+
+生产编排按单机 `2c2g` 设计：FastAPI 固定单 worker，由 nginx 提供静态文件和 SSE 反向代理。首次部署准备干净的数据目录即可，SQLite 数据库和图片会在容器启动后自动创建。
+
+```bash
+cd /path/to/st-imagen
+cp .env.example .env
+# 修改 .env 中的 ENCRYPTION_KEY、JWT_SECRET_KEY、ADMIN_PASSWORD、PUBLIC_BASE_URL 等生产配置
+mkdir -p data/uploads/generated
+docker compose -f compose.prod.yml config --quiet
+docker compose -f compose.prod.yml up -d --build
+docker compose -f compose.prod.yml ps
+```
+
+`data/` 是唯一需要持久化的目录，包含 SQLite 数据库和上传/生成图片；压测报告、临时图片、Python 缓存和本地虚拟环境不属于部署内容。生产环境不要使用 `compose.vps-stress.yml`，该文件只用于受限容器压测。当前 Compose 暴露 HTTP `80` 端口，HTTPS 证书应由云 LB 或外层反向代理负责；启用 `USER_SESSION_SECURE=true` 时，生产访问必须经过 HTTPS。
 
 ## 2c2g VPS 仿真压测
 
@@ -137,15 +165,15 @@ http://localhost:8001/<你的 ADMIN_PATH>
 现在额外提供了一套 **2 CPU / 2 GiB 内存** 的容器化仿真入口：
 
 ```bash
-cd /home/ww/Project/st-imagen
+cd /path/to/st-imagen
 python3 scripts/vps_stress.py up --build
 ```
 
-它会用 [compose.vps-stress.yml](/home/ww/Project/st-imagen/compose.vps-stress.yml) 启一个受限容器：
+它会用 [compose.vps-stress.yml](compose.vps-stress.yml) 启一个受限容器。压测前需要准备 `.env`，并确保 Docker Compose 可以访问 StackAI 上游：
 
 - CPU：`2`
 - 内存：`2g`
-- Uvicorn worker：默认 `2`
+- Uvicorn worker：默认 `1`（进程内并发闸门要求单 worker）
 - 端口：宿主机 `18001` -> 容器 `8001`
 
 ### 真实用户阶梯压测
@@ -194,6 +222,7 @@ python3 scripts/vps_stress.py run-concurrent --ensure-up --build --concurrency 2
 
 ### 公开接口
 
+- `GET /health` —— Docker/反向代理使用的健康检查，返回服务版本和 `status=ok`。
 - `GET /api/options` —— 返回 `text2img` / `img2img` 两组下拉选项，结构：
   ```json
   {
@@ -215,36 +244,63 @@ python3 scripts/vps_stress.py run-concurrent --ensure-up --build --concurrency 2
     }
   }
   ```
-- `POST /api/generate` —— 同步生图（一次性返回图片 URL，仍保留供调试）。
+- `GET /api/generate/capacity` —— 返回当前全局/账号容量提示；该接口不保证提交时仍有空闲槽位。
+- `POST /api/generate` —— 同步生图（上游图片先下载到本站，落盘成功后一次性返回本站图片 URL）。
 - `POST /api/generate/stream` —— **SSE 流式生图**。请求体同上。响应是若干 `data: {json}\n\n` 帧，事件类型：
   - `start` —— 已选号、即将调用上游：`{type, account_id, account_name, account_short, mode, model}`
-  - `upstream` —— 上游每条进度行：`{type, line}`，`line` 是 StackAI 原文 JSON 字符串
-  - `complete` —— 完成：`{type, images, raw, response_time_ms, account_id, account_name, account_short}`；其中 `images` 已替换为项目本地保存后的公开链接。
+  - `upstream` —— 上游进度摘要：`{type, line}`；其中所有 HTTP(S) URL 都会被隐藏，不转发上游原文链接。
+  - `complete` —— 完成：`{type, images, response_time_ms, account_id, account_name, account_short}`；`images` 只包含本站 `/uploads/generated/...` 地址，图片本地落盘完成后才发送该事件。
   - `error` —— 失败：`{type, status_code, message, upstream, elapsed_ms}`
-- `POST /api/reference-image` —— 上传参考图到本服务，返回 `/uploads/...` 公网/站内可访问地址（需登录）。
+- `POST /api/reference-image` —— 上传参考图到本服务，返回 `/uploads/...` 公网/站内可访问地址（需登录）。上传地址最终必须能被 StackAI 访问。
 - `POST /api/reference-url/validate` —— 预检参考图直链是否可访问、是否为图片，并阻止内网/保留地址探测（需登录）。
 
 > 建议在 VPS / 反向代理环境配置 `PUBLIC_BASE_URL=https://你的域名/`，这样接口返回的图片链接会直接是公网域名，而不是内网地址。
 
+### 并发与过载策略
+
+本服务部署在外部 StackAI 推理 API 前面，生产使用单 Uvicorn worker。生成请求不在服务端排队：
+
+- 全局、用户和账号容量在进程内原子准入；有空闲槽位才会返回 SSE 200。
+- 满载直接返回真正的 HTTP 429，并带 `Retry-After`；不会返回 200 后再发送 SSE 429。
+- 前端容量接口 `/api/generate/capacity` 只用于提示，提交时的服务端准入才是最终结果。
+- 上游生成完成后立即释放推理槽，图片本地下载/落盘不占用生成容量；响应会等待本地文件落盘完成，绝不回退或暴露上游图片 URL。历史数据库写入在落盘后异步完成。
+- 浏览器不自动重试 429，避免高峰时形成重试风暴。
+
+建议的 2c2g 默认值：`GENERATION_GLOBAL_MAX_CONCURRENT=60`、`ACCOUNT_MAX_INFLIGHT=2`、`HTTP_MAX_CONNECTIONS=96`、`GENERATED_IMAGE_DOWNLOAD_CONCURRENCY=32`、`DB_POOL_SIZE=4`、`DB_MAX_OVERFLOW=0`。容量不足时请求直接返回 429，不在服务端等待。60 个请求能否全部进入上游，还取决于启用账号的并发容量总和；账号池不足时仍会按设计返回 429。
+
+账号并发槽位只保存在单 worker 进程内，使用一次性 token 保证重复清理不会重复释放；当前没有持久化账号租约，也没有账号等待队列。账号“故障隔离”是另一项保护：仅在密钥、账号配置或明确的账号级上游错误时临时停用该账号，隔离时间由 `ACCOUNT_FAILURE_ISOLATION_SECONDS` 控制，不参与正常租约管理。旧数据库中的 `account_leases` 历史表及 `accounts` 表历史调度列不会被主动删除，但运行时不再读取或写入。
+
 ### 生图超时分层
 
-工作流生图的总预算为 `200s`，各层超时分别负责不同阶段，不能简单全部设成同一个值：
+工作流生图的总预算为 `230s`，各层超时分别负责不同阶段，不能简单全部设成同一个值：
 
-- 普通工作流连续无进度 `90s` 后失败；GPT Image 2 和 Nano Banana Pro 4K 放宽到 `150s`。
-- 工作流总耗时上限为 `200s`。
-- StackAI 传输保护为 `240s`，给工作流结束和错误收尾留出余量；单次 SSE 读取保护为 `300s`。
-- 浏览器无任何 SSE 数据 `170s` 才超时；服务端会每 `15s` 发送 keepalive，因此它不会限制正常的 200 秒工作流。
+- 普通工作流连续无进度 `150s` 后失败；GPT Image 2 和 Nano Banana Pro 4K 放宽到 `200s`。
+- 工作流总耗时上限为 `230s`，在 200 秒无进度预算外保留错误收尾和资源释放余量。
+- StackAI 传输保护为 `270s`，给工作流结束和错误收尾留出余量；单次 SSE 读取保护为 `330s`。
+- 浏览器无任何 SSE 数据 `220s` 才超时；服务端会每 `15s` 发送 keepalive，因此它不会限制正常的 230 秒工作流。
 - 生成完成后的图片下载是独立阶段，仍使用下载超时和下载总预算，不占用工作流生成预算。
 
 ### 管理接口（需 `Authorization: Bearer <jwt>`)
 
 - `POST /api/admin/login`
+- `GET  /api/admin/me`
+- `POST /api/admin/change-password`
 - `GET  /api/admin/accounts`
-- `POST /api/admin/accounts`（`daily_quota` 字段会被忽略，统一锁死 1M）
+- `POST /api/admin/accounts`（账号只配置工作流、密钥、状态和并发上限）
+- `POST /api/admin/accounts/import` —— 批量导入账号
 - `PUT  /api/admin/accounts/{id}`
+- `POST /api/admin/accounts/bulk/status` —— 批量启用/停用账号
 - `POST /api/admin/accounts/{id}/test` —— 用最小输入触发一次同步调用，验证账号可达性
+- `POST /api/admin/accounts/isolation/clear` —— 清除全部账号故障隔离
+- `POST /api/admin/accounts/{id}/isolation/clear` —— 清除指定账号故障隔离
 - `DELETE /api/admin/accounts/{id}`
+- `GET  /api/admin/invite-codes`、`POST /api/admin/invite-codes`
+- `GET  /api/admin/users`、`POST /api/admin/users`、`POST /api/admin/users/batch`
 - `GET  /api/admin/stats/overview`
+- `GET  /api/admin/runtime-status` —— 返回全局/账号实际容量、满载拒绝计数、图片本地落盘状态和当前生效运行参数
+- `GET  /api/admin/settings` —— 返回图片保留设置，以及只读的并发、连接池、单 worker 配置
+- `PUT  /api/admin/settings`、`POST /api/admin/settings/cleanup` —— 更新图片保留设置、清理日志或图片
+- `POST /api/admin/circuit-breaker/reset`、`POST /api/admin/circuit-breaker/routes/reset`
 - `GET  /api/admin/logs?limit=50` —— 返回字段含 `account_name` 与 `is_stream`
 
 ---
@@ -261,7 +317,7 @@ python3 scripts/vps_stress.py run-concurrent --ensure-up --build --concurrency 2
 | `in-3` | 模型 | 文生图：`Nano Banana Pro` 或 `GPT Image 2`；图生图：`gemini-3-pro-image-preview` 或 `gpt-image-1.5` |
 | `in-4` | GPT Image 2 Size | `1024x1024`、`1536x1024`、`1024x1536`、`2048x2048`、`3840x2160` |
 | `in-5` | GPT Image 2 Quality | `auto`、`low`、`medium`、`high` |
-| `in-6` | 参考图 URL | `https://.../ref.jpg`（文生图传空串） |
+| `in-6` | 参考图 URL（多个时按换行拼接） | `https://.../ref.jpg`（文生图传空串） |
 
 配置覆盖：
 
@@ -275,20 +331,16 @@ python3 scripts/vps_stress.py run-concurrent --ensure-up --build --concurrency 2
 
 - 仅在 `status='active'` 的账号中挑选；
 - 优先 `in_flight` 低的账号，其次 `last_used_at` 更早、`created_at` 更早的账号；
-- **同步接口** `POST /api/generate`：触发上游 5xx / 429 时自动失败切换到下一个账号（最多 `max_failover` 次），4xx（除 429）视为请求错误直接回传，不切号；
+- **同步接口** `POST /api/generate`：明确的账号/凭据类上游错误会尝试一个备用账号；公共上游路由故障不会向整个账号池扩散，参数类 4xx 直接回传；
 - **流式接口** `POST /api/generate/stream`：当前实现仅选一个账号，发生错误以 `event=error` 事件结束流（流式过程中无法再切号）。
 
 ---
 
 ## 后续可扩展点（TODO）
 
-- **图片上传**：当前图生图必须给一个公网可访问 URL。要支持本地上传，需要服务部署在公网（或反代映射）—— 工作流的 `in-6` 字段最终被上游工作流直接拉取。可选实现路线：
-  1. 部署到公网域名，加一个 `POST /api/uploads` 路由把文件落到 `data/uploads/`，回传公开 URL；
-  2. 接入第三方图床（imgbb / Cloudinary / S3）；
-  3. 试探 `in-4` 是否接受 `data:image/png;base64,...`（未验证，多数模型不支持）。
 - **流式接口的失败切号**：在没有 yield 任何 `upstream` 事件之前可以重试到下一个账号；目前简化为 1 次。
-- **限流重试的随机抖动**：前端收到短时 429/502/503/504 以及 `retry_after` 后，会在建议等待时间上随机增加 0～3 秒，再允许下一次手动生成，避免并发客户端同刻重试；长期配额冷却不加抖动，也不会自动重复提交生成请求。
-- **多 worker 部署、日志清理、Prometheus 指标**。
+- **跨进程多 worker 部署**：当前限流、并发和账号槽位依赖单 worker 进程内状态；后续可改为共享状态后再扩展多 worker。
+- **Prometheus 指标**：当前主要通过管理后台 runtime-status 和日志观察运行状态。
 - **用户级 API Key**：前台分级使用。
 
 可参考同仓库 `st-api` 的 `account_pool.py` / `backend_client.py` 等做更完整的扩展。

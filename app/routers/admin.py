@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -79,10 +80,9 @@ class AccountCreateRequest(BaseModel):
     org_id: str = Field(min_length=1, max_length=255)
     flow_id: str = Field(min_length=1, max_length=255)
     api_key: str = Field(min_length=1)
-    daily_quota: int = 0
     # 可选：StackAI Private API Key，仅用于失败时拉取运行详情里的 Errors 字段
     private_api_key: Optional[str] = None
-    # 单账号并发上限，不传默认 10
+    # 单账号并发上限，不传使用 ACCOUNT_MAX_INFLIGHT（生产默认 2）
     max_inflight: Optional[int] = Field(default=None, ge=1, le=200)
 
 
@@ -92,7 +92,6 @@ class AccountUpdateRequest(BaseModel):
     flow_id: Optional[str] = None
     api_key: Optional[str] = None  # 留空表示不更新
     status: Optional[str] = None  # active / disabled
-    daily_quota: Optional[int] = None
     # None=不变；空串=清空；非空=覆写
     private_api_key: Optional[str] = None
     max_inflight: Optional[int] = Field(default=None, ge=1, le=200)
@@ -111,7 +110,7 @@ class InviteCodeCreateRequest(BaseModel):
     max_uses: int = Field(default=1, ge=1, le=1000)
     expires_in_days: Optional[int] = Field(default=30, ge=1, le=3650)
     note: Optional[str] = Field(default=None, max_length=255)
-    daily_quota: Optional[int] = Field(default=None, ge=0, le=1_000_000)
+    daily_quota: Optional[int] = Field(default=10, ge=0, le=1_000_000)
     max_inflight: Optional[int] = Field(default=None, ge=1, le=100)
 
 
@@ -119,7 +118,7 @@ class UserCreateRequest(BaseModel):
     username: str = Field(min_length=1, max_length=32)
     password: str = Field(min_length=8, max_length=128)
     status: str = Field(default="active", pattern="^(active|disabled)$")
-    daily_quota: int = Field(default=0, ge=0, le=1_000_000)
+    daily_quota: int = Field(default=10, ge=0, le=1_000_000)
     max_inflight: int = Field(default=2, ge=1, le=100)
     expires_at: Optional[datetime] = None
 
@@ -127,7 +126,7 @@ class UserCreateRequest(BaseModel):
 class UserBatchCreateRequest(BaseModel):
     count: int = Field(default=10, ge=1, le=200)
     status: str = Field(default="active", pattern="^(active|disabled)$")
-    daily_quota: int = Field(default=0, ge=0, le=1_000_000)
+    daily_quota: int = Field(default=10, ge=0, le=1_000_000)
     max_inflight: int = Field(default=2, ge=1, le=100)
     expires_at: Optional[datetime] = None
 
@@ -142,6 +141,8 @@ class UserUpdateRequest(BaseModel):
 
 def _account_to_dict(acc: Account) -> dict:
     # 不返回密文，只返回脱敏占位符
+    pool = get_account_pool_service()
+    runtime_in_flight = pool.runtime_in_flight(acc.id)
     return {
         "id": acc.id,
         "name": acc.name,
@@ -151,11 +152,9 @@ def _account_to_dict(acc: Account) -> dict:
         # 不返回 Private API Key 明文，只告知是否已配置
         "private_api_key_set": bool(getattr(acc, "private_api_key_encrypted", None)),
         "status": acc.status,
-        "daily_quota": acc.daily_quota,
-        "daily_used": acc.daily_used,
         "total_requests": acc.total_requests,
-        "in_flight": getattr(acc, "in_flight", 0),
-        "max_inflight": getattr(acc, "max_inflight", 10),
+        "in_flight": runtime_in_flight,
+        "max_inflight": getattr(acc, "max_inflight", None) or pool.DEFAULT_MAX_INFLIGHT,
         "last_used_at": acc.last_used_at.isoformat() if acc.last_used_at else None,
         "created_at": acc.created_at.isoformat() if acc.created_at else None,
         "updated_at": acc.updated_at.isoformat() if acc.updated_at else None,
@@ -360,6 +359,8 @@ async def _storage_stats(session: AsyncSession) -> dict:
 async def _settings_payload(session: AsyncSession) -> dict:
     gen_raw = await app_settings.get_setting(app_settings.SETTING_GENERATED_IMAGE_RETENTION_DAYS)
     ref_raw = await app_settings.get_setting(app_settings.SETTING_REFERENCE_UPLOAD_RETENTION_DAYS)
+    guard = get_generation_guard()
+    pool = get_account_pool_service()
     return {
         "items": {
             "generated_image_retention_days": _setting_item(
@@ -370,6 +371,10 @@ async def _settings_payload(session: AsyncSession) -> dict:
             ),
         },
         "storage": await _storage_stats(session),
+        # Concurrency is intentionally read-only here.  The process-local
+        # admission counters are created at startup and changing them from the
+        # console would make live capacity accounting inconsistent.
+        "runtime_config": _runtime_config_payload(guard, pool),
     }
 
 
@@ -471,6 +476,63 @@ async def cleanup_storage(
 
 
 # ---------------- Runtime Status ----------------
+def _safe_env_int(name: str, default: int) -> int:
+    try:
+        return int((os.getenv(name) or "").strip() or default)
+    except (TypeError, ValueError):
+        return default
+
+
+def _runtime_config_payload(guard, pool) -> dict:
+    """Return the effective, read-only process configuration for the console.
+
+    Generation admission is intentionally process-local.  Showing these values
+    from the live services (instead of duplicating .env defaults in the UI)
+    prevents the admin console from drifting away from the running process.
+    """
+    client = get_stackai_client()
+    worker_count = max(1, _safe_env_int("UVICORN_WORKERS", 1))
+    admission = guard.generation_admission
+    disk = generate_mod._generated_disk_snapshot()
+    image_persistence = generate_mod.image_persistence_snapshot()
+    return {
+        "process": {
+            "worker_count": worker_count,
+            "single_worker_required": True,
+            "single_worker_ok": worker_count == 1,
+        },
+        "generation": {
+            "global_max_concurrent": admission.max_concurrent,
+            "account_default_max_inflight": max(1, int(pool.DEFAULT_MAX_INFLIGHT)),
+            "user_rpm_limit": guard.user_rpm.limit,
+            "busy_status_code": 429,
+            "admission_mode": "reject_when_full",
+        },
+        "image_delivery": {
+            "response_requires_local_persist": True,
+            "upstream_image_url_exposed": False,
+        },
+        "network": {
+            "http_max_connections": client.max_connections,
+            "http_max_keepalive": client.max_keepalive_connections,
+            "db_pool_size": database_mod.DB_POOL_SIZE,
+            "db_max_overflow": database_mod.DB_MAX_OVERFLOW,
+            "db_pool_timeout_seconds": database_mod.DB_POOL_TIMEOUT_SECONDS,
+        },
+        "persistence": {
+            "image_download_concurrency": generate_mod.GENERATED_IMAGE_DOWNLOAD_CONCURRENCY,
+            "history_log_async": True,
+            "history_log_active_tasks": image_persistence["active_tasks"],
+            "history_log_started": image_persistence["started"],
+            "image_min_free_bytes": generate_mod.GENERATED_IMAGE_MIN_FREE_BYTES,
+            "image_disk_free_bytes": disk["free_bytes"],
+            "image_disk_writable_bytes": disk["writable_bytes"],
+            "image_disk_available": disk["can_write"],
+            "response_waits_for_local_file": True,
+        },
+    }
+
+
 @router.get("/runtime-status")
 async def runtime_status(
     payload=Depends(require_admin),
@@ -480,17 +542,17 @@ async def runtime_status(
     guard = get_generation_guard()
     pool = get_account_pool_service()
 
-    cooldown_map = pool.cooldown_snapshot()
-    cooldown_items: List[Dict[str, object]] = []
-    if cooldown_map:
+    isolation_map = pool.isolation_snapshot()
+    isolation_items: List[Dict[str, object]] = []
+    if isolation_map:
         rows = (
             await session.execute(
-                select(Account.id, Account.name).where(Account.id.in_(list(cooldown_map.keys())))
+                select(Account.id, Account.name).where(Account.id.in_(list(isolation_map.keys())))
             )
         ).all()
         name_by_id = {row.id: row.name for row in rows}
-        for account_id, info in cooldown_map.items():
-            cooldown_items.append(
+        for account_id, info in isolation_map.items():
+            isolation_items.append(
                 {
                     "account_id": account_id,
                     "name": name_by_id.get(account_id, account_id[:8]),
@@ -498,11 +560,27 @@ async def runtime_status(
                     "reason": info["reason"],
                 }
             )
-    cooldown_items.sort(key=lambda item: float(item["remaining_seconds"]), reverse=True)
+    isolation_items.sort(key=lambda item: float(item["remaining_seconds"]), reverse=True)
+
+    active_rows = (
+        await session.execute(
+            select(Account.id, Account.max_inflight).where(Account.status == "active")
+        )
+    ).all()
+    account_capacity_total = sum(max(1, int(row.max_inflight or pool.DEFAULT_MAX_INFLIGHT)) for row in active_rows)
+    account_in_flight = sum(pool.runtime_in_flight(row.id) for row in active_rows)
 
     return {
         "guard": guard.status_snapshot(),
-        "account_cooldowns": cooldown_items,
+        "account_capacity": {
+            "active_accounts": len(active_rows),
+            "max_concurrent": account_capacity_total,
+            "in_flight": account_in_flight,
+            "available": max(0, account_capacity_total - account_in_flight),
+        },
+        "image_persistence": generate_mod.image_persistence_snapshot(),
+        "runtime_config": _runtime_config_payload(guard, pool),
+        "account_isolations": isolation_items,
         "uptime_seconds": round(time.monotonic() - _PROCESS_STARTED_MONOTONIC, 1),
     }
 
@@ -517,6 +595,36 @@ async def reset_circuit_breaker(payload=Depends(require_admin)):
     return {"success": True, "was_open": bool(was_open), "circuit_breaker": breaker.snapshot()}
 
 
+@router.post("/circuit-breaker/routes/reset")
+async def reset_route_circuit_breakers(payload=Depends(require_admin)):
+    del payload
+    guard = get_generation_guard()
+    before = guard.route_breakers.snapshot()
+    guard.route_breakers.reset()
+    logger.info("route circuit breakers reset by admin: count=%s", len(before))
+    return {"success": True, "reset_count": len(before), "route_breakers": guard.route_breakers.snapshot()}
+
+
+@router.post("/accounts/isolation/clear")
+async def clear_account_isolations(payload=Depends(require_admin)):
+    del payload
+    pool = get_account_pool_service()
+    cleared = pool.clear_all_account_isolations()
+    logger.info("account failure isolations cleared by admin: count=%s", cleared)
+    return {"success": True, "cleared": cleared}
+
+
+@router.post("/accounts/{account_id}/isolation/clear")
+async def clear_account_isolation(account_id: str, payload=Depends(require_admin)):
+    del payload
+    pool = get_account_pool_service()
+    cleared = pool.clear_account_isolation(account_id)
+    if not cleared:
+        return {"success": True, "cleared": False}
+    logger.info("account failure isolation cleared by admin: account=%s", account_id[:8])
+    return {"success": True, "cleared": True}
+
+
 # ---------------- Account CRUD ----------------
 @router.get("/accounts")
 async def list_accounts(
@@ -525,14 +633,14 @@ async def list_accounts(
 ):
     pool = get_account_pool_service()
     rows = await pool.list_accounts(session)
-    cooldowns = pool.cooldown_snapshot()
+    isolations = pool.isolation_snapshot()
     items = []
     for account in rows:
         item = _account_to_dict(account)
-        cooldown = cooldowns.get(account.id)
-        if cooldown:
-            item["cooldown_seconds"] = cooldown["remaining_seconds"]
-            item["cooldown_reason"] = cooldown["reason"]
+        isolation = isolations.get(account.id)
+        if isolation:
+            item["isolation_seconds"] = isolation["remaining_seconds"]
+            item["isolation_reason"] = isolation["reason"]
         items.append(item)
     return {"items": items, "total": len(items)}
 
@@ -550,7 +658,6 @@ async def create_account(
         org_id=req.org_id,
         flow_id=req.flow_id,
         api_key=req.api_key,
-        daily_quota=req.daily_quota,
         private_api_key=req.private_api_key,
         max_inflight=req.max_inflight,
     )
@@ -710,7 +817,6 @@ async def update_account(
         flow_id=req.flow_id,
         api_key=req.api_key,
         status=req.status,
-        daily_quota=req.daily_quota,
         private_api_key=req.private_api_key,
         max_inflight=req.max_inflight,
     )

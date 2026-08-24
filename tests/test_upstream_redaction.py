@@ -3,7 +3,11 @@ from __future__ import annotations
 import unittest
 
 from app.services.stackai_client import StackAIError
-from app.services.upstream_redaction import redact_upstream_data, redact_upstream_text
+from app.services.upstream_redaction import (
+    redact_upstream_data,
+    redact_upstream_event_text,
+    redact_upstream_text,
+)
 
 
 class UpstreamRedactionTests(unittest.TestCase):
@@ -47,3 +51,13 @@ class UpstreamRedactionTests(unittest.TestCase):
 
         self.assert_upstream_identifiers_are_hidden(error.message)
         self.assert_upstream_identifiers_are_hidden(error.payload)
+        self.assertNotIn("https://", error.message)
+
+    def test_event_text_hides_all_http_urls(self) -> None:
+        source = '{"progress_data":{"current_node":"x"},"outputs":{"url":"https://cdn.example/image.png"},"text":"see http://other.example/run"}'
+
+        redacted = redact_upstream_event_text(source)
+
+        self.assertNotIn("http://", redacted)
+        self.assertNotIn("https://", redacted)
+        self.assertIn("<hidden-url>", redacted)

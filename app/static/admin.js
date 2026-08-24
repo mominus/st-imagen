@@ -777,9 +777,21 @@ function deriveMetrics() {
   const totalAccounts = overview.accounts?.total ?? accounts.length;
   const activeAccounts = overview.accounts?.active ?? accounts.filter((item) => item.status === "active").length;
   const disabledAccounts = Math.max(0, totalAccounts - activeAccounts);
-  const accountSlotsUsed = sumBy(accounts, (item) => item.in_flight);
-  const accountSlotsTotal = sumBy(accounts, (item) => item.max_inflight);
+  const activeAccountItems = accounts.filter((item) => item.status === "active");
+  const accountSlotsUsed = sumBy(activeAccountItems, (item) => item.in_flight);
+  const accountSlotsTotal = sumBy(activeAccountItems, (item) => item.max_inflight);
   const saturatedAccounts = accounts.filter((item) => computeAccountLoadMeta(item).label === "已打满").length;
+  const runtimeGate = state.runtimeStatus?.guard?.generation_admission;
+  const runtimeAccountCapacity = state.runtimeStatus?.account_capacity;
+  const globalSlotsUsed = Number.isFinite(Number(runtimeGate?.in_flight))
+    ? Number(runtimeGate.in_flight)
+    : accountSlotsUsed;
+  const globalSlotsTotal = Number.isFinite(Number(runtimeGate?.max_concurrent))
+    ? Number(runtimeGate.max_concurrent)
+    : accountSlotsTotal;
+  const runtimeAccountSlotsTotal = Number.isFinite(Number(runtimeAccountCapacity?.max_concurrent))
+    ? Number(runtimeAccountCapacity.max_concurrent)
+    : accountSlotsTotal;
 
   const totalUsers = overview.users?.total ?? users.length;
   const activeUsers = overview.users?.active ?? users.filter((item) => computeUserLifecycle(item) === "active").length;
@@ -837,6 +849,9 @@ function deriveMetrics() {
     disabledAccounts,
     accountSlotsUsed,
     accountSlotsTotal,
+    globalSlotsUsed,
+    globalSlotsTotal,
+    runtimeAccountSlotsTotal,
     saturatedAccounts,
     totalUsers,
     activeUsers,
@@ -866,29 +881,8 @@ function deriveMetrics() {
 
 function renderSyncState() {
   const adminBadge = $("#adminIdentityBadge");
-  const systemBadge = $("#systemPulseBadge");
-  const updatedBadge = $("#consoleUpdatedAt");
   if (adminBadge) {
     adminBadge.textContent = state.admin?.username ? `管理员 · ${state.admin.username}` : "管理员";
-  }
-  if (systemBadge) {
-    systemBadge.className = "hero-pill hero-pill-accent";
-    if (state.refreshing) {
-      systemBadge.textContent = "同步中";
-    } else if (state.sync.status === "partial") {
-      systemBadge.textContent = `部分失败 ${state.sync.successCount}/${state.sync.totalCount}`;
-      systemBadge.classList.add("hero-pill-danger");
-    } else if (state.sync.status === "ready") {
-      systemBadge.textContent = "已同步";
-      systemBadge.classList.add("hero-pill-success");
-    } else {
-      systemBadge.textContent = "未同步";
-    }
-  }
-  if (updatedBadge) {
-    updatedBadge.textContent = state.lastUpdatedAt
-      ? `更新于 ${fmtTime(state.lastUpdatedAt)}`
-      : "未刷新";
   }
 }
 
@@ -897,9 +891,9 @@ function renderHeroGlance(metrics) {
   if (!el) return;
   el.innerHTML = `
     <article class="glance-card">
-      <p class="glance-label">账号池容量</p>
-      <strong class="glance-value">${fmtNumber(metrics.accountSlotsUsed)} / ${fmtNumber(metrics.accountSlotsTotal || 0)}</strong>
-      <span class="glance-meta">${fmtNumber(metrics.activeAccounts)} 个启用账号，${fmtNumber(metrics.saturatedAccounts)} 个已打满</span>
+      <p class="glance-label">总生图数</p>
+      <strong class="glance-value">${fmtNumber(metrics.totalGenerations)}</strong>
+      <span class="glance-meta">成功 ${fmtNumber(metrics.successGenerations)}，失败 ${fmtNumber(metrics.errorGenerations)}</span>
     </article>
     <article class="glance-card">
       <p class="glance-label">用户活跃度</p>
@@ -943,9 +937,9 @@ function renderOverview() {
       <p class="stat-meta">启用账号占比 ${metrics.totalAccounts ? Math.round((metrics.activeAccounts / metrics.totalAccounts) * 100) : 0}%</p>
     </div>
     <div class="stat-card">
-      <p class="stat-label">并发槽位</p>
-      <div class="stat-value">${fmtNumber(metrics.accountSlotsUsed)}<span class="stat-value-sub">/ ${fmtNumber(metrics.accountSlotsTotal || 0)}</span></div>
-      <p class="stat-meta">当前账号池在途请求 / 总容量</p>
+      <p class="stat-label">总生图数</p>
+      <div class="stat-value">${fmtNumber(metrics.totalGenerations)}</div>
+      <p class="stat-meta">成功 ${fmtNumber(metrics.successGenerations)} / 失败 ${fmtNumber(metrics.errorGenerations)}</p>
     </div>
     <div class="stat-card">
       <p class="stat-label">用户</p>
@@ -1286,11 +1280,49 @@ function formatOverviewUptime(seconds) {
   return `${minutes}分${secs}秒`;
 }
 
+function formatRuntimeSeconds(seconds) {
+  const value = Math.max(0, Math.ceil(Number(seconds) || 0));
+  if (value < 60) return `${value}s`;
+  const minutes = Math.floor(value / 60);
+  const remaining = value % 60;
+  if (minutes < 60) return remaining ? `${minutes}分${remaining}s` : `${minutes}分`;
+  const hours = Math.floor(minutes / 60);
+  const minutePart = minutes % 60;
+  return minutePart ? `${hours}小时${minutePart}分` : `${hours}小时`;
+}
+
+function runtimeRouteMeta(routeKey) {
+  const parts = String(routeKey || "").split("|");
+  if (parts.length < 5) {
+    return { title: truncateText(routeKey, 58), detail: "路由标识不可解析" };
+  }
+  return {
+    title: `${parts[4]} · ${parts[3]}`,
+    detail: `org ${truncateText(parts[1], 24)} · flow ${truncateText(parts[2], 24)}`,
+  };
+}
+
+function runtimeRouteVariant(snapshot) {
+  if (snapshot?.state === "open" || snapshot?.is_open) return "danger";
+  if (snapshot?.state === "half-open" || snapshot?.is_half_open) return "warning";
+  return "success";
+}
+
 function renderOverviewUptime() {
   const el = $("#overviewUptime");
   if (!el) return;
-  const seconds = state.runtimeStatus?.uptime_seconds;
-  el.textContent = Number.isFinite(Number(seconds)) ? `已运行: ${formatOverviewUptime(seconds)}` : "已运行: --";
+  el.classList.remove("hero-pill-success", "hero-pill-danger");
+  if (state.refreshing) {
+    el.textContent = "同步中";
+  } else if (state.sync.status === "partial") {
+    el.textContent = "部分失败";
+    el.classList.add("hero-pill-danger");
+  } else if (state.sync.status === "ready") {
+    el.textContent = "已同步";
+    el.classList.add("hero-pill-success");
+  } else {
+    el.textContent = "未同步";
+  }
 }
 
 function renderRuntimeStatusCard() {
@@ -1303,10 +1335,21 @@ function renderRuntimeStatusCard() {
     return;
   }
 
-  const gate = status.guard?.global_gate;
+  const gate = status.guard?.generation_admission;
   const breaker = status.guard?.circuit_breaker;
-  const rpm = status.guard?.user_rpm;
-  const cooldowns = status.account_cooldowns || [];
+  const routeBreakers = status.guard?.route_breakers || {};
+  const generationAdmission = status.guard?.generation_admission || {};
+  const imagePersistence = status.image_persistence || {};
+  const isolations = status.account_isolations || [];
+  const routeEntries = Object.entries(routeBreakers).sort(([, left], [, right]) => {
+    const leftOpen = left?.state === "open" || left?.is_open ? 1 : 0;
+    const rightOpen = right?.state === "open" || right?.is_open ? 1 : 0;
+    return rightOpen - leftOpen || Number(right?.failure_rate || 0) - Number(left?.failure_rate || 0);
+  });
+  const openRouteCount = routeEntries.filter(([, item]) => item?.state === "open" || item?.is_open).length;
+  const modelEntries = Object.entries(generationAdmission.models || {}).sort(([, left], [, right]) => {
+    return Number(right?.in_flight || 0) - Number(left?.in_flight || 0);
+  });
 
   const gateCell = gate?.enabled
     ? `<strong class="mono">${fmtNumber(gate.in_flight)} / ${fmtNumber(gate.max_concurrent)}</strong>`
@@ -1315,23 +1358,68 @@ function renderRuntimeStatusCard() {
   const breakerCell = !breaker?.enabled
     ? "<strong>未启用</strong>"
     : breaker.is_open
-      ? `<strong class="runtime-danger">已断开 ${Math.ceil(breaker.remaining_seconds)}s</strong>`
+      ? `<strong class="runtime-danger">已断开 ${formatRuntimeSeconds(breaker.remaining_seconds)}</strong>`
       : `<strong>正常</strong>`;
 
-  const rpmCell = rpm?.enabled
-    ? `<strong class="mono">${fmtNumber(rpm.limit)}/分钟${rpm.rejected ? `（拒 ${fmtNumber(rpm.rejected)}）` : ""}</strong>`
-    : "<strong>未启用</strong>";
-
-  const cooldownLines = cooldowns.length
-    ? cooldowns
+  const isolationLines = isolations.length
+    ? isolations
         .slice(0, 4)
         .map(
           (item) =>
-            `<li><span class="mono">${escapeHtml(item.name || item.account_id)}</span> · ${Math.ceil(item.remaining_seconds)}s</li>`,
+            `<li class="runtime-isolation-row">
+              <span title="${escapeHtml(item.reason || "账号故障隔离")}"><span class="mono">${escapeHtml(item.name || item.account_id)}</span> · ${formatRuntimeSeconds(item.remaining_seconds)}</span>
+              <button class="btn btn-ghost btn-compact" data-action="clear-isolation" data-account-id="${escapeHtml(item.account_id)}" type="button">解除</button>
+            </li>`,
         )
         .join("") +
-      (cooldowns.length > 4 ? `<li class="muted">… 共 ${cooldowns.length} 个</li>` : "")
+      (isolations.length > 4 ? `<li class="muted">… 共 ${isolations.length} 个</li>` : "")
     : `<li class="muted">无</li>`;
+
+  const modelLines = modelEntries.length
+    ? modelEntries
+        .map(([model, item]) => {
+          const current = Number(item?.in_flight || 0);
+          const sharedCapacity = Math.max(
+            1,
+            Number(generationAdmission.total_slots || gate?.max_concurrent || 1),
+          );
+          return `
+            <div class="runtime-model-row">
+              <div class="runtime-row-head">
+                <span>${escapeHtml(model)}</span>
+                <strong class="mono">${fmtNumber(current)} 在途 / ${fmtNumber(sharedCapacity)} 共享容量</strong>
+              </div>
+              ${renderCapacityBar(current, sharedCapacity)}
+            </div>
+          `;
+        })
+        .join("")
+    : `<p class="muted runtime-empty-line">模型请求开始后显示实时分配。</p>`;
+
+  const routeLines = routeEntries.length
+    ? routeEntries
+        .slice(0, 6)
+        .map(([key, item]) => {
+          const meta = runtimeRouteMeta(key);
+          const variant = runtimeRouteVariant(item);
+          const stateLabel = item?.state === "open" || item?.is_open ? "open" : item?.state === "half-open" || item?.is_half_open ? "探测中" : "closed";
+          const rate = `${Math.round(Number(item?.failure_rate || 0) * 100)}%`;
+          return `
+            <div class="runtime-route-row is-${variant}">
+              <div class="runtime-route-copy">
+                <strong title="${escapeHtml(key)}">${escapeHtml(meta.title)}</strong>
+                <span>${escapeHtml(meta.detail)} · ${fmtNumber(item?.samples)} 样本 · 失败率 ${rate}</span>
+              </div>
+              <div class="runtime-route-state">
+                ${badgeHtml(stateLabel, variant)}
+                ${item?.remaining_seconds ? `<span class="mono runtime-route-remaining">${formatRuntimeSeconds(item.remaining_seconds)}</span>` : ""}
+              </div>
+            </div>
+          `;
+        })
+        .join("") +
+      (routeEntries.length > 6 ? `<p class="muted runtime-empty-line">… 另有 ${fmtNumber(routeEntries.length - 6)} 条路由</p>` : "")
+    : `<p class="muted runtime-empty-line">尚未记录路由故障。</p>`;
 
   renderInsightCard(
     el,
@@ -1340,27 +1428,59 @@ function renderRuntimeStatusCard() {
     `
       <div class="insight-metrics runtime-grid">
         <div class="insight-metric">
-          <span>全局在途${gate?.enabled && gate.rejected ? ` · 拒 ${fmtNumber(gate.rejected)}` : ""}</span>
+          <span>全局生图容量${gate?.enabled && gate.rejected ? ` · 拒 ${fmtNumber(gate.rejected)}` : ""}</span>
           ${gateCell}
         </div>
         <div class="insight-metric">
-          <span>上游熔断${breaker?.enabled && !breaker.is_open && breaker.consecutive_failures ? ` · 连败 ${breaker.consecutive_failures}/${breaker.failure_threshold}` : ""}</span>
+          <span>全局熔断</span>
           ${breakerCell}
         </div>
-        <div class="insight-metric">
-          <span>用户限速</span>
-          ${rpmCell}
+      </div>
+      <div class="runtime-section">
+        <div class="runtime-section-head">
+          <div>
+            <p class="runtime-section-title">共享生成容量</p>
+            <p class="runtime-section-note">${fmtNumber(generationAdmission.total_slots || gate?.max_concurrent || 0)} 个模型共享槽位；容量不足立即返回 HTTP 429。下载与历史落盘不占生成槽。</p>
+          </div>
+          ${generationAdmission.rejected ? badgeHtml(`拒 ${fmtNumber(generationAdmission.rejected)}`, "warning") : ""}
+        </div>
+        <div class="runtime-model-list">${modelLines}</div>
+      </div>
+      <div class="runtime-section">
+        <div class="runtime-section-head">
+          <div>
+            <p class="runtime-section-title">历史日志写入</p>
+            <p class="runtime-section-note">上游生成完成后立即释放生图槽；本地下载落盘完成后才返回本站图片地址，数据库历史随后异步写入。</p>
+          </div>
+        </div>
+        <div class="runtime-persistence-grid">
+          <span>当前任务 <strong class="mono">${fmtNumber(imagePersistence.active_tasks || 0)}</strong></span>
+          <span>已启动 <strong class="mono">${fmtNumber(imagePersistence.started || 0)}</strong></span>
+          <span>已完成 <strong class="mono">${fmtNumber(imagePersistence.completed || 0)}</strong></span>
+          <span>异常 <strong class="mono">${fmtNumber(imagePersistence.failed || 0)}</strong></span>
         </div>
       </div>
-      <div class="runtime-cooldowns">
-        <p class="runtime-cooldowns-title">冷却账号（${cooldowns.length}）</p>
-        <ul>${cooldownLines}</ul>
+      <div class="runtime-section">
+        <div class="runtime-section-head">
+          <div>
+            <p class="runtime-section-title">路由熔断</p>
+            <p class="runtime-section-note">按 base URL / org / flow / 模式 / 模型隔离${openRouteCount ? ` · ${fmtNumber(openRouteCount)} 条已打开` : ""}</p>
+          </div>
+          ${routeEntries.length ? badgeHtml(`${fmtNumber(routeEntries.length)} 条`, openRouteCount ? "warning" : "muted") : ""}
+        </div>
+        <div class="runtime-route-list">${routeLines}</div>
       </div>
-      ${
-        breaker?.enabled
-          ? `<div class="runtime-actions"><button id="resetBreakerBtn" class="btn btn-ghost" type="button" ${breaker.is_open ? "" : "disabled"}>复位熔断器</button></div>`
-          : ""
-      }
+      <div class="runtime-isolations">
+        <div class="runtime-section-head">
+          <p class="runtime-section-title">故障隔离账号（${isolations.length}）</p>
+          ${isolations.length ? `<button id="clearAllIsolationsBtn" class="btn btn-ghost btn-compact" type="button">解除全部</button>` : ""}
+        </div>
+        <ul>${isolationLines}</ul>
+      </div>
+      <div class="runtime-actions">
+        ${breaker?.enabled ? `<button id="resetBreakerBtn" class="btn btn-ghost btn-compact" type="button" ${breaker.is_open ? "" : "disabled"}>复位全局熔断</button>` : ""}
+        ${routeEntries.length ? `<button id="resetRouteBreakersBtn" class="btn btn-ghost btn-compact" type="button">重置路由熔断</button>` : ""}
+      </div>
     `,
   );
 
@@ -1378,6 +1498,54 @@ function renderRuntimeStatusCard() {
       }
     });
   }
+
+  const resetRoutesBtn = $("#resetRouteBreakersBtn");
+  if (resetRoutesBtn) {
+    resetRoutesBtn.addEventListener("click", async () => {
+      if (!confirm("确认重置全部路由熔断状态？这会立即允许新的探测请求。")) return;
+      try {
+        await withBusyButton(resetRoutesBtn, "重置中…", async () =>
+          api("/api/admin/circuit-breaker/routes/reset", { method: "POST" })
+        );
+        await refreshRuntimeStatus();
+        showToast("路由熔断已重置", "success");
+      } catch (err) {
+        showToast(`重置失败：${err.message}`, "error");
+      }
+    });
+  }
+
+  const clearAllBtn = $("#clearAllIsolationsBtn");
+  if (clearAllBtn) {
+    clearAllBtn.addEventListener("click", async () => {
+      if (!confirm("确认解除全部账号故障隔离？不会修改账号启停状态。")) return;
+      try {
+        await withBusyButton(clearAllBtn, "清除中…", async () =>
+          api("/api/admin/accounts/isolation/clear", { method: "POST" })
+        );
+        await Promise.all([refreshRuntimeStatus(), refreshAccounts()]);
+        showToast("账号故障隔离已解除", "success");
+      } catch (err) {
+        showToast(`清除失败：${err.message}`, "error");
+      }
+    });
+  }
+
+  el.querySelectorAll('[data-action="clear-isolation"]').forEach((button) => {
+    button.addEventListener("click", async () => {
+      const accountId = button.dataset.accountId;
+      if (!accountId) return;
+      try {
+        await withBusyButton(button, "清除中…", async () =>
+            api(`/api/admin/accounts/${encodeURIComponent(accountId)}/isolation/clear`, { method: "POST" })
+        );
+        await Promise.all([refreshRuntimeStatus(), refreshAccounts()]);
+        showToast("账号故障隔离已解除", "success");
+      } catch (err) {
+        showToast(`清除失败：${err.message}`, "error");
+      }
+    });
+  });
 }
 
 let _runtimeStatusTimer = null;
@@ -1649,7 +1817,7 @@ function renderAccountRow(account) {
           <div class="metric-head">
             <strong class="mono">${fmtNumber(account.in_flight || 0)} / ${fmtNumber(account.max_inflight || 0)}</strong>
             ${badgeHtml(load.label, load.variant)}
-            ${account.cooldown_seconds ? badgeHtml(`冷却中 ${Math.ceil(account.cooldown_seconds)}s`, "warning") : ""}
+            ${account.isolation_seconds ? badgeHtml(`故障隔离 ${Math.ceil(account.isolation_seconds)}s`, "warning") : ""}
           </div>
           ${renderCapacityBar(account.in_flight || 0, account.max_inflight || 0)}
         </div>
@@ -1670,6 +1838,7 @@ function renderAccountRow(account) {
           <button class="${toggle.className}" data-action="toggle-account" type="button">${toggle.label}</button>
           <button class="btn btn-ghost" data-action="test" type="button">测试</button>
           <button class="btn btn-ghost" data-action="edit" type="button">编辑</button>
+          ${account.isolation_seconds ? `<button class="btn btn-ghost" data-action="clear-isolation" type="button">解除隔离</button>` : ""}
           <button class="btn btn-danger" data-action="delete" type="button">删除</button>
         </div>
       </td>
@@ -1731,6 +1900,21 @@ function bindAccountActions(items) {
         showToast(`测试失败：${err.message}`, "error");
       }
     });
+
+    const clearIsolationBtn = row.querySelector('[data-action="clear-isolation"]');
+    if (clearIsolationBtn) {
+      clearIsolationBtn.addEventListener("click", async (event) => {
+        try {
+          await withBusyButton(event.currentTarget, "清除中…", async () =>
+            api(`/api/admin/accounts/${encodeURIComponent(id)}/isolation/clear`, { method: "POST" })
+          );
+          await Promise.all([refreshAccounts(), refreshRuntimeStatus()]);
+        showToast("账号故障隔离已解除", "success");
+        } catch (err) {
+          showToast(`清除失败：${err.message}`, "error");
+        }
+      });
+    }
   });
 }
 
@@ -1739,8 +1923,9 @@ function renderAccountsTable() {
   const summary = $("#accountsSummary");
   const items = filteredAccounts();
   const active = state.accounts.filter((item) => item.status === "active").length;
-  const inflight = sumBy(state.accounts, (item) => item.in_flight);
-  const capacity = sumBy(state.accounts, (item) => item.max_inflight);
+  const activeItems = state.accounts.filter((item) => item.status === "active");
+  const inflight = sumBy(activeItems, (item) => item.in_flight);
+  const capacity = sumBy(activeItems, (item) => item.max_inflight);
   renderToolbarMeta(
     "accountsFilterMeta",
     "账号",
@@ -1751,8 +1936,8 @@ function renderAccountsTable() {
     "支持搜索与筛选。",
   );
   if (summary) {
-    const cooling = state.accounts.filter((item) => item.cooldown_seconds).length;
-    summary.textContent = `共 ${fmtNumber(state.accounts.length)} 个账号，${fmtNumber(active)} 个启用；当前并发 ${fmtNumber(inflight)} / ${fmtNumber(capacity)}${cooling ? `；${fmtNumber(cooling)} 个冷却中` : ""}。`;
+    const isolated = state.accounts.filter((item) => item.isolation_seconds).length;
+    summary.textContent = `共 ${fmtNumber(state.accounts.length)} 个账号，${fmtNumber(active)} 个启用；当前并发 ${fmtNumber(inflight)} / ${fmtNumber(capacity)}${isolated ? `；${fmtNumber(isolated)} 个故障隔离中` : ""}。`;
   }
 
   if (!state.accounts.length) {
@@ -1875,7 +2060,7 @@ async function deleteAllAccounts(button) {
     });
     showToast("全部账号已删除", "success");
   } catch (err) {
-    showToast(`全部删除失败：${err.message}`, "error");
+    showToast(`${deletingFiltered ? "删除筛选结果失败" : "全部删除失败"}：${err.message}`, "error");
   }
 }
 
@@ -2217,7 +2402,9 @@ function bindInviteActions(items) {
 function renderInvitesTable() {
   const tbody = $("#invitesTable tbody");
   const summary = $("#invitesSummary");
+  const deleteButton = $("#deleteAllInvitesBtn");
   const items = filteredInvites();
+  const hasFilters = state.filters.invites.query.trim() || state.filters.invites.status !== "all";
   const active = state.invites.filter((item) => item.status === "active").length;
   const remaining = state.invites.reduce(
     (sum, invite) => sum + Math.max(0, Number(invite.max_uses || 0) - Number(invite.used_count || 0)),
@@ -2234,6 +2421,10 @@ function renderInvitesTable() {
   );
   if (summary) {
     summary.textContent = `共 ${fmtNumber(state.invites.length)} 个邀请码，${fmtNumber(active)} 个可用；剩余可用次数 ${fmtNumber(remaining)}。`;
+  }
+  if (deleteButton) {
+    deleteButton.textContent = hasFilters ? `删除筛选结果${items.length ? `（${fmtNumber(items.length)}）` : ""}` : "全部删除";
+    deleteButton.disabled = items.length === 0;
   }
 
   if (!state.invites.length) {
@@ -2277,22 +2468,47 @@ async function refreshInvites() {
 }
 
 async function deleteAllInvites(button) {
-  if (!state.invites.length) {
-    showToast("当前没有邀请码可删除", "info");
+  const targets = filteredInvites();
+  if (!targets.length) {
+    showToast("当前筛选结果没有邀请码可删除", "info");
     return;
   }
-  if (!confirm("确认删除所有邀请码？已注册用户不会被删除，但邀请码记录不可恢复。")) return;
+  const deletingFiltered = targets.length !== state.invites.length;
+  const prompt = deletingFiltered
+    ? `确认删除当前筛选的 ${targets.length} 个邀请码？已注册用户不会被删除，但邀请码记录不可恢复。`
+    : "确认删除所有邀请码？已注册用户不会被删除，但邀请码记录不可恢复。";
+  if (!confirm(prompt)) return;
   try {
     await withBusyButton(button, "删除中…", async () => {
-      try {
-        await api("/api/admin/invite-codes", { method: "DELETE" });
-      } catch (err) {
-        if (err.status !== 404 && err.status !== 405) throw err;
-        if (isMissingDeleteRouteError(err)) {
-          throw new Error("当前后端实例还没加载邀请码批量删除接口，请先重启 st-imagen 服务。");
+      if (!deletingFiltered) {
+        try {
+          await api("/api/admin/invite-codes", { method: "DELETE" });
+        } catch (err) {
+          if (err.status !== 404 && err.status !== 405) throw err;
+          if (isMissingDeleteRouteError(err)) {
+            throw new Error("当前后端实例还没加载邀请码批量删除接口，请先重启 st-imagen 服务。");
+          }
+          const failures = [];
+          for (const invite of targets) {
+            try {
+              await api(`/api/admin/invite-codes/${invite.id}`, { method: "DELETE" });
+            } catch (itemErr) {
+              if (isMissingDeleteRouteError(itemErr)) {
+                throw new Error("当前后端实例还没加载邀请码删除接口，请先重启 st-imagen 服务。");
+              }
+              failures.push(`${invite.code_prefix}: ${itemErr.message}`);
+            }
+          }
+          if (failures.length) {
+            const summary = failures.slice(0, 3).join("；");
+            throw new Error(
+              failures.length > 3 ? `${summary}；另外还有 ${failures.length - 3} 个失败` : summary,
+            );
+          }
         }
+      } else {
         const failures = [];
-        for (const invite of state.invites) {
+        for (const invite of targets) {
           try {
             await api(`/api/admin/invite-codes/${invite.id}`, { method: "DELETE" });
           } catch (itemErr) {
@@ -2312,7 +2528,7 @@ async function deleteAllInvites(button) {
       await Promise.all([refreshInvites(), refreshOverview(), refreshUsers()]);
       renderInsightPanels();
     });
-    showToast("全部邀请码已删除", "success");
+    showToast(deletingFiltered ? "筛选的邀请码已删除" : "全部邀请码已删除", "success");
   } catch (err) {
     showToast(`全部删除失败：${err.message}`, "error");
   }
@@ -2756,10 +2972,56 @@ function renderSettingsForm(items) {
   });
 }
 
+function renderRuntimeConfig(config) {
+  const panel = $("#runtimeConfigPanel");
+  const meta = $("#runtimeConfigMeta");
+  if (!panel) return;
+  if (!config) {
+    panel.innerHTML = '<p class="muted">暂不可用</p>';
+    if (meta) meta.textContent = "未返回运行参数";
+    return;
+  }
+
+  const process = config.process || {};
+  const generation = config.generation || {};
+  const imageDelivery = config.image_delivery || {};
+  const network = config.network || {};
+  const persistence = config.persistence || {};
+  const workerLabel = process.single_worker_ok === false
+    ? `${fmtNumber(process.worker_count || 0)}（需单 worker）`
+    : `${fmtNumber(process.worker_count || 1)}（符合）`;
+  const rows = [
+    ["全局生图并发", `${fmtNumber(generation.global_max_concurrent || 0)} 个`, "所有模型共享；达到上限直接 429"],
+    ["单账号默认并发", `${fmtNumber(generation.account_default_max_inflight || 0)} 个`, "新建账号使用；已有账号按自身保存值执行"],
+    ["满载策略", "立即返回 429", "容量不足时不在服务端等待"],
+    ["图片返回地址", imageDelivery.upstream_image_url_exposed ? "包含上游地址" : "仅本站落盘地址", "本地文件落盘完成后才返回，隐藏上游 URL"],
+    ["用户限速", generation.user_rpm_limit ? `${fmtNumber(generation.user_rpm_limit)} 次/分钟` : "关闭", "按用户独立统计"],
+    ["上游 HTTP 连接", `${fmtNumber(network.http_max_connections || 0)} 个`, `Keep-Alive ${fmtNumber(network.http_max_keepalive || 0)} 个`],
+    ["数据库连接池", `${fmtNumber(network.db_pool_size || 0)} 个`, `溢出 ${fmtNumber(network.db_max_overflow || 0)} · 超时 ${network.db_pool_timeout_seconds || 0}s`],
+    ["图片下载并发", `${fmtNumber(persistence.image_download_concurrency || 0)} 个`, "释放生图槽后并行落盘，完成后返回"],
+    ["历史日志写入", persistence.history_log_async ? `异步 · 当前 ${fmtNumber(persistence.history_log_active_tasks || 0)} 个` : "关闭", "图片本地落盘在请求内完成；数据库历史随后 best-effort 写入"],
+    ["图片磁盘", persistence.image_disk_available === false ? "空间不足" : "正常", `剩余 ${formatBytes(persistence.image_disk_free_bytes)} · 预留 ${formatBytes(persistence.image_min_free_bytes)}`],
+    ["Uvicorn worker", workerLabel, "进程内并发闸门要求单 worker"],
+  ];
+  panel.innerHTML = rows
+    .map(([label, value, hint]) => `
+      <div class="runtime-config-item">
+        <span>${escapeHtml(label)}</span>
+        <strong class="mono">${escapeHtml(value)}</strong>
+        <small>${escapeHtml(hint)}</small>
+      </div>
+    `)
+    .join("");
+  if (meta) {
+    meta.textContent = process.single_worker_ok === false ? "部署配置需修正" : "当前进程生效值 · 只读";
+  }
+}
+
 async function refreshSettings() {
   try {
     const data = await api("/api/admin/settings");
     renderSettingsForm(data.items);
+    renderRuntimeConfig(data.runtime_config);
     renderStorageStats(data.storage);
     return true;
   } catch (err) {
@@ -2767,6 +3029,7 @@ async function refreshSettings() {
       const meta = $(`#${field.metaId}`);
       if (meta) meta.textContent = `加载失败：${err.message}`;
     });
+    renderRuntimeConfig(null);
     return false;
   }
 }
@@ -2799,6 +3062,7 @@ async function saveSettings() {
   try {
     const data = await api("/api/admin/settings", { method: "PUT", body: JSON.stringify(body) });
     renderSettingsForm(data.items);
+    renderRuntimeConfig(data.runtime_config);
     renderStorageStats(data.storage);
     showToast("设置已保存，并已按新策略执行一次清理", "success");
   } catch (err) {
@@ -2817,6 +3081,7 @@ async function resetRetentionField(field) {
       body: JSON.stringify({ [field.key]: null }),
     });
     renderSettingsForm(data.items);
+    renderRuntimeConfig(data.runtime_config);
     renderStorageStats(data.storage);
     showToast(`${field.label}已恢复默认值`, "success");
   } catch (err) {
@@ -2859,7 +3124,7 @@ function openAccountModal(account = null) {  state.editing.accountId = account ?
   $("#m_api_key").value = "";
   $("#m_private_api_key").value = "";
   $("#m_status").value = account?.status || "active";
-  $("#m_max_inflight").value = String(account?.max_inflight ?? 10);
+  $("#m_max_inflight").value = String(account?.max_inflight ?? 2);
   $("#m_api_key").placeholder = account ? "留空保持原值" : "sk-...";
   $("#m_private_api_key").placeholder = account?.private_api_key_set ? "留空保持原值" : "sk-...";
   $("#accountModalError").classList.add("is-hidden");
@@ -2975,7 +3240,7 @@ async function saveAccount() {
     api_key: $("#m_api_key").value.trim(),
     private_api_key: privateRaw.trim(),
     status: $("#m_status").value,
-    max_inflight: Number($("#m_max_inflight").value || 10),
+    max_inflight: Number($("#m_max_inflight").value || 2),
   };
 
   if (!Number.isFinite(payload.max_inflight) || payload.max_inflight < 1) {
@@ -3128,7 +3393,7 @@ function openUserModal(user = null) {
   usernameInput.placeholder = isEdit ? "" : "3-32 位小写字母、数字、点、下划线或中划线";
   $("#u_batch_count").value = "10";
   $("#u_status").value = user?.status || "active";
-  $("#u_daily_quota").value = String(user?.daily_quota ?? 0);
+  $("#u_daily_quota").value = String(user?.daily_quota ?? 10);
   $("#u_max_inflight").value = String(user?.max_inflight ?? 2);
   $("#u_expires_at").value = isoToDatetimeLocal(user?.expires_at || "");
   $("#u_new_password").value = "";
@@ -3170,7 +3435,7 @@ async function saveUser() {
 
   const basePayload = {
     status: $("#u_status").value,
-    daily_quota: Number($("#u_daily_quota").value || 0),
+    daily_quota: Number($("#u_daily_quota").value || 10),
     max_inflight: Number($("#u_max_inflight").value || 1),
     expires_at: expiresAt,
   };
@@ -3249,7 +3514,7 @@ async function saveInviteBatch() {
     count: Number($("#i_count").value || 1),
     max_uses: Number($("#i_max_uses").value || 1),
     expires_in_days: Number($("#i_expires_in_days").value || 30),
-    daily_quota: Number($("#i_daily_quota").value || 0),
+    daily_quota: Number($("#i_daily_quota").value || 10),
     max_inflight: Number($("#i_max_inflight").value || 2),
     note: $("#i_note").value.trim(),
   };

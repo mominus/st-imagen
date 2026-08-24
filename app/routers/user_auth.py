@@ -62,7 +62,7 @@ def _user_to_dict(user: User) -> dict:
     is_invite_guest = auth_kind == "invite_guest"
     return {
         "id": user.id,
-        # 邀请码访客的内部随机用户名不应暴露给浏览器。
+        # 邀请码本身是 bearer credential；访客用户名用于后台关联，但不回显给浏览器。
         "username": None if is_invite_guest else user.username,
         "display_name": "邀请码访客" if is_invite_guest else f"@{user.username}",
         "auth_kind": auth_kind,

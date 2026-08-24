@@ -1,9 +1,9 @@
-"""release_account 合并统计（mark_used 参数）的行为测试：真实临时 SQLite 库验证。"""
+"""release_account 运行时槽位与异步统计写入测试。"""
 from __future__ import annotations
 
 import tempfile
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -13,7 +13,7 @@ from app.models.database import Account, Base
 from app.services.account_pool import AccountPoolService
 
 
-class ReleaseAccountMergeStatsTests(unittest.IsolatedAsyncioTestCase):
+class AccountUsagePersistenceTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
         db_path = Path(self._tmpdir.name) / "test.db"
@@ -39,9 +39,8 @@ class ReleaseAccountMergeStatsTests(unittest.IsolatedAsyncioTestCase):
             flow_id="flow",
             api_key_encrypted="enc",
             status="active",
-            in_flight=1,
             total_requests=10,
-            daily_used=2,
+            daily_used=7,
             max_inflight=10,
             last_used_at=now,
             created_at=now,
@@ -59,59 +58,43 @@ class ReleaseAccountMergeStatsTests(unittest.IsolatedAsyncioTestCase):
             obj = (await session.execute(select(Account).where(Account.id == account_id))).scalars().first()
             return obj
 
-    async def test_release_with_mark_used_success_accumulates_stats(self) -> None:
+    async def _release(self, pool: AccountPoolService, account_id: str, count_request=None) -> None:
+        token = f"token-{account_id}"
+        pool._runtime_in_flight[account_id] = 1
+        pool._runtime_tokens[token] = account_id
+        await pool.release_account(None, account_id, count_request=count_request, slot_token=token)
+        await pool.drain_usage_persistence()
+
+    async def test_release_with_request_record_accumulates_stats(self) -> None:
         account_id = await self._create_account()
         pool = AccountPoolService()
 
-        await pool.release_account(None, account_id, mark_used=True)
+        await self._release(pool, account_id, count_request=True)
 
         acc = await self._get_account(account_id)
-        self.assertEqual(acc.in_flight, 0)
         self.assertEqual(acc.total_requests, 11)
-        self.assertEqual(acc.daily_used, 3)  # 同日累加
+        self.assertEqual(acc.daily_used, 7)  # legacy quota column is untouched
         self.assertIsNotNone(acc.last_used_at)
 
-    async def test_release_with_mark_used_failure_counts_request_not_daily(self) -> None:
+    async def test_release_with_failed_request_still_accumulates_stats(self) -> None:
         account_id = await self._create_account()
         pool = AccountPoolService()
 
-        await pool.release_account(None, account_id, mark_used=False)
+        await self._release(pool, account_id, count_request=False)
 
         acc = await self._get_account(account_id)
-        self.assertEqual(acc.in_flight, 0)
         self.assertEqual(acc.total_requests, 11)
-        self.assertEqual(acc.daily_used, 2)  # 失败不占日额度
+        self.assertEqual(acc.daily_used, 7)
 
-    async def test_release_without_mark_used_only_decrements_in_flight(self) -> None:
+    async def test_release_without_request_record_only_decrements_in_flight(self) -> None:
         account_id = await self._create_account()
         pool = AccountPoolService()
 
-        await pool.release_account(None, account_id)
+        await self._release(pool, account_id)
 
         acc = await self._get_account(account_id)
-        self.assertEqual(acc.in_flight, 0)
         self.assertEqual(acc.total_requests, 10)
-        self.assertEqual(acc.daily_used, 2)
-
-    async def test_release_resets_daily_used_on_new_day(self) -> None:
-        yesterday = datetime.utcnow() - timedelta(days=1)
-        account_id = await self._create_account(last_used_at=yesterday, daily_used=7)
-        pool = AccountPoolService()
-
-        await pool.release_account(None, account_id, mark_used=True)
-
-        acc = await self._get_account(account_id)
-        self.assertEqual(acc.daily_used, 1)  # 跨日重置
-
-    async def test_release_never_goes_negative(self) -> None:
-        account_id = await self._create_account(in_flight=0)
-        pool = AccountPoolService()
-
-        await pool.release_account(None, account_id, mark_used=True)
-
-        acc = await self._get_account(account_id)
-        self.assertEqual(acc.in_flight, 0)
-
+        self.assertEqual(acc.daily_used, 7)
 
 if __name__ == "__main__":
     unittest.main()

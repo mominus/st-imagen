@@ -12,13 +12,19 @@
 from __future__ import annotations
 
 import asyncio
+import email.utils
 import logging
 import os
+import time
 from typing import Any, AsyncGenerator, Dict, Optional
 
 import httpx
 
-from app.services.upstream_redaction import redact_upstream_data, redact_upstream_text
+from app.services.upstream_redaction import (
+    redact_upstream_data,
+    redact_upstream_event_text,
+    redact_upstream_text,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -27,11 +33,32 @@ logger = logging.getLogger(__name__)
 class StackAIError(Exception):
     """StackAI 调用错误。"""
 
-    def __init__(self, message: str, status_code: Optional[int] = None, payload: Any = None) -> None:
-        self.message = redact_upstream_text(message)
+    def __init__(
+        self,
+        message: str,
+        status_code: Optional[int] = None,
+        payload: Any = None,
+        *,
+        headers: Optional[Dict[str, str]] = None,
+        retry_after: Optional[float] = None,
+        request_id: Optional[str] = None,
+        upstream_started: bool = False,
+    ) -> None:
+        # Error messages are public API data; remove arbitrary image/CDN URLs
+        # as well as the upstream brand/domain before exposing them.
+        self.message = redact_upstream_event_text(message)
         super().__init__(self.message)
         self.status_code = status_code
         self.payload = redact_upstream_data(payload)
+        self.body = self.payload
+        self.error_body = self.payload
+        self.headers = dict(headers or {})
+        self.response_headers = self.headers
+        self.retry_after = retry_after
+        self.retry_after_seconds = retry_after
+        self.request_id = request_id
+        self.upstream_request_id = request_id
+        self.upstream_started = upstream_started
 
 
 class StackAIClient:
@@ -43,17 +70,21 @@ class StackAIClient:
         timeout_seconds: Optional[float] = None,
     ) -> None:
         self.base_url = (base_url or os.getenv("STACKAI_BASE_URL", "https://api.stack-ai.com")).rstrip("/")
-        # 传输层超时必须高于工作流的 200s 等待预算，避免底层先断开；
+        # 传输层超时必须高于工作流的 230s 总预算，避免底层先断开；
         # 真正的工作流总时限由 generate.py 的 SSE 预算控制。
         self.timeout = max(
-            240.0,
-            float(timeout_seconds or os.getenv("STACKAI_TIMEOUT_SECONDS", "240")),
+            270.0,
+            float(timeout_seconds or os.getenv("STACKAI_TIMEOUT_SECONDS", "270")),
         )
         self.stream_read_timeout = max(
             self.timeout,
-            float(os.getenv("STACKAI_STREAM_READ_TIMEOUT_SECONDS", "300")),
+            float(os.getenv("STACKAI_STREAM_READ_TIMEOUT_SECONDS", "330")),
         )
         self.connect_timeout = float(os.getenv("STACKAI_CONNECT_TIMEOUT_SECONDS", "10"))
+        self.max_connections = max(1, int(os.getenv("HTTP_MAX_CONNECTIONS", "96")))
+        self.max_keepalive_connections = max(
+            1, int(os.getenv("HTTP_MAX_KEEPALIVE", str(self.max_connections)))
+        )
         self.trust_env = os.getenv("STACKAI_TRUST_ENV", "true").strip().lower() in {
             "1",
             "true",
@@ -89,10 +120,17 @@ class StackAIClient:
             async with self._client_lock:
                 if self._client is None or self._client.is_closed:
                     self._client = httpx.AsyncClient(
-                        timeout=httpx.Timeout(self.timeout),
+                        timeout=httpx.Timeout(
+                            connect=self.connect_timeout,
+                            read=self.stream_read_timeout,
+                            write=self.timeout,
+                            pool=self.timeout,
+                        ),
                         limits=httpx.Limits(
-                            max_connections=int(os.getenv("HTTP_MAX_CONNECTIONS", "60")),
-                            max_keepalive_connections=int(os.getenv("HTTP_MAX_KEEPALIVE", "20")),
+                            max_connections=self.max_connections,
+                            max_keepalive_connections=min(
+                                self.max_connections, self.max_keepalive_connections
+                            ),
                         ),
                         trust_env=self.trust_env,
                     )
@@ -102,6 +140,45 @@ class StackAIClient:
         if self._client is not None and not self._client.is_closed:
             await self._client.aclose()
         self._client = None
+
+    @staticmethod
+    def _retry_after(headers: Any) -> Optional[float]:
+        """Parse Retry-After as seconds or an HTTP date."""
+        raw = str((headers or {}).get("retry-after") or "").strip()
+        if not raw:
+            return None
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            try:
+                target = email.utils.parsedate_to_datetime(raw).timestamp()
+                return max(0.0, target - time.time())
+            except (TypeError, ValueError, OverflowError):
+                return None
+
+    @staticmethod
+    def _request_id(headers: Any) -> Optional[str]:
+        for key in ("x-request-id", "x-request-id", "request-id", "trace-id"):
+            value = str((headers or {}).get(key) or "").strip()
+            if value:
+                return value[:256]
+        return None
+
+    @classmethod
+    def _error_from_response(cls, resp: Any, body: bytes) -> "StackAIError":
+        headers = {str(k).lower(): str(v) for k, v in dict(getattr(resp, "headers", {}) or {}).items()}
+        try:
+            err_payload = httpx.Response(resp.status_code, content=body, headers=headers).json()
+        except Exception:
+            err_payload = {"raw": body.decode("utf-8", errors="replace")[:2000]}
+        return StackAIError(
+            f"StackAI HTTP {resp.status_code}",
+            status_code=resp.status_code,
+            payload=err_payload,
+            headers=headers,
+            retry_after=cls._retry_after(headers),
+            request_id=cls._request_id(headers),
+        )
 
     async def run_inference(
         self,
@@ -127,20 +204,21 @@ class StackAIClient:
 
         # 不强制 raise_for_status，需要把上游错误体回传给前端
         if resp.status_code >= 400:
-            try:
-                err_payload = resp.json()
-            except Exception:
-                err_payload = {"raw": resp.text[:2000]}
-            raise StackAIError(
-                f"StackAI HTTP {resp.status_code}",
-                status_code=resp.status_code,
-                payload=err_payload,
-            )
+            body = getattr(resp, "content", None)
+            if body is None:
+                body = str(getattr(resp, "text", "")).encode("utf-8", errors="replace")
+            raise self._error_from_response(resp, body)
 
         try:
             return resp.json()
         except Exception as exc:
-            raise StackAIError(f"上游返回非 JSON: {exc}", status_code=502, payload={"raw": resp.text[:2000]}) from exc
+            raise StackAIError(
+                f"上游返回非 JSON: {exc}",
+                status_code=502,
+                payload={"raw": resp.text[:2000]},
+                headers={str(k).lower(): str(v) for k, v in dict(resp.headers).items()},
+                request_id=self._request_id(resp.headers),
+            ) from exc
 
     async def stream_inference(
         self,
@@ -161,29 +239,11 @@ class StackAIClient:
             "Accept": "text/event-stream",
         }
         try:
-            use_dedicated_client = self._is_img2img_payload(payload)
-            if use_dedicated_client:
-                # 图生图带参考图时，允许用独立 client 规避个别上游 SSE 首包卡死；
-                # 文生图则优先复用共享长连接，避免每次都重建 TCP/TLS 导致稳定 connect timeout。
-                async with httpx.AsyncClient(
-                    timeout=httpx.Timeout(
-                        connect=self.connect_timeout,
-                        read=self.stream_read_timeout,
-                        write=self.timeout,
-                        pool=self.timeout,
-                    ),
-                    limits=httpx.Limits(
-                        max_connections=int(os.getenv("HTTP_MAX_CONNECTIONS", "60")),
-                        max_keepalive_connections=int(os.getenv("HTTP_MAX_KEEPALIVE", "20")),
-                    ),
-                    trust_env=self.trust_env,
-                ) as client:
-                    async for line in self._stream_with_client(client, url, headers, payload):
-                        yield line
-            else:
-                client = await self._get_client()
-                async for line in self._stream_with_client(client, url, headers, payload):
-                    yield line
+            # 文生图和图生图共用同一个有界连接池；生成并发已经由上层
+            # semaphore 控制，避免每个图生图请求重新建立 TCP/TLS 池。
+            client = await self._get_client()
+            async for line in self._stream_with_client(client, url, headers, payload):
+                yield line
         except httpx.TimeoutException as exc:
             raise StackAIError(self._timeout_message(exc), status_code=504) from exc
         except httpx.HTTPError as exc:
@@ -204,15 +264,7 @@ class StackAIClient:
         ) as resp:
             if resp.status_code >= 400:
                 body = await resp.aread()
-                try:
-                    err_payload = httpx.Response(resp.status_code, content=body).json()
-                except Exception:
-                    err_payload = {"raw": body.decode("utf-8", errors="replace")[:2000]}
-                raise StackAIError(
-                    f"StackAI HTTP {resp.status_code}",
-                    status_code=resp.status_code,
-                    payload=err_payload,
-                )
+                raise self._error_from_response(resp, body)
 
             buffer = ""
 

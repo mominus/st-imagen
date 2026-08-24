@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import random
 import time
 from collections import deque
 from typing import Deque, Dict, Optional, Tuple
@@ -140,20 +141,256 @@ class CircuitBreaker:
         return self._consecutive_failures
 
 
-class GlobalConcurrencyGate:
-    """全局并发闸门：限制同时在途的生图请求数（信号量 + 快速等待）。"""
+class RouteCircuitBreaker:
+    """Sliding-window breaker for one model/flow route.
 
-    def __init__(self, max_concurrent: int, wait_seconds: float) -> None:
-        self.max_concurrent = max(0, max_concurrent)
-        self.wait_seconds = wait_seconds
-        self._semaphore: Optional[asyncio.Semaphore] = None
+    A half-open route admits exactly one probe. Account authentication failures
+    are filtered by the caller and therefore never reach this object.
+    """
+
+    def __init__(
+        self,
+        *,
+        window_seconds: float = 30.0,
+        min_samples: int = 5,
+        failure_rate: float = 0.6,
+        open_seconds: float = 30.0,
+    ) -> None:
+        self.window_seconds = max(1.0, window_seconds)
+        self.min_samples = max(1, min_samples)
+        self.failure_rate = min(1.0, max(0.01, failure_rate))
+        self.open_seconds = max(0.1, open_seconds)
+        self._events: Deque[Tuple[float, bool]] = deque()
+        self._state = "closed"
+        self._opened_at: Optional[float] = None
+        self._current_open_seconds = self.open_seconds
+        self._backoff_level = 0
+        self._max_open_seconds = max(
+            self.open_seconds,
+            _env_float("ROUTE_BREAKER_MAX_OPEN_SECONDS", 300.0),
+        )
+        self._probe_in_flight = False
+
+    def _prune(self, now: float) -> None:
+        cutoff = now - self.window_seconds
+        while self._events and self._events[0][0] <= cutoff:
+            self._events.popleft()
+
+    def allow(self, *, now: Optional[float] = None) -> Tuple[bool, float]:
+        moment = time.monotonic() if now is None else now
+        if self._state == "open":
+            remaining = self._current_open_seconds - (moment - (self._opened_at or moment))
+            if remaining > 0:
+                return False, remaining
+            self._state = "half-open"
+            self._probe_in_flight = False
+        if self._state == "half-open":
+            if self._probe_in_flight:
+                return False, self._current_open_seconds
+            self._probe_in_flight = True
+        return True, 0.0
+
+    def record(
+        self,
+        success: bool,
+        *,
+        now: Optional[float] = None,
+        retry_after: Optional[float] = None,
+    ) -> None:
+        moment = time.monotonic() if now is None else now
+
+        def _next_open_seconds() -> float:
+            self._backoff_level += 1
+            base = min(
+                self._max_open_seconds,
+                self.open_seconds * (2 ** max(0, self._backoff_level - 1)),
+            )
+            # Keep the first open deterministic; subsequent opens use jitter to
+            # avoid synchronized workers probing a recovering route together.
+            jitter = 1.0 if self._backoff_level == 1 else random.uniform(0.8, 1.2)
+            return min(self._max_open_seconds, max(self.open_seconds, base * jitter, float(retry_after or 0.0)))
+
+        if self._state == "half-open":
+            self._probe_in_flight = False
+            if success:
+                self._state = "closed"
+                self._opened_at = None
+                self._current_open_seconds = self.open_seconds
+                self._backoff_level = 0
+                self._events.clear()
+            else:
+                self._state = "open"
+                self._opened_at = moment
+                self._current_open_seconds = _next_open_seconds()
+            return
+        if self._state == "open":
+            return
+        self._events.append((moment, success))
+        self._prune(moment)
+        if len(self._events) < self.min_samples:
+            return
+        failures = sum(1 for _, ok in self._events if not ok)
+        if failures / len(self._events) >= self.failure_rate:
+            self._state = "open"
+            self._opened_at = moment
+            self._current_open_seconds = _next_open_seconds()
+            logger.warning(
+                "route circuit opened: failures=%s samples=%s open_seconds=%s",
+                failures,
+                len(self._events),
+                self.open_seconds,
+            )
+
+    def reset(self) -> None:
+        self._events.clear()
+        self._state = "closed"
+        self._opened_at = None
+        self._current_open_seconds = self.open_seconds
+        self._backoff_level = 0
+        self._probe_in_flight = False
+
+    def snapshot(self) -> Dict[str, object]:
+        now = time.monotonic()
+        self._prune(now)
+        failures = sum(1 for _, ok in self._events if not ok)
+        remaining = 0.0
+        if self._state == "open" and self._opened_at is not None:
+            remaining = max(0.0, self._current_open_seconds - (now - self._opened_at))
+        return {
+            "state": self._state,
+            "is_open": self._state == "open",
+            "is_half_open": self._state == "half-open",
+            "samples": len(self._events),
+            "failures": failures,
+            "failure_rate": round(failures / len(self._events), 3) if self._events else 0.0,
+            "remaining_seconds": round(remaining, 1),
+        }
+
+
+class RouteCircuitRegistry:
+    def __init__(self) -> None:
+        self._breakers: Dict[str, RouteCircuitBreaker] = {}
+        self.window_seconds = _env_float("ROUTE_BREAKER_WINDOW_SECONDS", 30.0)
+        self.min_samples = _env_int("ROUTE_BREAKER_MIN_SAMPLES", 5)
+        self.failure_rate = _env_float("ROUTE_BREAKER_FAILURE_RATE", 0.6)
+        self.open_seconds = _env_float("ROUTE_BREAKER_OPEN_SECONDS", 30.0)
+        self._loaded = False
+
+    def _get(self, key: str) -> RouteCircuitBreaker:
+        breaker = self._breakers.get(key)
+        if breaker is None:
+            breaker = RouteCircuitBreaker(
+                window_seconds=self.window_seconds,
+                min_samples=self.min_samples,
+                failure_rate=self.failure_rate,
+                open_seconds=self.open_seconds,
+            )
+            self._breakers[key] = breaker
+        return breaker
+
+    async def load_persisted(self) -> None:
+        if self._loaded:
+            return
+        self._loaded = True
+        try:
+            from datetime import datetime
+            from sqlalchemy import select
+            from app.models.database import RouteHealth, get_session_factory
+
+            factory = get_session_factory()
+            async with factory() as session:
+                result = await session.execute(
+                    select(RouteHealth).where(RouteHealth.state == "open")
+                )
+                now = datetime.utcnow()
+                for health in result.scalars().all():
+                    if health.retry_after_at is None:
+                        continue
+                    remaining = (health.retry_after_at - now).total_seconds()
+                    if remaining <= 0:
+                        continue
+                    breaker = self._get(health.route_key)
+                    breaker._state = "open"
+                    breaker._opened_at = time.monotonic()
+                    breaker._current_open_seconds = remaining
+        except Exception as exc:
+            logger.warning("load persisted route health failed: %s", exc)
+
+    def allow(self, key: str) -> Tuple[bool, float]:
+        return self._get(key).allow()
+
+    def record(self, key: str, success: bool, retry_after: Optional[float] = None) -> None:
+        breaker = self._get(key)
+        before = breaker.snapshot()["state"]
+        breaker.record(success, retry_after=retry_after)
+        after_snapshot = breaker.snapshot()
+        if before != after_snapshot["state"]:
+            self._persist_state_in_background(key, after_snapshot)
+
+    def reset(self, key: Optional[str] = None) -> None:
+        if key is None:
+            for route_key, breaker in self._breakers.items():
+                breaker.reset()
+                self._persist_state_in_background(route_key, breaker.snapshot())
+        elif key in self._breakers:
+            self._breakers[key].reset()
+            self._persist_state_in_background(key, self._breakers[key].snapshot())
+
+    def snapshot(self) -> Dict[str, Dict[str, object]]:
+        return {key: breaker.snapshot() for key, breaker in self._breakers.items()}
+
+    def _persist_state_in_background(self, key: str, snapshot: Dict[str, object]) -> None:
+        if not key:
+            return
+        try:
+            from app.models.database import get_session_factory
+
+            get_session_factory()
+            loop = asyncio.get_running_loop()
+        except (RuntimeError, AttributeError):
+            return
+        loop.create_task(self._persist_state(key, snapshot))
+
+    async def _persist_state(self, key: str, snapshot: Dict[str, object]) -> None:
+        try:
+            from datetime import datetime, timedelta
+            from app.models.database import RouteHealth, get_session_factory
+
+            factory = get_session_factory()
+            async with factory() as session:
+                health = await session.get(RouteHealth, key)
+                if health is None:
+                    health = RouteHealth(route_key=key)
+                    session.add(health)
+                health.state = str(snapshot.get("state") or "closed")
+                health.failure_count = int(snapshot.get("failures") or 0)
+                remaining = float(snapshot.get("remaining_seconds") or 0.0)
+                health.opened_at = datetime.utcnow() if health.state == "open" else None
+                health.retry_after_at = (
+                    datetime.utcnow() + timedelta(seconds=remaining) if remaining > 0 else None
+                )
+                await session.commit()
+        except Exception as exc:
+            logger.warning("persist route health failed: route=%s error=%s", key[:80], exc)
+
+
+class GenerationAdmission:
+    """进程内即时准入闸门；满载直接拒绝，不创建服务端等待队列。"""
+
+    def __init__(self, total_slots: int) -> None:
+        self.total_slots = max(0, int(total_slots))
         self._lock = asyncio.Lock()
-        self._in_flight = 0  # 当前在途数（acquire 成功 +1 / release -1）
-        self._rejected = 0  # 等待超时被拒的累计次数
+        self._model_in_flight: Dict[str, int] = {}
+        self._in_flight = 0
+        self._rejected = 0
+
+    @property
+    def max_concurrent(self) -> int:
+        return self.total_slots
 
     @property
     def enabled(self) -> bool:
-        return self.max_concurrent > 0
+        return self.total_slots > 0
 
     @property
     def in_flight(self) -> int:
@@ -163,29 +400,43 @@ class GlobalConcurrencyGate:
     def rejected(self) -> int:
         return self._rejected
 
-    async def _get_semaphore(self) -> asyncio.Semaphore:
+    @staticmethod
+    def _model_key(model: str) -> str:
+        return str(model or "unknown")
+
+    async def try_acquire(self, model: str = "unknown") -> bool:
+        """在极短锁区内更新计数；容量不足立即返回 False。"""
+        key = self._model_key(model)
         async with self._lock:
-            if self._semaphore is None:
-                self._semaphore = asyncio.Semaphore(self.max_concurrent)
-            return self._semaphore
-
-    async def acquire(self) -> bool:
-        """尝试在 wait_seconds 内拿到全局槽；超时返回 False。"""
-        if not self.enabled:
+            if self.enabled and self._in_flight >= self.total_slots:
+                self._rejected += 1
+                return False
+            self._in_flight += 1
+            self._model_in_flight[key] = self._model_in_flight.get(key, 0) + 1
             return True
-        sem = await self._get_semaphore()
-        try:
-            await asyncio.wait_for(sem.acquire(), timeout=self.wait_seconds)
-        except asyncio.TimeoutError:
-            self._rejected += 1
-            return False
-        self._in_flight += 1
-        return True
 
-    def release(self) -> None:
-        if self.enabled and self._semaphore is not None:
-            self._semaphore.release()
+    def release(self, model: str = "unknown") -> None:
+        key = self._model_key(model)
         self._in_flight = max(0, self._in_flight - 1)
+        if key in self._model_in_flight:
+            self._model_in_flight[key] = max(0, self._model_in_flight[key] - 1)
+            if self._model_in_flight[key] == 0:
+                self._model_in_flight.pop(key, None)
+
+    def snapshot(self) -> Dict[str, object]:
+        return {
+            "enabled": self.enabled,
+            "total_slots": self.total_slots,
+            "max_concurrent": self.max_concurrent,
+            "in_flight": self._in_flight,
+            "rejected": self._rejected,
+            "models": {
+                key: {
+                    "in_flight": self._model_in_flight.get(key, 0),
+                }
+                for key in sorted(self._model_in_flight)
+            },
+        }
 
 
 class LoginThrottle:
@@ -236,9 +487,8 @@ class GenerationGuard:
 
     def __init__(self) -> None:
         self._rpm_rejected = 0
-        self.global_gate = GlobalConcurrencyGate(
-            _env_int("GENERATION_GLOBAL_MAX_CONCURRENT", 64),
-            _env_float("GENERATION_GLOBAL_WAIT_SECONDS", 5.0),
+        self.generation_admission = GenerationAdmission(
+            _env_int("GENERATION_GLOBAL_MAX_CONCURRENT", 60),
         )
         self.user_rpm = SlidingWindowRateLimiter(
             _env_int("USER_RPM_LIMIT", 12),
@@ -248,6 +498,7 @@ class GenerationGuard:
             _env_int("CIRCUIT_BREAKER_FAILURES", 6),
             _env_float("CIRCUIT_BREAKER_OPEN_SECONDS", 30.0),
         )
+        self.route_breakers = RouteCircuitRegistry()
 
     async def check_user_rate(self, user_key: str) -> float:
         """返回 0 表示放行；>0 为建议的重试等待秒数。"""
@@ -257,20 +508,20 @@ class GenerationGuard:
         self._rpm_rejected += 1
         return max(retry_after, 1.0)
 
+    async def load_persisted_route_health(self) -> None:
+        await self.route_breakers.load_persisted()
+
     @property
     def rpm_rejected(self) -> int:
         return self._rpm_rejected
 
     def status_snapshot(self) -> Dict[str, object]:
         """管理接口用的整体运行状态快照。"""
+        admission = self.generation_admission.snapshot()
         return {
-            "global_gate": {
-                "enabled": self.global_gate.enabled,
-                "max_concurrent": self.global_gate.max_concurrent,
-                "in_flight": self.global_gate.in_flight,
-                "rejected": self.global_gate.rejected,
-            },
+            "generation_admission": admission,
             "circuit_breaker": self.upstream_breaker.snapshot(),
+            "route_breakers": self.route_breakers.snapshot(),
             "user_rpm": {
                 "enabled": self.user_rpm.enabled,
                 "limit": self.user_rpm.limit,
@@ -278,15 +529,28 @@ class GenerationGuard:
             },
         }
 
-    def check_upstream(self) -> float:
+    def check_upstream(self, route_key: Optional[str] = None) -> float:
         """返回 0 表示放行；>0 为断路剩余秒数。"""
+        if route_key:
+            allowed, remaining = self.route_breakers.allow(route_key)
+            return 0.0 if allowed else remaining
         allowed, remaining = self.upstream_breaker.allow()
         return 0.0 if allowed else remaining
 
-    def record_upstream_success(self) -> None:
+    def record_upstream_success(self, route_key: Optional[str] = None) -> None:
+        if route_key:
+            self.route_breakers.record(route_key, True)
+            return
         self.upstream_breaker.record_success()
 
-    def record_upstream_failure(self) -> None:
+    def record_upstream_failure(
+        self,
+        route_key: Optional[str] = None,
+        retry_after: Optional[float] = None,
+    ) -> None:
+        if route_key:
+            self.route_breakers.record(route_key, False, retry_after=retry_after)
+            return
         self.upstream_breaker.record_failure()
 
 

@@ -8,21 +8,34 @@ services:
       HOST: 0.0.0.0
       PORT: "8001"
       DEBUG: "false"
-      # 进程内锁/冷却状态决定只能单 worker；压测环境与安全配置对齐
+      # 进程内准入/故障隔离状态决定只能单 worker；压测环境与安全配置对齐
       UVICORN_WORKERS: "${UVICORN_WORKERS:-1}"
-      HTTP_MAX_CONNECTIONS: "${HTTP_MAX_CONNECTIONS:-40}"
-      HTTP_MAX_KEEPALIVE: "${HTTP_MAX_KEEPALIVE:-20}"
-      DB_POOL_SIZE: "${DB_POOL_SIZE:-16}"
-      DB_MAX_OVERFLOW: "${DB_MAX_OVERFLOW:-8}"
-      DB_POOL_TIMEOUT_SECONDS: "${DB_POOL_TIMEOUT_SECONDS:-30}"
-      # 压测测原始容量：关闭流量守卫
-      GENERATION_GLOBAL_MAX_CONCURRENT: "0"
+      HTTP_MAX_CONNECTIONS: "${HTTP_MAX_CONNECTIONS:-96}"
+      HTTP_MAX_KEEPALIVE: "${HTTP_MAX_KEEPALIVE:-96}"
+      ACCOUNT_MAX_INFLIGHT: "${ACCOUNT_MAX_INFLIGHT:-2}"
+      GENERATED_IMAGE_DOWNLOAD_CONCURRENCY: "${GENERATED_IMAGE_DOWNLOAD_CONCURRENCY:-32}"
+      GENERATED_IMAGE_MIN_FREE_BYTES: "${GENERATED_IMAGE_MIN_FREE_BYTES:-8589934592}"
+      # 可选：本机代理需要显式映射到宿主机；未设置时保持直连。
+      HTTP_PROXY: "${VPS_HTTP_PROXY:-}"
+      HTTPS_PROXY: "${VPS_HTTPS_PROXY:-}"
+      NO_PROXY: "${VPS_NO_PROXY:-localhost,127.0.0.1,::1}"
+      http_proxy: "${VPS_HTTP_PROXY:-}"
+      https_proxy: "${VPS_HTTPS_PROXY:-}"
+      no_proxy: "${VPS_NO_PROXY:-localhost,127.0.0.1,::1}"
+      DB_POOL_SIZE: "${DB_POOL_SIZE:-4}"
+      DB_MAX_OVERFLOW: "${DB_MAX_OVERFLOW:-0}"
+      DB_POOL_TIMEOUT_SECONDS: "${DB_POOL_TIMEOUT_SECONDS:-3}"
+      # 容器资源仿真仍使用生产的 60 槽位；仅关闭用户限速和熔断，
+      # 避免压测账号身份/短时失败改变容量结论。
+      GENERATION_GLOBAL_MAX_CONCURRENT: "${GENERATION_GLOBAL_MAX_CONCURRENT:-60}"
       USER_RPM_LIMIT: "0"
       CIRCUIT_BREAKER_FAILURES: "0"
       PYTHONUNBUFFERED: "1"
     volumes:
       - ./.env:/app/.env:ro
       - ./data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "18001:8001"
     cpus: 2.0

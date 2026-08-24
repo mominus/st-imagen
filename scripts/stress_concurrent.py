@@ -348,7 +348,7 @@ def main() -> int:
         default=os.getenv("ST_IMAGEN_AUTH_TOKEN", ""),
         help="JWT token; sent as Authorization: Bearer <token>",
     )
-    parser.add_argument("--timeout", type=float, default=240.0,
+    parser.add_argument("--timeout", type=float, default=300.0,
                         help="单请求最大等待秒数")
     parser.add_argument("--output-dir", default="data/stress_reports")
     parser.add_argument("--label", default="", help="报告文件名后缀，便于阶梯标记")

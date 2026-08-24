@@ -1,8 +1,8 @@
-"""账号池：CRUD + 简单轮询选号。
+"""账号池：CRUD + 进程内并发准入选号。
 
 借鉴 st-api 的 AccountPoolService，但极度简化：
 - 共用一套工作流模板：每个账号只需 org_id / flow_id / api_key。
-- 选号策略：active 状态、按 last_used_at 升序（最久未使用优先）。
+- 选号策略：跳过故障隔离/已满账号，优先在途数低、最久未使用的账号。
 - 失败切换由调用方决定（看 /api/generate 的错误处理）。
 """
 from __future__ import annotations
@@ -12,14 +12,13 @@ import logging
 import os
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
-from sqlalchemy import asc, case, delete, func, select, update
-from sqlalchemy.exc import OperationalError
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.database import Account
+from app.models.database import Account, AccountHealth
 from app.services.crypto import get_crypto_service
 
 
@@ -28,27 +27,40 @@ logger = logging.getLogger(__name__)
 
 class NoAvailableAccountError(Exception):
     """账号池中没有 active 账号（配置问题）。"""
-    pass
+    failure_scope = "account_pool"
+    retry_after = None
 
 
 class NoCapacityError(Exception):
     """所有 active 账号都已达 in_flight 上限（瞬时过载）。"""
 
+    def __init__(self, message: str = "所有账号均达 in_flight 上限，请稍后重试", *, failure_scope: str = "account_capacity", retry_after: Optional[float] = None):
+        super().__init__(message)
+        self.failure_scope = failure_scope
+        self.retry_after = retry_after
+
 
 class AccountPoolService:
-    # 串行选号，避免 N 路并发同时读到同一快照后都选同一号。
-    # 锁只包括 SELECT、UPDATE in_flight+1、COMMIT，持锁时间预计 < 5ms，
-    # 对吞吐影响微乎其微（上游单请求 ~20s，选号锁完全不是瓶颈）。
+    # 单 worker 部署下，容量计数只保存在内存。锁只保护一次很短的
+    # SELECT + counter update，不会持有 SQLite 写事务，也不会等待上游。
     _select_lock: asyncio.Lock = asyncio.Lock()
-    # SQLite 同时只允许单写者。高并发收尾时，账号释放会集中写 accounts.in_flight，
-    # 这里在应用层串行释放，避免少量请求因为瞬时写锁冲突留下残留计数。
-    _release_lock: asyncio.Lock = asyncio.Lock()
-    RELEASE_RETRY_ATTEMPTS = max(1, int(os.getenv("ACCOUNT_RELEASE_RETRY_ATTEMPTS", "8")))
-    RELEASE_RETRY_BASE_DELAY_SECONDS = max(
-        0.01,
-        float(os.getenv("ACCOUNT_RELEASE_RETRY_BASE_DELAY_SECONDS", "0.05")),
-    )
-    _account_cooldowns: Dict[str, Tuple[float, str]] = {}
+    DEFAULT_MAX_INFLIGHT = max(1, int(os.getenv("ACCOUNT_MAX_INFLIGHT", "2")))
+    _account_isolations: Dict[str, Tuple[float, str]] = {}
+
+    def __init__(self) -> None:
+        try:
+            self.DEFAULT_MAX_INFLIGHT = max(
+                1, int(os.getenv("ACCOUNT_MAX_INFLIGHT", str(self.DEFAULT_MAX_INFLIGHT)))
+            )
+        except (TypeError, ValueError):
+            pass
+        self._health_loaded = False
+        self._runtime_in_flight: Dict[str, int] = {}
+        # Slot tokens are in-process idempotency tokens. They prevent a request's
+        # cleanup paths from releasing the same account slot twice.
+        self._runtime_tokens: Dict[str, str] = {}
+        self._usage_tasks: set[asyncio.Task] = set()
+        self._usage_persist_lock = asyncio.Lock()
 
     # ---------- CRUD ----------
     @staticmethod
@@ -59,8 +71,6 @@ class AccountPoolService:
             cleaned = cleaned[7:].strip()
         return cleaned
 
-    DEFAULT_DAILY_QUOTA = 1_000_000  # 全部账号统一额度（每日）
-
     async def create_account(
         self,
         session: AsyncSession,
@@ -68,7 +78,6 @@ class AccountPoolService:
         org_id: str,
         flow_id: str,
         api_key: str,
-        daily_quota: Optional[int] = None,
         private_api_key: Optional[str] = None,
         max_inflight: Optional[int] = None,
     ) -> Account:
@@ -79,8 +88,6 @@ class AccountPoolService:
         encrypted = crypto.encrypt(cleaned_key)
         cleaned_private = self._normalize_api_key(private_api_key or "")
         encrypted_private = crypto.encrypt(cleaned_private) if cleaned_private else None
-        # 当前需求：所有账号固定 1M/day；外部即便传了别的值也忽略掉
-        daily_quota = self.DEFAULT_DAILY_QUOTA
         account = Account(
             id=str(uuid.uuid4()),
             name=name.strip() or f"acct-{datetime.utcnow().strftime('%H%M%S')}",
@@ -89,11 +96,11 @@ class AccountPoolService:
             api_key_encrypted=encrypted,
             private_api_key_encrypted=encrypted_private,
             status="active",
-            daily_quota=max(0, int(daily_quota or 0)),
+            # Keep legacy non-null columns populated for old SQLite schemas.
+            daily_quota=0,
             daily_used=0,
             total_requests=0,
-            max_inflight=max(1, int(max_inflight)) if max_inflight is not None else 10,
-            in_flight=0,
+            max_inflight=max(1, int(max_inflight)) if max_inflight is not None else self.DEFAULT_MAX_INFLIGHT,
         )
         session.add(account)
         await session.flush()
@@ -118,7 +125,6 @@ class AccountPoolService:
         flow_id: Optional[str] = None,
         api_key: Optional[str] = None,
         status: Optional[str] = None,
-        daily_quota: Optional[int] = None,
         private_api_key: Optional[str] = None,
         max_inflight: Optional[int] = None,
     ) -> Optional[Account]:
@@ -144,8 +150,6 @@ class AccountPoolService:
                 account.private_api_key_encrypted = None
         if status is not None and status in {"active", "disabled"}:
             account.status = status
-        if daily_quota is not None:
-            account.daily_quota = max(0, int(daily_quota))
         if max_inflight is not None:
             account.max_inflight = max(1, int(max_inflight))
         account.updated_at = datetime.utcnow()
@@ -182,45 +186,118 @@ class AccountPoolService:
         return max(0, int(result.rowcount or 0))
 
     # ---------- 选号 / 释放 ----------
-    def _prune_expired_cooldowns(self, now_monotonic: Optional[float] = None) -> None:
+    def _prune_expired_isolations(self, now_monotonic: Optional[float] = None) -> None:
         now = time.monotonic() if now_monotonic is None else now_monotonic
         expired = [
             account_id
-            for account_id, (cooldown_until, _) in self._account_cooldowns.items()
-            if cooldown_until <= now
+            for account_id, (isolated_until, _) in self._account_isolations.items()
+            if isolated_until <= now
         ]
         for account_id in expired:
-            self._account_cooldowns.pop(account_id, None)
+            self._account_isolations.pop(account_id, None)
 
-    def mark_account_cooldown(
+    def mark_account_isolated(
         self,
         account_id: str,
         *,
         seconds: float,
         reason: str,
     ) -> None:
-        cooldown_seconds = max(0.0, float(seconds))
-        if not account_id or cooldown_seconds <= 0:
+        isolation_seconds = max(0.0, float(seconds))
+        if not account_id or isolation_seconds <= 0:
             return
-        cooldown_until = time.monotonic() + cooldown_seconds
-        previous = self._account_cooldowns.get(account_id)
-        if previous is not None and previous[0] > cooldown_until:
+        isolated_until = time.monotonic() + isolation_seconds
+        previous = self._account_isolations.get(account_id)
+        if previous is not None and previous[0] > isolated_until:
             return
-        self._account_cooldowns[account_id] = (cooldown_until, reason)
+        self._account_isolations[account_id] = (isolated_until, reason)
+        self._persist_health_in_background(account_id, reason, isolation_seconds)
         logger.warning(
-            "account cooldown set: account=%s seconds=%.1f reason=%s",
+            "account failure isolation set: account=%s seconds=%.1f reason=%s",
             account_id,
-            cooldown_seconds,
+            isolation_seconds,
             reason,
         )
 
-    def cooldown_snapshot(self) -> Dict[str, Dict[str, object]]:
-        """当前冷却中的账号快照：{account_id: {"remaining_seconds": x, "reason": str}}。"""
-        self._prune_expired_cooldowns()
+    def clear_account_isolation(self, account_id: str) -> bool:
+        normalized = str(account_id or "").strip()
+        removed = self._account_isolations.pop(normalized, None) is not None
+        if removed:
+            self._persist_health_in_background(normalized, "manual recovery", 0.0)
+        return removed
+
+    def clear_all_account_isolations(self) -> int:
+        ids = list(self._account_isolations)
+        self._account_isolations.clear()
+        if ids:
+            for account_id in ids:
+                self._persist_health_in_background(account_id, "manual recovery", 0.0)
+        return len(ids)
+
+    def _persist_health_in_background(self, account_id: str, reason: str, seconds: float) -> None:
+        """Write only state transitions; per-request transient failures stay in memory."""
+        try:
+            from app.models.database import get_session_factory
+
+            get_session_factory()
+            loop = asyncio.get_running_loop()
+        except (RuntimeError, AttributeError):
+            return
+        loop.create_task(self._persist_health(account_id, reason, seconds))
+
+    async def _persist_health(self, account_id: str, reason: str, seconds: float) -> None:
+        try:
+            from app.models.database import get_session_factory
+
+            factory = get_session_factory()
+            async with factory() as session:
+                health = await session.get(AccountHealth, account_id)
+                if health is None:
+                    health = AccountHealth(account_id=account_id)
+                    session.add(health)
+                health.state = "isolated" if seconds > 0 else "healthy"
+                health.reason = str(reason or "")[:1000]
+                health.last_failure_scope = "account" if seconds > 0 else None
+                health.retry_after_at = (
+                    datetime.utcnow() + timedelta(seconds=seconds) if seconds > 0 else None
+                )
+                await session.commit()
+        except Exception as exc:
+            logger.warning("persist account health failed: account=%s error=%s", account_id[:8], exc)
+
+    async def _load_persisted_health(self, session: AsyncSession) -> None:
+        if self._health_loaded:
+            return
+        try:
+            del session
+            from app.models.database import get_session_factory
+
+            factory = get_session_factory()
+            async with factory() as health_session:
+                result = await health_session.execute(
+                    select(AccountHealth).where(AccountHealth.state == "isolated")
+                )
+            now = datetime.utcnow()
+            for health in result.scalars().all():
+                if health.retry_after_at is None:
+                    continue
+                remaining = (health.retry_after_at - now).total_seconds()
+                if remaining > 0:
+                    self._account_isolations[health.account_id] = (
+                        time.monotonic() + remaining,
+                        health.reason or "persisted account isolation",
+                    )
+        except Exception as exc:
+            logger.warning("load persisted account health failed: %s", exc)
+        self._health_loaded = True
+
+    def isolation_snapshot(self) -> Dict[str, Dict[str, object]]:
+        """当前故障隔离账号快照。"""
+        self._prune_expired_isolations()
         now = time.monotonic()
         snapshot: Dict[str, Dict[str, object]] = {}
-        for account_id, (cooldown_until, reason) in self._account_cooldowns.items():
-            remaining = max(0.0, cooldown_until - now)
+        for account_id, (isolated_until, reason) in self._account_isolations.items():
+            remaining = max(0.0, isolated_until - now)
             if remaining <= 0:
                 continue
             snapshot[account_id] = {
@@ -229,10 +306,15 @@ class AccountPoolService:
             }
         return snapshot
 
+    def runtime_in_flight(self, account_id: str) -> int:
+        return max(0, int(self._runtime_in_flight.get(str(account_id), 0)))
+
     async def select_account(
         self,
         session: AsyncSession,
         exclude_ids: Optional[List[str]] = None,
+        *,
+        reserve: bool = True,
     ) -> Account:
         """原子选号：选负载最低且未超限的账号，同时把 in_flight +1。
 
@@ -242,35 +324,36 @@ class AccountPoolService:
         - 排除已尝试过的 ID（用于失败切换）
         - 排序键：in_flight ASC（负载低优先）→ last_used_at ASC（轮转公平）→ created_at ASC
 
-        返回的 Account 在调用方 try/finally 中必须调 release_account 释放，
-        否则 in_flight 会遗留。进程重启时会重置（見 init_database）。
+        ``reserve=False`` 只做同样的可用性检查并返回候选账号，不增加
+        ``in_flight``。默认返回的 Account 带有进程内属性 ``_slot_token``；
+        调用方应在 finally 中把它传给 release_account，重复释放同一个
+        token 是幂等的。
         """
         async with self._select_lock:
+            await self._load_persisted_health(session)
             now_monotonic = time.monotonic()
-            self._prune_expired_cooldowns(now_monotonic)
-            active_cooldowns = self._account_cooldowns
-            stmt = (
-                select(Account)
-                .where(Account.status == "active")
-                .where(Account.in_flight < Account.max_inflight)
-                .order_by(
-                    asc(Account.in_flight),
-                    asc(Account.last_used_at),
-                    asc(Account.created_at),
-                )
-            )
+            self._prune_expired_isolations(now_monotonic)
+            active_isolations = self._account_isolations
+            stmt = select(Account).where(Account.status == "active")
             if exclude_ids:
                 stmt = stmt.where(~Account.id.in_(exclude_ids))
 
             result = await session.execute(stmt)
             candidates = list(result.scalars().all())
+            candidates.sort(
+                key=lambda acc: (
+                    self.runtime_in_flight(acc.id),
+                    acc.last_used_at or datetime.min,
+                    acc.created_at or datetime.min,
+                )
+            )
 
             chosen: Optional[Account] = None
-            cooled_candidates = 0
             for acc in candidates:
-                cooldown = active_cooldowns.get(acc.id)
-                if cooldown is not None and cooldown[0] > now_monotonic:
-                    cooled_candidates += 1
+                isolation = active_isolations.get(acc.id)
+                if isolation is not None and isolation[0] > now_monotonic:
+                    continue
+                if self.runtime_in_flight(acc.id) >= max(1, int(acc.max_inflight or 1)):
                     continue
                 chosen = acc
                 break
@@ -284,19 +367,37 @@ class AccountPoolService:
                     raise NoAvailableAccountError(
                         "没有可用账号；请在管理后台启用至少一个 active 账号"
                     )
-                raise NoCapacityError(
-                    "所有账号均达 in_flight 上限或处于临时冷却中，请稍后重试"
+                isolation_remaining = min(
+                    (
+                        max(0.0, until - now_monotonic)
+                        for account_id, (until, _reason) in active_isolations.items()
+                        if until > now_monotonic
+                        and account_id not in (exclude_ids or [])
+                    ),
+                    default=None,
                 )
+                if isolation_remaining is not None:
+                    raise NoCapacityError(
+                        "所有账号均处于故障隔离中，请稍后重试",
+                        failure_scope="account_isolation",
+                        retry_after=isolation_remaining,
+                    )
+                raise NoCapacityError("所有账号均达 in_flight 上限，请稍后重试")
 
-            # 原子 +1：用 SQL 表达式（避免 ORM 的 read-modify-write）。
-            # 立即 commit，让后续并发请求能看到负载变化。
-            await session.execute(
-                update(Account)
-                .where(Account.id == chosen.id)
-                .values(in_flight=Account.in_flight + 1)
-            )
-            await session.commit()
-            await session.refresh(chosen)
+            if not reserve:
+                return chosen
+
+            slot_token = str(uuid.uuid4())
+            self._runtime_in_flight[chosen.id] = self.runtime_in_flight(chosen.id) + 1
+            self._runtime_tokens[slot_token] = chosen.id
+            # Close the read transaction promptly.  This is not a capacity
+            # write; it prevents the request session from holding a pooled
+            # SQLite connection after selection.
+            if reserve and hasattr(session, "commit"):
+                await session.commit()
+            if reserve and hasattr(session, "refreshed") and hasattr(session, "refresh"):
+                await session.refresh(chosen)
+            chosen._slot_token = slot_token
             return chosen
 
     async def release_account(
@@ -304,151 +405,70 @@ class AccountPoolService:
         session: AsyncSession,
         account_id: str,
         *,
-        mark_used: Optional[bool] = None,
+        count_request: Optional[bool] = None,
+        slot_token: Optional[str] = None,
     ) -> None:
-        """释放一个在途名额：in_flight -1（不会为负）。调用方应在 try/finally 中调。
-
-        mark_used 不为 None 时，同一条 UPDATE 顺带完成使用统计
-        （total_requests+1、跨日重置的 daily_used、last_used_at），
-        替代原先独立的 mark_used()，减少热点路径上的写事务。
-
-        关键点：本函数会被 SSE generator 的 finally 调用。当客户端断开导致 ASGI task
-        被 cancel 时，原本在 finally 里的 await 会立即 raise CancelledError，
-        导致 in_flight 泄漏。解决方案：
-        1. 用独立 session（不依赖请求级 session 的生命周期）
-        2. 用 asyncio.shield 包裹，即便外层被 cancel，内部 task 也会跑完
-        """
+        """释放进程内账号槽位；统计写入不再更新实时容量字段。"""
         del session
-        from app.models.database import get_session_factory  # 延迟导入避免循环
+        normalized_account_id = str(account_id or "").strip()
+        if not slot_token:
+            return
+        token_account_id = self._runtime_tokens.pop(str(slot_token), None)
+        if token_account_id != normalized_account_id:
+            return
 
-        now = datetime.utcnow()
-        values: Dict[str, object] = {"in_flight": Account.in_flight - 1}
-        if mark_used is not None:
-            today_iso = now.date().isoformat()
-            inc_daily = 1 if mark_used else 0
-            # 跨日（含首次：last_used_at 为 NULL）→ daily_used 重置为 inc_daily
-            daily_expr = case(
-                (
-                    func.coalesce(func.date(Account.last_used_at), "1970-01-01") != today_iso,
-                    inc_daily,
-                ),
-                else_=Account.daily_used + inc_daily,
-            )
-            values.update(
-                last_used_at=now,
-                total_requests=Account.total_requests + 1,
-                daily_used=daily_expr,
-            )
+        current = self.runtime_in_flight(normalized_account_id)
+        if current > 0:
+            self._runtime_in_flight[normalized_account_id] = current - 1
+        if self._runtime_in_flight.get(normalized_account_id) == 0:
+            self._runtime_in_flight.pop(normalized_account_id, None)
+        if count_request is not None:
+            # Persisting aggregate usage is deliberately deferred so a SQLite
+            # write cannot extend the generation critical section.
+            self._schedule_usage_persistence(normalized_account_id)
 
-        async def _do_release() -> None:
-            factory = get_session_factory()
-            async with self._release_lock:
-                for attempt in range(1, self.RELEASE_RETRY_ATTEMPTS + 1):
-                    async with factory() as inner:
-                        try:
-                            result = await inner.execute(
-                                update(Account)
-                                .where(Account.id == account_id)
-                                .where(Account.in_flight > 0)
-                                .values(**values)
-                            )
-                            await inner.commit()
-                            updated = max(0, int(result.rowcount or 0))
-                            if updated == 0:
-                                logger.warning(
-                                    "release_account(%s) updated 0 rows on attempt %s",
-                                    account_id,
-                                    attempt,
-                                )
-                            elif attempt > 1:
-                                logger.info(
-                                    "release_account(%s) succeeded after retry %s",
-                                    account_id,
-                                    attempt,
-                                )
-                            return
-                        except OperationalError as exc:
-                            try:
-                                await inner.rollback()
-                            except Exception:
-                                logger.warning(
-                                    "release_account(%s) rollback failed after OperationalError",
-                                    account_id,
-                                )
-                            if attempt >= self.RELEASE_RETRY_ATTEMPTS:
-                                logger.warning(
-                                    "release_account(%s) failed after %s attempts: %s",
-                                    account_id,
-                                    attempt,
-                                    exc,
-                                )
-                                return
-                            await asyncio.sleep(
-                                self.RELEASE_RETRY_BASE_DELAY_SECONDS * attempt
-                            )
-                        except Exception as exc:
-                            try:
-                                await inner.rollback()
-                            except Exception:
-                                logger.warning(
-                                    "release_account(%s) rollback failed after error",
-                                    account_id,
-                                )
-                            logger.warning("release_account(%s) commit failed: %s", account_id, exc)
-                            return
+    async def _record_account_usage(self, account_id: str) -> None:
+        """Record aggregate account usage outside the generation critical path."""
+        from app.models.database import get_session_factory
 
-        try:
-            await asyncio.shield(_do_release())
-        except asyncio.CancelledError:
-            # 当前 task 被 cancel，但内部 _do_release 受 shield 保护仍会跑完。
-            # 不 re-raise（generator finally 内 swallow 即可，避免遮蔽 GeneratorExit）。
-            pass
-        except Exception as exc:
-            logger.warning("release_account(%s) outer failed: %s", account_id, exc)
-
-    # 第二层流控：短排队。配合第一层的 in_flight 限制，
-    # 让瞬时过载请求短暂等待而不是立刻 429。
-    # 默认等待 30s：上游单图 ~20s，给一个完整释放周期 + buffer。
-    # 太短（如 5s）几乎等不到 release；太长前端体验差。30s 是 latency / success 折中点。
-    DEFAULT_WAIT_TIMEOUT = 30.0
-    DEFAULT_POLL_INTERVAL = 0.25
-
-    async def select_account_or_wait(
-        self,
-        session: AsyncSession,
-        exclude_ids: Optional[List[str]] = None,
-        *,
-        wait_timeout: float = DEFAULT_WAIT_TIMEOUT,
-        poll_interval: float = DEFAULT_POLL_INTERVAL,
-    ) -> Account:
-        """选号，若所有账号 in_flight 打满则短暂轮询等待至有容量。
-
-        - NoCapacityError：在 wait_timeout 秒内反复尝试，每次失败后 sleep poll_interval
-        - NoAvailableAccountError（账号池配置问题）：不等待，直接抛
-        - 仍超时未拿到 → 抛 NoCapacityError（让上层返 429）
-
-        polling 设计选择：
-        - 实现简单（无需 Condition / Event 广播）
-        - 0.25s 间隔，5s 内最多 20 次 SELECT，SQLite 单进程毫秒级查询无压力
-        - select_account 内部已有 _select_lock 串行，避免雷鸣群效应
-        """
-        deadline = time.monotonic() + wait_timeout
-        attempts = 0
-        while True:
+        async with self._usage_persist_lock:
+            now = datetime.utcnow()
             try:
-                acc = await self.select_account(session, exclude_ids=exclude_ids)
-                if attempts > 0:
-                    logger.info(
-                        "select_account succeeded after %d wait attempt(s)", attempts
+                factory = get_session_factory()
+                async with factory() as inner:
+                    await inner.execute(
+                        update(Account)
+                        .where(Account.id == account_id)
+                        .values(
+                            last_used_at=now,
+                            total_requests=Account.total_requests + 1,
+                        )
                     )
-                return acc
-            except NoCapacityError:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise
-                attempts += 1
-                # 让其他 task 有机会释放 in_flight
-                await asyncio.sleep(min(poll_interval, remaining))
+                    await inner.commit()
+            except Exception as exc:
+                logger.warning("record account usage failed: account=%s error=%s", account_id[:8], exc)
+
+    def _schedule_usage_persistence(self, account_id: str) -> None:
+        try:
+            task = asyncio.create_task(
+                self._record_account_usage(account_id)
+            )
+        except RuntimeError:
+            return
+        self._usage_tasks.add(task)
+        task.add_done_callback(self._usage_tasks.discard)
+
+    async def drain_usage_persistence(self, timeout: float = 3.0) -> None:
+        tasks = [task for task in self._usage_tasks if not task.done()]
+        if not tasks:
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True),
+                timeout=max(0.0, float(timeout)),
+            )
+        except asyncio.TimeoutError:
+            logger.warning("account usage persistence drain timed out; pending=%s", len(tasks))
 
     # ---------- 解密 ----------
     @staticmethod
