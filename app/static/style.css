@@ -726,6 +726,7 @@ button {
   .admin-welcome-actions { justify-content: flex-start; }
   .admin-ui .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .admin-ui .admin-dashboard-grid { grid-template-columns: 1fr; }
+  .admin-ui .settings-form { grid-template-columns: 1fr; }
   .trend-panel, .distribution-panel, .health-panel, .attention-panel, .activity-panel, .busiest-panel { min-height: 0; }
   .status-distribution { grid-template-columns: 132px minmax(0, 1fr); gap: 12px; }
   .status-ring { width: 124px; height: 124px; }
@@ -2686,11 +2687,11 @@ kbd {
 
 /* —— 后台设置页表单 —— */
 .settings-form {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 22px;
   padding: 18px 20px;
-  max-width: 560px;
+  max-width: none;
 }
 
 .settings-field-head {

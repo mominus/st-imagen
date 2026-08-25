@@ -10,7 +10,7 @@ from app.services.stackai_client import StackAIError
 
 
 class StreamKeepaliveTests(unittest.IsolatedAsyncioTestCase):
-    async def test_text2img_4k_gets_relaxed_idle_timeout(self) -> None:
+    async def test_text2img_4k_uses_shared_idle_timeout(self) -> None:
         req = generate_mod.GenerateRequest(
             prompt="museum crown infographic",
             model="Nano Banana Pro",
@@ -20,10 +20,9 @@ class StreamKeepaliveTests(unittest.IsolatedAsyncioTestCase):
 
         timeout_seconds = generate_mod._stream_idle_timeout_seconds_for_request(req)
 
-        self.assertEqual(timeout_seconds, generate_mod.GENERATE_STREAM_TEXT2IMG_4K_IDLE_TIMEOUT_SECONDS)
-        self.assertGreaterEqual(timeout_seconds, generate_mod.GENERATE_STREAM_IDLE_TIMEOUT_SECONDS)
+        self.assertEqual(timeout_seconds, generate_mod.GENERATE_STREAM_IDLE_TIMEOUT_SECONDS)
 
-    async def test_gpt_image_2_gets_relaxed_idle_timeout(self) -> None:
+    async def test_gpt_image_2_uses_shared_idle_timeout(self) -> None:
         req = generate_mod.GenerateRequest(
             prompt="high quality image",
             model=generate_mod.GPT_IMAGE_2_MODEL,
@@ -34,8 +33,7 @@ class StreamKeepaliveTests(unittest.IsolatedAsyncioTestCase):
 
         timeout_seconds = generate_mod._stream_idle_timeout_seconds_for_request(req)
 
-        self.assertEqual(timeout_seconds, generate_mod.GENERATE_STREAM_GPT_IMAGE_2_IDLE_TIMEOUT_SECONDS)
-        self.assertGreaterEqual(timeout_seconds, generate_mod.GENERATE_STREAM_IDLE_TIMEOUT_SECONDS)
+        self.assertEqual(timeout_seconds, generate_mod.GENERATE_STREAM_IDLE_TIMEOUT_SECONDS)
 
     async def test_waiter_emits_keepalive_before_slow_first_event(self) -> None:
         async def upstream():

@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import tempfile
+import os
+import time
 import unittest
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -15,6 +18,7 @@ from sqlalchemy import delete
 from app.models import database as database_mod
 from app.models.database import AppSetting, Base, GenerationCounter, GenerationLog
 from app.services import app_settings
+from app.routers import generate as generate_mod
 from app.services.generation_stats import (
     get_total_generated_images,
     increment_total_generated_images,
@@ -23,10 +27,10 @@ from app.routers.admin import (
     AppSettingsUpdateRequest,
     StorageCleanupRequest,
     _dir_stats,
-    _purge_dir_files,
     _runtime_config_payload,
     _setting_item,
 )
+from app.routers.generate import BEIJING_TIME_ZONE, _beijing_now, _prune_upload_dir
 
 
 class AppSettingsServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -111,24 +115,69 @@ class DirStatsTests(unittest.TestCase):
         self.assertEqual(stats, {"count": 0, "size_bytes": 0})
 
 
-class PurgeDirFilesTests(unittest.TestCase):
-    def test_purges_files_keeps_subdirs(self) -> None:
+class RetentionPruneTests(unittest.TestCase):
+    def test_beijing_clock_is_used_for_user_visible_file_names(self) -> None:
+        current = _beijing_now()
+
+        self.assertEqual(current.tzinfo, BEIJING_TIME_ZONE)
+        self.assertEqual(current.utcoffset(), timedelta(hours=8))
+
+    def test_prunes_only_files_older_than_retention(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            (root / "a.png").write_bytes(b"x")
-            (root / "b.jpg").write_bytes(b"x")
-            (root / "c.tmp").write_bytes(b"x")  # 临时文件也一并清掉
-            (root / "generated").mkdir()
-            (root / "generated" / "d.png").write_bytes(b"x")  # 子目录内容不动
+            old_file = root / "old.png"
+            fresh_file = root / "fresh.png"
+            old_file.write_bytes(b"old")
+            fresh_file.write_bytes(b"fresh")
+            now = time.time()
+            os.utime(old_file, (now - 2 * 86400, now - 2 * 86400))
+            os.utime(fresh_file, (now - 60, now - 60))
 
-            removed = _purge_dir_files(root)
+            removed = _prune_upload_dir(
+                root,
+                retention_days=1,
+                max_files=0,
+            )
 
-            self.assertEqual(removed, 3)
-            self.assertEqual(list(root.iterdir()), [root / "generated"])
-            self.assertTrue((root / "generated" / "d.png").exists())
+            self.assertEqual(removed, 1)
+            self.assertFalse(old_file.exists())
+            self.assertTrue(fresh_file.exists())
 
-    def test_missing_directory_returns_zero(self) -> None:
-        self.assertEqual(_purge_dir_files(Path("/nonexistent-dir-xyz")), 0)
+    def test_retention_is_rolling_24_hours_not_calendar_day(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            within_window = root / "within-window.png"
+            outside_window = root / "outside-window.png"
+            within_window.write_bytes(b"within")
+            outside_window.write_bytes(b"outside")
+            now = time.time()
+            os.utime(within_window, (now - 86400 + 2, now - 86400 + 2))
+            os.utime(outside_window, (now - 86400 - 2, now - 86400 - 2))
+
+            removed = _prune_upload_dir(
+                root,
+                retention_days=1,
+                max_files=0,
+            )
+
+            self.assertEqual(removed, 1)
+            self.assertTrue(within_window.exists())
+            self.assertFalse(outside_window.exists())
+
+    def test_zero_retention_does_not_delete_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            file_path = root / "fresh.png"
+            file_path.write_bytes(b"fresh")
+
+            removed = _prune_upload_dir(
+                root,
+                retention_days=0,
+                max_files=0,
+            )
+
+            self.assertEqual(removed, 0)
+            self.assertTrue(file_path.exists())
 
 
 class CleanupRequestValidationTests(unittest.TestCase):
@@ -217,7 +266,13 @@ class RuntimeConfigPayloadTests(unittest.TestCase):
             user_rpm=SimpleNamespace(limit=12),
         )
         pool = SimpleNamespace(DEFAULT_MAX_INFLIGHT=10)
-        client = SimpleNamespace(max_connections=40, max_keepalive_connections=40)
+        client = SimpleNamespace(
+            max_connections=40,
+            max_keepalive_connections=40,
+            timeout=270.0,
+            connect_timeout=10.0,
+            stream_read_timeout=330.0,
+        )
 
         with patch("app.routers.admin.get_stackai_client", return_value=client):
             payload = _runtime_config_payload(guard, pool)
@@ -227,6 +282,10 @@ class RuntimeConfigPayloadTests(unittest.TestCase):
         self.assertEqual(payload["generation"]["global_max_concurrent"], 32)
         self.assertEqual(payload["generation"]["account_default_max_inflight"], 10)
         self.assertEqual(payload["network"]["http_max_connections"], 40)
+        self.assertEqual(payload["generation"]["workflow_idle_timeout_seconds"], generate_mod.GENERATE_STREAM_IDLE_TIMEOUT_SECONDS)
+        self.assertEqual(payload["generation"]["workflow_total_timeout_seconds"], generate_mod.GENERATE_STREAM_TOTAL_TIMEOUT_SECONDS)
+        self.assertEqual(payload["network"]["upstream_connect_timeout_seconds"], 10.0)
+        self.assertEqual(payload["network"]["upstream_read_timeout_seconds"], 330.0)
 
 
 if __name__ == "__main__":

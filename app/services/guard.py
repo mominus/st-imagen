@@ -491,7 +491,7 @@ class GenerationGuard:
             _env_int("GENERATION_GLOBAL_MAX_CONCURRENT", 90),
         )
         self.user_rpm = SlidingWindowRateLimiter(
-            _env_int("USER_RPM_LIMIT", 12),
+            _env_int("USER_RPM_LIMIT", 8),
             60.0,
         )
         self.upstream_breaker = CircuitBreaker(

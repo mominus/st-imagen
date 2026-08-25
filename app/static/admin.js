@@ -3445,6 +3445,21 @@ function renderStorageStats(storage) {
   render("storageLogsStat", storage?.logs, "条");
   render("storageGeneratedStat", storage?.generated_images, "张");
   render("storageReferenceStat", storage?.reference_images, "张");
+  const disk = storage?.disk;
+  const diskStat = $("#storageDiskStat");
+  const diskHint = $("#storageDiskHint");
+  if (diskStat) {
+    diskStat.textContent = !disk
+      ? "暂不可用"
+      : disk.available === false
+        ? "空间不足"
+        : "正常";
+  }
+  if (diskHint) {
+    diskHint.textContent = !disk
+      ? "磁盘探测不可用"
+      : `剩余 ${formatBytes(disk.free_bytes)} · 预留 ${formatBytes(disk.min_free_bytes)} · 可写 ${formatBytes(disk.writable_bytes)}`;
+  }
 }
 
 // ==================== 存储清理 ====================
@@ -3509,24 +3524,25 @@ function renderRuntimeConfig(config) {
 
   const process = config.process || {};
   const generation = config.generation || {};
-  const imageDelivery = config.image_delivery || {};
   const network = config.network || {};
   const persistence = config.persistence || {};
+  const formatSeconds = (value) => {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return "—";
+    return `${Number.isInteger(number) ? number : number.toFixed(1)}s`;
+  };
   const workerLabel = process.single_worker_ok === false
     ? `${fmtNumber(process.worker_count || 0)}（需单 worker）`
     : `${fmtNumber(process.worker_count || 1)}（符合）`;
   const rows = [
-    ["全局生图并发", `${fmtNumber(generation.global_max_concurrent || 0)} 个`, "所有模型共享；达到上限直接 429"],
-    ["单账号默认并发", `${fmtNumber(generation.account_default_max_inflight || 0)} 个`, "新建账号使用；已有账号按自身保存值执行"],
-    ["满载策略", "立即返回 429", "容量不足时不在服务端等待"],
-    ["图片返回地址", imageDelivery.upstream_image_url_exposed ? "包含上游地址" : "仅本站落盘地址", "本地文件落盘完成后才返回，隐藏上游 URL"],
-    ["用户限速", generation.user_rpm_limit ? `${fmtNumber(generation.user_rpm_limit)} 次/分钟` : "关闭", "按用户独立统计"],
-    ["上游 HTTP 连接", `${fmtNumber(network.http_max_connections || 0)} 个`, `Keep-Alive ${fmtNumber(network.http_max_keepalive || 0)} 个`],
+    ["生图并发与限速", `${fmtNumber(generation.global_max_concurrent || 0)} 个`, `单账号默认 ${fmtNumber(generation.account_default_max_inflight || 0)} 个 · 用户 ${generation.user_rpm_limit ? `${fmtNumber(generation.user_rpm_limit)} 次/分钟` : "限速关闭"}`],
+    ["工作流超时", `无进度 ${formatSeconds(generation.workflow_idle_timeout_seconds)} · 总计 ${formatSeconds(generation.workflow_total_timeout_seconds)}`, `SSE 保活 ${formatSeconds(generation.sse_keepalive_interval_seconds)} · 任一工作流时限达到即终止`],
+    ["上游网络超时", `连接 ${formatSeconds(network.upstream_connect_timeout_seconds)} · 读取 ${formatSeconds(network.upstream_read_timeout_seconds)}`, `传输总超时 ${formatSeconds(network.upstream_timeout_seconds)} · 连接池等待也受此限制`],
+    ["上游 HTTP 连接池", `${fmtNumber(network.http_max_connections || 0)} 个`, `Keep-Alive ${fmtNumber(network.http_max_keepalive || 0)} 个 · 与上游请求共用`],
     ["数据库连接池", `${fmtNumber(network.db_pool_size || 0)} 个`, `溢出 ${fmtNumber(network.db_max_overflow || 0)} · 超时 ${network.db_pool_timeout_seconds || 0}s`],
-    ["图片下载并发", `${fmtNumber(persistence.image_download_concurrency || 0)} 个`, "释放生图槽后并行落盘，完成后返回"],
-    ["历史日志写入", persistence.history_log_async ? `异步 · 当前 ${fmtNumber(persistence.history_log_active_tasks || 0)} 个` : "关闭", "图片本地落盘在请求内完成；数据库历史随后 best-effort 写入"],
-    ["图片磁盘", persistence.image_disk_available === false ? "空间不足" : "正常", `剩余 ${formatBytes(persistence.image_disk_free_bytes)} · 预留 ${formatBytes(persistence.image_min_free_bytes)}`],
-    ["Uvicorn worker", workerLabel, "进程内并发闸门要求单 worker"],
+    ["图片下载与落盘", `并发 ${fmtNumber(persistence.image_download_concurrency || 0)} 个 · 单次 ${formatSeconds(persistence.image_download_timeout_seconds)}`, `总预算 ${formatSeconds(persistence.image_save_total_timeout_seconds)} · 重试 ${fmtNumber(persistence.image_download_attempts || 0)} 次 · 退避 ${formatSeconds(persistence.image_retry_backoff_seconds)}`],
+    ["图片自动清理", `检查间隔 ${formatSeconds(persistence.upload_cleanup_interval_seconds)}`, "生成图与参考图按各自保留期执行；0 表示永久保留"],
+    ["进程与响应", workerLabel, "进程内并发闸门要求单 worker · 本地图片落盘完成后才返回"],
   ];
   panel.innerHTML = rows
     .map(([label, value, hint]) => `
@@ -3634,10 +3650,10 @@ function bindSettingsPage() {
     runStorageCleanup(["logs"], event.currentTarget, "全部生成日志")
   );
   $("#cleanupGeneratedBtn")?.addEventListener("click", (event) =>
-    runStorageCleanup(["generated_images"], event.currentTarget, "全部生成图片")
+    runStorageCleanup(["generated_images"], event.currentTarget, "过期生成图片")
   );
   $("#cleanupReferenceBtn")?.addEventListener("click", (event) =>
-    runStorageCleanup(["reference_images"], event.currentTarget, "全部参考图")
+    runStorageCleanup(["reference_images"], event.currentTarget, "过期参考图")
   );
   RETENTION_FIELDS.forEach((field) => {
     const resetBtn = $(`#${field.resetBtnId}`);

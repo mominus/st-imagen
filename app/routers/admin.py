@@ -347,6 +347,7 @@ async def _storage_stats(session: AsyncSession) -> dict:
     log_count = (
         await session.execute(select(func.count(GenerationLog.id)))
     ).scalar() or 0
+    disk = generate_mod._generated_disk_snapshot()
     return {
         "logs": {
             "count": int(log_count),
@@ -358,6 +359,12 @@ async def _storage_stats(session: AsyncSession) -> dict:
         "reference_images": await asyncio.to_thread(
             _dir_stats, generate_mod.REFERENCE_UPLOAD_DIR
         ),
+        "disk": {
+            "free_bytes": disk["free_bytes"],
+            "min_free_bytes": disk["min_free_bytes"],
+            "writable_bytes": disk["writable_bytes"],
+            "available": disk["can_write"],
+        },
     }
 
 
@@ -429,24 +436,6 @@ async def update_app_settings(
 CLEANUP_TARGETS = {"logs", "generated_images", "reference_images"}
 
 
-def _purge_dir_files(directory: Path) -> int:
-    """删除目录下所有普通文件（保留子目录），返回删除数量。"""
-    if not directory.exists():
-        return 0
-    removed = 0
-    for path in directory.iterdir():
-        if not path.is_file():
-            continue
-        try:
-            path.unlink()
-            removed += 1
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            logger.warning("cleanup failed to delete %s: %s", path, exc)
-    return removed
-
-
 @router.post("/settings/cleanup")
 async def cleanup_storage(
     req: StorageCleanupRequest,
@@ -466,13 +455,13 @@ async def cleanup_storage(
         result = await session.execute(delete(GenerationLog))
         await session.commit()
         removed["logs"] = max(0, int(result.rowcount or 0))
-    if "generated_images" in targets:
-        removed["generated_images"] = await asyncio.to_thread(
-            _purge_dir_files, generate_mod.GENERATED_IMAGE_DIR
-        )
-    if "reference_images" in targets:
-        removed["reference_images"] = await asyncio.to_thread(
-            _purge_dir_files, generate_mod.REFERENCE_UPLOAD_DIR
+    image_targets = {
+        "generated": "generated_images" in targets,
+        "reference": "reference_images" in targets,
+    }
+    if any(image_targets.values()):
+        removed.update(
+            await generate_mod._cleanup_uploads_by_retention(**image_targets)
         )
 
     logger.info("storage cleanup by admin: targets=%s removed=%s", targets, removed)
@@ -498,7 +487,6 @@ def _runtime_config_payload(guard, pool) -> dict:
     client = get_stackai_client()
     worker_count = max(1, _safe_env_int("UVICORN_WORKERS", 1))
     admission = guard.generation_admission
-    disk = generate_mod._generated_disk_snapshot()
     image_persistence = generate_mod.image_persistence_snapshot()
     return {
         "process": {
@@ -512,6 +500,9 @@ def _runtime_config_payload(guard, pool) -> dict:
             "user_rpm_limit": guard.user_rpm.limit,
             "busy_status_code": 429,
             "admission_mode": "reject_when_full",
+            "workflow_idle_timeout_seconds": generate_mod.GENERATE_STREAM_IDLE_TIMEOUT_SECONDS,
+            "workflow_total_timeout_seconds": generate_mod.GENERATE_STREAM_TOTAL_TIMEOUT_SECONDS,
+            "sse_keepalive_interval_seconds": generate_mod.GENERATE_STREAM_KEEPALIVE_INTERVAL_SECONDS,
         },
         "image_delivery": {
             "response_requires_local_persist": True,
@@ -520,19 +511,23 @@ def _runtime_config_payload(guard, pool) -> dict:
         "network": {
             "http_max_connections": client.max_connections,
             "http_max_keepalive": client.max_keepalive_connections,
+            "upstream_timeout_seconds": client.timeout,
+            "upstream_connect_timeout_seconds": client.connect_timeout,
+            "upstream_read_timeout_seconds": client.stream_read_timeout,
             "db_pool_size": database_mod.DB_POOL_SIZE,
             "db_max_overflow": database_mod.DB_MAX_OVERFLOW,
             "db_pool_timeout_seconds": database_mod.DB_POOL_TIMEOUT_SECONDS,
         },
         "persistence": {
             "image_download_concurrency": generate_mod.GENERATED_IMAGE_DOWNLOAD_CONCURRENCY,
+            "image_download_timeout_seconds": generate_mod.GENERATED_IMAGE_TIMEOUT_SECONDS,
+            "image_save_total_timeout_seconds": generate_mod.GENERATED_IMAGE_SAVE_TOTAL_TIMEOUT_SECONDS,
+            "image_download_attempts": generate_mod.GENERATED_IMAGE_DOWNLOAD_ATTEMPTS,
+            "image_retry_backoff_seconds": generate_mod.GENERATED_IMAGE_DOWNLOAD_RETRY_BACKOFF_SECONDS,
+            "upload_cleanup_interval_seconds": generate_mod.UPLOAD_CLEANUP_INTERVAL_SECONDS,
             "history_log_async": True,
             "history_log_active_tasks": image_persistence["active_tasks"],
             "history_log_started": image_persistence["started"],
-            "image_min_free_bytes": generate_mod.GENERATED_IMAGE_MIN_FREE_BYTES,
-            "image_disk_free_bytes": disk["free_bytes"],
-            "image_disk_writable_bytes": disk["writable_bytes"],
-            "image_disk_available": disk["can_write"],
             "response_waits_for_local_file": True,
         },
     }

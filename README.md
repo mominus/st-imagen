@@ -274,7 +274,7 @@ python3 scripts/vps_stress.py run-concurrent --ensure-up --build --concurrency 2
 
 工作流生图的总预算为 `230s`，各层超时分别负责不同阶段，不能简单全部设成同一个值：
 
-- 普通工作流连续无进度 `150s` 后失败；GPT Image 2 和 Nano Banana Pro 4K 放宽到 `200s`。
+- 所有工作流连续无进度 `200s` 后失败。
 - 工作流总耗时上限为 `230s`，在 200 秒无进度预算外保留错误收尾和资源释放余量。
 - StackAI 传输保护为 `270s`，给工作流结束和错误收尾留出余量；单次 SSE 读取保护为 `330s`。
 - 浏览器无任何 SSE 数据 `220s` 才超时；服务端会每 `15s` 发送 keepalive，因此它不会限制正常的 230 秒工作流。

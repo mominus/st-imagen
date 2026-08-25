@@ -465,7 +465,7 @@
                   <div class="settings-field-head">
                     <div>
                       <label>并发与运行参数</label>
-                      <p class="settings-field-hint">以下为当前进程实际生效值，只读；修改环境变量后需重启服务。满载时生图请求直接返回 HTTP 429，不在服务端等待。</p>
+                      <p class="settings-field-hint">以下为当前进程实际生效值，只读；修改环境变量后需重启服务。</p>
                     </div>
                     <span id="runtimeConfigMeta" class="muted mono">加载中…</span>
                   </div>
@@ -499,14 +499,19 @@
                   <div class="storage-stat">
                     <dt>生成图片</dt>
                     <dd id="storageGeneratedStat" class="mono">—</dd>
-                    <p class="storage-stat-hint">按上方保留期自动清理</p>
-                    <button id="cleanupGeneratedBtn" class="btn btn-ghost storage-stat-btn" type="button">清理图片</button>
+                    <p class="storage-stat-hint">自动清理和手动清理均按上方保留期执行</p>
+                    <button id="cleanupGeneratedBtn" class="btn btn-ghost storage-stat-btn" type="button">清理过期图片</button>
                   </div>
                   <div class="storage-stat">
                     <dt>参考图</dt>
                     <dd id="storageReferenceStat" class="mono">—</dd>
-                    <p class="storage-stat-hint">按上方保留期自动清理</p>
-                    <button id="cleanupReferenceBtn" class="btn btn-ghost storage-stat-btn" type="button">清理参考图</button>
+                    <p class="storage-stat-hint">自动清理和手动清理均按上方保留期执行</p>
+                    <button id="cleanupReferenceBtn" class="btn btn-ghost storage-stat-btn" type="button">清理过期参考图</button>
+                  </div>
+                  <div class="storage-stat">
+                    <dt>图片磁盘</dt>
+                    <dd id="storageDiskStat" class="mono">—</dd>
+                    <p id="storageDiskHint" class="storage-stat-hint">磁盘探测中…</p>
                   </div>
                 </dl>
               </div>

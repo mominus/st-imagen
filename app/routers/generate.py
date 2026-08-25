@@ -15,10 +15,11 @@ import tempfile
 import time
 import uuid
 from contextlib import suppress
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, Iterator, List, Optional
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
@@ -70,6 +71,13 @@ from app.services.user_auth import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["generate"])
+BEIJING_TIME_ZONE = ZoneInfo("Asia/Shanghai")
+SECONDS_PER_DAY = 24 * 60 * 60
+
+
+def _beijing_now() -> datetime:
+    """返回带北京时间时区的当前时间，用于对用户可见的文件名。"""
+    return datetime.now(timezone.utc).astimezone(BEIJING_TIME_ZONE)
 
 
 # ---- 上游错误抽取 ---------------------------------------------------------
@@ -204,7 +212,7 @@ GENERATED_IMAGE_SAVE_TOTAL_TIMEOUT_SECONDS = max(
     ),
 )
 GENERATE_STREAM_IDLE_TIMEOUT_SECONDS = float(
-    os.getenv("GENERATE_STREAM_IDLE_TIMEOUT_SECONDS", "150")
+    os.getenv("GENERATE_STREAM_IDLE_TIMEOUT_SECONDS", "200")
 )
 GENERATE_STREAM_TOTAL_TIMEOUT_SECONDS = max(
     GENERATE_STREAM_IDLE_TIMEOUT_SECONDS + 1.0,
@@ -213,14 +221,6 @@ GENERATE_STREAM_TOTAL_TIMEOUT_SECONDS = max(
 GENERATE_STREAM_KEEPALIVE_INTERVAL_SECONDS = max(
     1.0,
     float(os.getenv("GENERATE_STREAM_KEEPALIVE_INTERVAL_SECONDS", "15")),
-)
-GENERATE_STREAM_TEXT2IMG_4K_IDLE_TIMEOUT_SECONDS = max(
-    GENERATE_STREAM_IDLE_TIMEOUT_SECONDS,
-    float(os.getenv("GENERATE_STREAM_TEXT2IMG_4K_IDLE_TIMEOUT_SECONDS", "200")),
-)
-GENERATE_STREAM_GPT_IMAGE_2_IDLE_TIMEOUT_SECONDS = max(
-    GENERATE_STREAM_IDLE_TIMEOUT_SECONDS,
-    float(os.getenv("GENERATE_STREAM_GPT_IMAGE_2_IDLE_TIMEOUT_SECONDS", "200")),
 )
 ACCOUNT_FAILURE_ISOLATION_SECONDS = max(
     1.0,
@@ -263,7 +263,8 @@ def _prune_upload_dir(directory: Path, *, retention_days: float, max_files: int)
     now_ts = time.time()
     keep: List[Path] = []
 
-    cutoff_ts = now_ts - (retention_days * 86400.0) if retention_days > 0 else None
+    # 滚动保留期：按当前时刻往前推 N×24 小时，不按自然日零点切分。
+    cutoff_ts = now_ts - (retention_days * SECONDS_PER_DAY) if retention_days > 0 else None
     for path in files:
         try:
             stat = path.stat()
@@ -308,6 +309,42 @@ async def _effective_retention_settings() -> Dict[str, float]:
             GENERATED_IMAGE_RETENTION_DAYS,
         ),
     }
+
+
+async def _cleanup_uploads_by_retention(
+    *,
+    generated: bool = False,
+    reference: bool = False,
+) -> Dict[str, int]:
+    """按当前保留期清理指定目录，不删除保留期内的文件。
+
+    管理后台的手动清理也必须遵守保留期。这里不应用 max-files 限制，
+    避免手动清理时误删仍在保留期内的最新图片。
+    """
+    if not generated and not reference:
+        return {}
+
+    removed: Dict[str, int] = {}
+    global _last_upload_cleanup_monotonic
+    async with _upload_cleanup_lock:
+        retention = await _effective_retention_settings()
+        if reference:
+            removed["reference_images"] = await asyncio.to_thread(
+                _prune_upload_dir,
+                REFERENCE_UPLOAD_DIR,
+                retention_days=retention["reference_retention"],
+                max_files=0,
+            )
+        if generated:
+            removed["generated_images"] = await asyncio.to_thread(
+                _prune_upload_dir,
+                GENERATED_IMAGE_DIR,
+                retention_days=retention["generated_retention"],
+                max_files=0,
+            )
+        _last_upload_cleanup_monotonic = time.monotonic()
+
+    return removed
 
 
 async def _maybe_cleanup_uploads(*, force: bool = False) -> None:
@@ -725,7 +762,7 @@ async def _save_generated_image(
         await _discard_temp_file()
         raise GeneratedImageSaveError("生成成功，但保存图片失败：无法识别图片格式")
 
-    filename = f"gen-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex}{suffix}"
+    filename = f"gen-{_beijing_now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex}{suffix}"
     target = GENERATED_IMAGE_DIR / filename
     try:
         os.replace(temp_path, target)
@@ -1872,13 +1909,7 @@ def _stream_total_timeout_message(timeout_seconds: float) -> str:
 
 
 def _stream_idle_timeout_seconds_for_request(req: GenerateRequest) -> float:
-    timeout_seconds = GENERATE_STREAM_IDLE_TIMEOUT_SECONDS
-    if req.mode == "text2img":
-        if req.model == GPT_IMAGE_2_MODEL:
-            timeout_seconds = max(timeout_seconds, GENERATE_STREAM_GPT_IMAGE_2_IDLE_TIMEOUT_SECONDS)
-        if str(req.resolution or "").strip().upper() == "4K":
-            timeout_seconds = max(timeout_seconds, GENERATE_STREAM_TEXT2IMG_4K_IDLE_TIMEOUT_SECONDS)
-    return timeout_seconds
+    return GENERATE_STREAM_IDLE_TIMEOUT_SECONDS
 
 
 async def _iter_upstream_line_with_keepalive(
