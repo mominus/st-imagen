@@ -5,7 +5,6 @@ import asyncio
 import json
 import logging
 import os
-import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -17,7 +16,14 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import database as database_mod
-from app.models.database import Account, GenerationLog, InviteCode, User, get_session
+from app.models.database import (
+    Account,
+    GenerationLog,
+    InviteCode,
+    User,
+    get_session,
+    get_session_factory,
+)
 from app.routers import generate as generate_mod
 from app.services.account_pool import get_account_pool_service
 from app.services.auth import (
@@ -27,6 +33,7 @@ from app.services.auth import (
 from app.services.crypto import CryptoService
 from app.services.deps import require_admin
 from app.services import app_settings
+from app.services.generation_stats import get_total_generated_images
 from app.services.guard import get_generation_guard, get_login_throttle
 from app.services.stackai_client import StackAIError, get_stackai_client
 from app.services.upstream_redaction import redact_upstream_text
@@ -43,8 +50,6 @@ from app.services.user_auth import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin", tags=["admin"])
-
-_PROCESS_STARTED_MONOTONIC = time.monotonic()
 
 
 # ---------------- Schemas ----------------
@@ -82,7 +87,7 @@ class AccountCreateRequest(BaseModel):
     api_key: str = Field(min_length=1)
     # 可选：StackAI Private API Key，仅用于失败时拉取运行详情里的 Errors 字段
     private_api_key: Optional[str] = None
-    # 单账号并发上限，不传使用 ACCOUNT_MAX_INFLIGHT（生产默认 2）
+    # 单账号并发上限，不传使用 ACCOUNT_MAX_INFLIGHT（生产默认 10）
     max_inflight: Optional[int] = Field(default=None, ge=1, le=200)
 
 
@@ -532,11 +537,32 @@ def _runtime_config_payload(guard, pool) -> dict:
         },
     }
 
+# ---------------- Runtime Metrics / Status ----------------
+@router.get("/runtime-metrics")
+async def runtime_metrics(payload=Depends(require_admin)):
+    """Return only volatile in-process concurrency counters.
+
+    This endpoint intentionally avoids a database session. Account capacity
+    and enabled-account metadata come from the account snapshot; only current
+    counters are sampled every few seconds.
+    """
+    del payload
+    guard_snapshot = get_generation_guard().generation_admission.snapshot()
+    pool = get_account_pool_service()
+    return {
+        "generation": {
+            "in_flight": int(guard_snapshot["in_flight"]),
+            "models": guard_snapshot["models"],
+        },
+        "account": {
+            "in_flight": pool.runtime_total_in_flight(),
+        },
+    }
+
 
 @router.get("/runtime-status")
 async def runtime_status(
     payload=Depends(require_admin),
-    session: AsyncSession = Depends(get_session),
 ):
     del payload
     guard = get_generation_guard()
@@ -545,11 +571,16 @@ async def runtime_status(
     isolation_map = pool.isolation_snapshot()
     isolation_items: List[Dict[str, object]] = []
     if isolation_map:
-        rows = (
-            await session.execute(
-                select(Account.id, Account.name).where(Account.id.in_(list(isolation_map.keys())))
-            )
-        ).all()
+        # The normal 30-second diagnostic poll is in-memory. Only open a
+        # short-lived DB session when there are isolated accounts and the UI
+        # needs their display names.
+        factory = get_session_factory()
+        async with factory() as session:
+            rows = (
+                await session.execute(
+                    select(Account.id, Account.name).where(Account.id.in_(list(isolation_map.keys())))
+                )
+            ).all()
         name_by_id = {row.id: row.name for row in rows}
         for account_id, info in isolation_map.items():
             isolation_items.append(
@@ -562,26 +593,20 @@ async def runtime_status(
             )
     isolation_items.sort(key=lambda item: float(item["remaining_seconds"]), reverse=True)
 
-    active_rows = (
-        await session.execute(
-            select(Account.id, Account.max_inflight).where(Account.status == "active")
-        )
-    ).all()
-    account_capacity_total = sum(max(1, int(row.max_inflight or pool.DEFAULT_MAX_INFLIGHT)) for row in active_rows)
-    account_in_flight = sum(pool.runtime_in_flight(row.id) for row in active_rows)
+    guard_snapshot = guard.status_snapshot()
+    generation_snapshot = guard_snapshot.get("generation_admission", {})
 
     return {
-        "guard": guard.status_snapshot(),
-        "account_capacity": {
-            "active_accounts": len(active_rows),
-            "max_concurrent": account_capacity_total,
-            "in_flight": account_in_flight,
-            "available": max(0, account_capacity_total - account_in_flight),
+        "guard": {
+            "generation_admission": {
+                "rejected": generation_snapshot.get("rejected", 0),
+            },
+            "circuit_breaker": guard_snapshot.get("circuit_breaker", {}),
+            "route_breakers": guard_snapshot.get("route_breakers", {}),
+            "user_rpm": guard_snapshot.get("user_rpm", {}),
         },
         "image_persistence": generate_mod.image_persistence_snapshot(),
-        "runtime_config": _runtime_config_payload(guard, pool),
         "account_isolations": isolation_items,
-        "uptime_seconds": round(time.monotonic() - _PROCESS_STARTED_MONOTONIC, 1),
     }
 
 
@@ -1159,6 +1184,7 @@ async def stats_overview(
         )
     ).scalar_one()
     error_calls = total_calls - success_calls
+    total_generated_images = await get_total_generated_images(session)
     total_users = (await session.execute(select(func.count(User.id)))).scalar_one()
     active_users = (
         await session.execute(
@@ -1182,6 +1208,7 @@ async def stats_overview(
             "total": total_calls,
             "success": success_calls,
             "error": error_calls,
+            "images_total": total_generated_images,
         },
     }
 

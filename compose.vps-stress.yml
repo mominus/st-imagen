@@ -10,8 +10,8 @@ services:
       DEBUG: "false"
       # 进程内准入/故障隔离状态决定只能单 worker；压测环境与安全配置对齐
       UVICORN_WORKERS: "${UVICORN_WORKERS:-1}"
-      HTTP_MAX_CONNECTIONS: "${HTTP_MAX_CONNECTIONS:-96}"
-      HTTP_MAX_KEEPALIVE: "${HTTP_MAX_KEEPALIVE:-96}"
+      HTTP_MAX_CONNECTIONS: "${HTTP_MAX_CONNECTIONS:-128}"
+      HTTP_MAX_KEEPALIVE: "${HTTP_MAX_KEEPALIVE:-128}"
       ACCOUNT_MAX_INFLIGHT: "${ACCOUNT_MAX_INFLIGHT:-2}"
       GENERATED_IMAGE_DOWNLOAD_CONCURRENCY: "${GENERATED_IMAGE_DOWNLOAD_CONCURRENCY:-32}"
       GENERATED_IMAGE_MIN_FREE_BYTES: "${GENERATED_IMAGE_MIN_FREE_BYTES:-8589934592}"
@@ -25,9 +25,9 @@ services:
       DB_POOL_SIZE: "${DB_POOL_SIZE:-4}"
       DB_MAX_OVERFLOW: "${DB_MAX_OVERFLOW:-0}"
       DB_POOL_TIMEOUT_SECONDS: "${DB_POOL_TIMEOUT_SECONDS:-3}"
-      # 容器资源仿真仍使用生产的 60 槽位；仅关闭用户限速和熔断，
+      # 容器资源仿真仍使用生产的 90 槽位；仅关闭用户限速和熔断，
       # 避免压测账号身份/短时失败改变容量结论。
-      GENERATION_GLOBAL_MAX_CONCURRENT: "${GENERATION_GLOBAL_MAX_CONCURRENT:-60}"
+      GENERATION_GLOBAL_MAX_CONCURRENT: "${GENERATION_GLOBAL_MAX_CONCURRENT:-90}"
       USER_RPM_LIMIT: "0"
       CIRCUIT_BREAKER_FAILURES: "0"
       PYTHONUNBUFFERED: "1"
@@ -37,7 +37,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "18001:8001"
+      - "8001:8001"
     cpus: 2.0
     mem_limit: 2g
     memswap_limit: 2g

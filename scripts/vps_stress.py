@@ -27,7 +27,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REPORT_DIR = PROJECT_ROOT / "data" / "stress_reports"
 COMPOSE_FILE = PROJECT_ROOT / "compose.vps-stress.yml"
 CONTAINER_NAME = "st-imagen-vps-2c2g"
-DEFAULT_BASE_URL = "http://127.0.0.1:18001"
+DEFAULT_BASE_URL = "http://127.0.0.1:8001"
 DEFAULT_STATS_INTERVAL = 1.0
 
 

@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.database import Account, GenerationLog, get_session
 from app.services.deps import GenerationPrincipal, require_generation_principal
 from app.services import app_settings
+from app.services.generation_stats import increment_total_generated_images
 from app.services.guard import get_generation_guard
 from app.services.account_pool import (
     NoAvailableAccountError,
@@ -843,6 +844,8 @@ async def _write_generation_log(job: Dict[str, Any], saved_images: List[str], st
                     is_stream=job["is_stream"],
                 )
             )
+            if status == "success":
+                await increment_total_generated_images(persist_session, len(saved_images))
             await persist_session.commit()
             _image_log_completed += 1
     except asyncio.CancelledError:

@@ -1,4 +1,5 @@
 const TOKEN_KEY = "image_gen_admin_token";
+const ADMIN_THEME_KEY = "st_imagen_admin_theme";
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 const PAGE_CONFIG = {
@@ -29,6 +30,8 @@ const state = {
   admin: null,
   overview: null,
   runtimeStatus: null,
+  runtimeMetrics: null,
+  runtimeConfig: null,
   accounts: [],
   users: [],
   invites: [],
@@ -52,7 +55,9 @@ const state = {
   previewPrompt: "",
   previewError: "",
   previewReturnFocus: null,
+  modalReturnFocus: null,
   userCreateMode: "manual",
+  dashboardMetrics: null,
 };
 
 function escapeHtml(value) {
@@ -269,6 +274,23 @@ function getToken() {
 function setToken(token) {
   if (!token) localStorage.removeItem(TOKEN_KEY);
   else localStorage.setItem(TOKEN_KEY, token);
+}
+
+function applyAdminTheme(theme) {
+  const next = theme === "dark" ? "dark" : "light";
+  document.documentElement.setAttribute("data-theme", next);
+  try {
+    localStorage.setItem(ADMIN_THEME_KEY, next);
+  } catch (_) {}
+}
+
+function bindAdminThemeToggle() {
+  const button = $("#themeToggle");
+  if (!button) return;
+  button.addEventListener("click", () => {
+    const current = document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+    applyAdminTheme(current === "light" ? "dark" : "light");
+  });
 }
 
 function showToast(message, type = "info") {
@@ -592,6 +614,7 @@ function showAdminPage(pageKey, options = {}) {
     page.classList.toggle("is-hidden", page.id !== PAGE_CONFIG[key].sectionId);
   });
   setActiveConsoleNav(key);
+  closeAdminNav();
 
   if (options.updateHistory) {
     const href = buildAdminPageHref(key);
@@ -631,11 +654,114 @@ function initConsoleNav() {
   }
 }
 
+function closeAdminNav() {
+  document.body.classList.remove("admin-nav-open");
+  const toggle = $("#adminMenuToggle");
+  if (toggle) toggle.setAttribute("aria-expanded", "false");
+}
+
+function openAdminNav() {
+  document.body.classList.add("admin-nav-open");
+  const toggle = $("#adminMenuToggle");
+  if (toggle) toggle.setAttribute("aria-expanded", "true");
+  $("#adminNavClose")?.focus({ preventScroll: true });
+}
+
+function searchAdminData(query) {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return [];
+  const results = [];
+  state.accounts.forEach((item) => {
+    if ([item.name, item.org_id, item.flow_id].some((value) => String(value || "").toLowerCase().includes(normalized))) {
+      results.push({ page: "accounts", title: item.name || "账号", detail: "账号池", query: item.name || normalized });
+    }
+  });
+  state.users.forEach((item) => {
+    if (String(item.username || "").toLowerCase().includes(normalized)) results.push({ page: "users", title: item.username, detail: "用户", query: item.username });
+  });
+  state.invites.forEach((item) => {
+    if ([item.code_prefix, item.note].some((value) => String(value || "").toLowerCase().includes(normalized))) results.push({ page: "invites", title: item.code_prefix || "邀请码", detail: "邀请码", query: item.code_prefix || normalized });
+  });
+  state.logs.forEach((item) => {
+    if ([item.prompt_preview, item.username, item.account_name, item.model, item.error_message].some((value) => String(value || "").toLowerCase().includes(normalized))) results.push({ page: "logs", title: item.model || humanMode(item.mode), detail: `${item.username || "匿名用户"} · ${fmtRelativeTime(item.timestamp)}`, query: normalized });
+  });
+  return results.slice(0, 8);
+}
+
+function renderGlobalSearch() {
+  const input = $("#globalSearchInput");
+  const resultsEl = $("#adminSearchResults");
+  if (!input || !resultsEl) return;
+  const query = input.value.trim();
+  if (!query) {
+    resultsEl.classList.add("is-hidden");
+    resultsEl.innerHTML = "";
+    return;
+  }
+  const results = searchAdminData(query);
+  resultsEl.classList.remove("is-hidden");
+  resultsEl.innerHTML = results.length
+    ? results.map((item, index) => `<button class="admin-search-result" type="button" data-search-index="${index}"><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.detail)}</small></button>`).join("")
+    : '<div class="admin-search-result"><strong>没有匹配数据</strong><small>只搜索当前已加载的账号、用户、邀请码和日志</small></div>';
+  resultsEl.querySelectorAll("[data-search-index]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const item = results[Number(button.dataset.searchIndex)];
+      if (!item) return;
+      state.filters[item.page].query = item.query;
+      syncFilterInputs(item.page);
+      rerenderByFilterGroup(item.page);
+      showAdminPage(item.page, { updateHistory: true });
+      resultsEl.classList.add("is-hidden");
+    });
+  });
+}
+
+function bindAdminNavigation() {
+  $("#adminMenuToggle")?.addEventListener("click", () => {
+    if (document.body.classList.contains("admin-nav-open")) closeAdminNav();
+    else openAdminNav();
+  });
+  $("#adminNavClose")?.addEventListener("click", closeAdminNav);
+  $("#adminNavScrim")?.addEventListener("click", closeAdminNav);
+  const input = $("#globalSearchInput");
+  if (input) input.value = "";
+  input?.addEventListener("input", renderGlobalSearch);
+  input?.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      input.value = "";
+      renderGlobalSearch();
+      input.blur();
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "/" && !(event.target instanceof HTMLInputElement) && !(event.target instanceof HTMLTextAreaElement)) {
+      event.preventDefault();
+      input?.focus();
+    }
+    if (event.key === "Escape" && document.body.classList.contains("admin-nav-open")) closeAdminNav();
+  });
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest(".admin-topbar-search")) $("#adminSearchResults")?.classList.add("is-hidden");
+    const tableMore = event.target instanceof Element ? event.target.closest(".table-more") : null;
+    closeTableMoreMenus(tableMore);
+  });
+}
+
 function setModalVisible(id, visible) {
   const el = typeof id === "string" ? $(`#${id}`) : id;
   if (!el) return;
+  const wasVisible = el.classList.contains("show");
+  if (visible && !wasVisible && document.activeElement instanceof HTMLElement) {
+    state.modalReturnFocus = document.activeElement;
+  }
   el.classList.toggle("show", visible);
+  el.setAttribute("aria-hidden", visible ? "false" : "true");
   document.body.classList.toggle("modal-open", $$(".modal-mask.show").length > 0);
+  if (!visible && wasVisible) {
+    const returnFocusEl = state.modalReturnFocus;
+    state.modalReturnFocus = null;
+    if (returnFocusEl && document.body.contains(returnFocusEl)) returnFocusEl.focus({ preventScroll: true });
+  }
 }
 
 function closeAllModals() {
@@ -683,6 +809,10 @@ async function withBusyButton(button, pendingText, task) {
 
 function showLogin() {
   closeAllModals();
+  document.body.classList.add("admin-login-state");
+  const searchInput = $("#globalSearchInput");
+  if (searchInput) searchInput.value = "";
+  $("#adminSearchResults")?.classList.add("is-hidden");
   $("#loginSection").classList.remove("is-hidden");
   $("#dashboardSection").classList.add("is-hidden");
   $("#logoutLink").classList.add("is-hidden");
@@ -690,12 +820,15 @@ function showLogin() {
 
 function showDashboard() {
   closeAllModals();
+  document.body.classList.remove("admin-login-state");
   $("#loginSection").classList.add("is-hidden");
   $("#dashboardSection").classList.remove("is-hidden");
   $("#logoutLink").classList.remove("is-hidden");
   showAdminPage(currentPageFromLocation(), { scroll: false });
   refreshAll();
+  startRuntimeMetricsPolling();
   startRuntimeStatusPolling();
+  startDashboardRefreshPolling();
 }
 
 async function login() {
@@ -762,7 +895,9 @@ function stopLoginLockoutCountdown() {
 
 function logout() {
   setToken("");
+  stopRuntimeMetricsPolling();
   stopRuntimeStatusPolling();
+  stopDashboardRefreshPolling();
   showToast("已退出后台控制台", "info");
   showLogin();
 }
@@ -774,24 +909,35 @@ function deriveMetrics() {
   const logs = state.logs;
   const overview = state.overview || {};
 
-  const totalAccounts = overview.accounts?.total ?? accounts.length;
-  const activeAccounts = overview.accounts?.active ?? accounts.filter((item) => item.status === "active").length;
-  const disabledAccounts = Math.max(0, totalAccounts - activeAccounts);
+  const totalAccounts = accounts.length || overview.accounts?.total || 0;
+  const listedActiveAccounts = accounts.length
+    ? accounts.filter((item) => item.status === "active").length
+    : overview.accounts?.active || 0;
   const activeAccountItems = accounts.filter((item) => item.status === "active");
   const accountSlotsUsed = sumBy(activeAccountItems, (item) => item.in_flight);
   const accountSlotsTotal = sumBy(activeAccountItems, (item) => item.max_inflight);
   const saturatedAccounts = accounts.filter((item) => computeAccountLoadMeta(item).label === "已打满").length;
-  const runtimeGate = state.runtimeStatus?.guard?.generation_admission;
-  const runtimeAccountCapacity = state.runtimeStatus?.account_capacity;
+  const runtimeMetrics = state.runtimeMetrics || {};
+  const configuredGlobalSlots = Number(state.runtimeConfig?.generation?.global_max_concurrent);
+  const runtimeGate = {
+    ...(Number.isFinite(configuredGlobalSlots) ? { max_concurrent: configuredGlobalSlots, total_slots: configuredGlobalSlots } : {}),
+    ...(state.runtimeStatus?.guard?.generation_admission || {}),
+    ...(runtimeMetrics.generation || {}),
+  };
+  const runtimeAccount = runtimeMetrics.account;
+  const liveAccountSlotsUsed = Number.isFinite(Number(runtimeAccount?.in_flight))
+    ? Number(runtimeAccount.in_flight)
+    : accountSlotsUsed;
   const globalSlotsUsed = Number.isFinite(Number(runtimeGate?.in_flight))
     ? Number(runtimeGate.in_flight)
-    : accountSlotsUsed;
+    : 0;
+  // Global generation capacity is a separate process-wide limit. Never use
+  // the account-pool total as its fallback (they are different capacities).
   const globalSlotsTotal = Number.isFinite(Number(runtimeGate?.max_concurrent))
     ? Number(runtimeGate.max_concurrent)
-    : accountSlotsTotal;
-  const runtimeAccountSlotsTotal = Number.isFinite(Number(runtimeAccountCapacity?.max_concurrent))
-    ? Number(runtimeAccountCapacity.max_concurrent)
-    : accountSlotsTotal;
+    : 0;
+  const activeAccounts = listedActiveAccounts;
+  const disabledAccounts = Math.max(0, totalAccounts - activeAccounts);
 
   const totalUsers = overview.users?.total ?? users.length;
   const activeUsers = overview.users?.active ?? users.filter((item) => computeUserLifecycle(item) === "active").length;
@@ -810,6 +956,14 @@ function deriveMetrics() {
   const exhaustedInvites = invites.filter((item) => item.status === "exhausted").length;
 
   const totalGenerations = overview.generations?.total ?? logs.length;
+  const persistedGeneratedImages = Number(overview.generations?.images_total);
+  const totalGeneratedImages = Number.isFinite(persistedGeneratedImages)
+    ? Math.max(0, persistedGeneratedImages)
+    : logs.reduce(
+        (total, item) =>
+          total + (item.status === "success" ? parseOutputImages(item.output_images, item.output_preview).length : 0),
+        0,
+      );
   const successGenerations =
     overview.generations?.success ?? logs.filter((item) => item.status === "success").length;
   const errorGenerations =
@@ -849,9 +1003,10 @@ function deriveMetrics() {
     disabledAccounts,
     accountSlotsUsed,
     accountSlotsTotal,
+    runtimeAccountSlotsUsed: liveAccountSlotsUsed,
     globalSlotsUsed,
     globalSlotsTotal,
-    runtimeAccountSlotsTotal,
+    runtimeAccountSlotsTotal: accountSlotsTotal,
     saturatedAccounts,
     totalUsers,
     activeUsers,
@@ -865,6 +1020,7 @@ function deriveMetrics() {
     inviteRemainingUses,
     exhaustedInvites,
     totalGenerations,
+    totalGeneratedImages,
     successGenerations,
     errorGenerations,
     successRate,
@@ -879,10 +1035,280 @@ function deriveMetrics() {
   };
 }
 
+function buildDashboardMetrics(metrics) {
+  const now = Date.now();
+  const recentLogs = state.logs
+    .map((log) => ({ log, date: parseApiDate(log.timestamp) }))
+    .filter((item) => item.date && now - item.date.getTime() >= 0 && now - item.date.getTime() <= 24 * 60 * 60 * 1000)
+    .sort((a, b) => a.date.getTime() - b.date.getTime());
+  const success = recentLogs.filter(({ log }) => log.status === "success").length;
+  const errors = recentLogs.filter(({ log }) => log.status === "error").length;
+  const total = recentLogs.length;
+  const hourlySeries = [];
+
+  if (recentLogs.length) {
+    const currentHour = Math.floor(now / 3600000) * 3600000;
+    for (let index = 23; index >= 0; index -= 1) {
+      const start = currentHour - index * 3600000;
+      const end = start + 3600000;
+      const items = recentLogs.filter(({ date }) => date.getTime() >= start && date.getTime() < end);
+      hourlySeries.push({
+        label: formatInShanghai(new Date(start), { hour: "2-digit" }),
+        total: items.length,
+        success: items.filter(({ log }) => log.status === "success").length,
+        error: items.filter(({ log }) => log.status === "error").length,
+      });
+    }
+  }
+
+  const isolations = Array.isArray(state.runtimeStatus?.account_isolations)
+    ? state.runtimeStatus.account_isolations
+    : [];
+  const attentionItems = [];
+  if (metrics.saturatedAccounts) {
+    attentionItems.push({ tone: "danger", title: `${metrics.saturatedAccounts} 个账号已打满`, detail: "检查账号并发或暂时扩充账号池。", page: "accounts", action: "查看账号" });
+  }
+  if (isolations.length) {
+    attentionItems.push({ tone: "danger", title: `${isolations.length} 个账号处于故障隔离`, detail: "隔离期间不会接收新的生成请求。", page: "accounts", action: "处理隔离" });
+  }
+  if (errors) {
+    attentionItems.push({ tone: "danger", title: `${errors} 条失败日志`, detail: "失败数来自最近 24 小时已加载日志。", page: "logs", action: "查看日志" });
+  }
+  if (metrics.expiredUsers || metrics.expiringUsers) {
+    attentionItems.push({ tone: "warning", title: `${metrics.expiredUsers + metrics.expiringUsers} 个用户需要关注`, detail: `${metrics.expiredUsers} 个已过期，${metrics.expiringUsers} 个 7 天内到期。`, page: "users", action: "查看用户" });
+  }
+  if (!metrics.activeInvites || metrics.inviteRemainingUses <= Math.max(3, metrics.activeUsers)) {
+    attentionItems.push({ tone: "warning", title: "邀请码库存偏低", detail: `当前剩余可用次数 ${fmtNumber(metrics.inviteRemainingUses)}。`, page: "invites", action: "补充库存" });
+  }
+  if (!attentionItems.length) {
+    attentionItems.push({ tone: "success", title: "暂时没有待处理事项", detail: "账号、用户、邀请码和最近日志均未报告异常。", page: "overview", action: "保持观察" });
+  }
+
+  return {
+    kpis: {
+      requests24h: total,
+      successRate: total ? (success / total) * 100 : 0,
+      success,
+      error: errors,
+      activeAccounts: metrics.activeAccounts,
+      accountCapacity: metrics.runtimeAccountSlotsTotal,
+      accountInFlight: metrics.runtimeAccountSlotsUsed,
+      activeUsers: metrics.activeUsers,
+      userRisk: metrics.expiredUsers + metrics.expiringUsers,
+      totalGeneratedImages: metrics.totalGeneratedImages,
+    },
+    hourlySeries,
+    statusDistribution: { total, success, error: errors },
+    globalHealth: { capacity: metrics.globalSlotsTotal, inFlight: metrics.globalSlotsUsed },
+    attentionItems,
+    recentActivity: [...state.logs].sort((a, b) => (parseApiDate(b.timestamp)?.getTime() || 0) - (parseApiDate(a.timestamp)?.getTime() || 0)).slice(0, 6),
+    busiestAccounts: metrics.busiestAccounts,
+    sampledLogCount: state.logs.length,
+    lastUpdatedAt: state.lastUpdatedAt,
+  };
+}
+
+function svgPolyline(values, width, height, padding, maxValue) {
+  const usableWidth = width - padding.left - padding.right;
+  const usableHeight = height - padding.top - padding.bottom;
+  const step = values.length > 1 ? usableWidth / (values.length - 1) : usableWidth;
+  return values.map((value, index) => {
+    const x = padding.left + index * step;
+    const y = padding.top + usableHeight - (Number(value || 0) / Math.max(1, maxValue)) * usableHeight;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+}
+
+function renderTrendChart(dashboard) {
+  const el = $("#hourlyTrendChart");
+  const legend = $("#trendLegend");
+  if (!el) return;
+  if (!dashboard.hourlySeries.length) {
+    el.innerHTML = '<div class="admin-empty-state"><span>最近 24 小时没有可用日志，趋势图暂不生成。</span></div>';
+    if (legend) legend.innerHTML = "";
+    return;
+  }
+
+  const width = 760;
+  const height = 218;
+  const padding = { top: 12, right: 8, bottom: 28, left: 8 };
+  const totals = dashboard.hourlySeries.map((item) => item.total);
+  const maxValue = Math.max(...totals, 1);
+  const totalPoints = svgPolyline(totals, width, height, padding, maxValue);
+  const successPoints = svgPolyline(dashboard.hourlySeries.map((item) => item.success), width, height, padding, maxValue);
+  const errorPoints = svgPolyline(dashboard.hourlySeries.map((item) => item.error), width, height, padding, maxValue);
+  const areaPoints = `${padding.left},${height - padding.bottom} ${totalPoints} ${width - padding.right},${height - padding.bottom}`;
+  const labelIndexes = [0, 6, 12, 18, 23];
+  const labelStep = dashboard.hourlySeries.length > 1 ? (width - padding.left - padding.right) / (dashboard.hourlySeries.length - 1) : 0;
+  const labels = labelIndexes.map((index) => {
+    const item = dashboard.hourlySeries[index];
+    if (!item) return "";
+    return `<text x="${(padding.left + index * labelStep).toFixed(1)}" y="${height - 6}" text-anchor="middle" class="trend-axis-label">${escapeHtml(item.label)}</text>`;
+  }).join("");
+  const grid = [0, 1, 2, 3].map((index) => {
+    const y = padding.top + ((height - padding.top - padding.bottom) / 3) * index;
+    return `<line x1="${padding.left}" y1="${y.toFixed(1)}" x2="${width - padding.right}" y2="${y.toFixed(1)}" class="trend-grid-line" />`;
+  }).join("");
+  el.innerHTML = `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true">${grid}<polygon points="${areaPoints}" class="trend-area" /><polyline points="${totalPoints}" class="trend-line" /><polyline points="${successPoints}" class="trend-success-line" /><polyline points="${errorPoints}" class="trend-error-line" />${labels}</svg>`;
+  if (legend) legend.innerHTML = '<span><i></i>全部请求</span><span class="success"><i></i>成功</span><span class="error"><i></i>失败</span>';
+}
+
+function renderStatusDistribution(dashboard) {
+  const el = $("#statusDistribution");
+  if (!el) return;
+  const total = dashboard.statusDistribution.total;
+  if (!total) {
+    el.innerHTML = '<div class="admin-empty-state" style="grid-column:1/-1"><span>暂无最近 24 小时日志。</span></div>';
+    return;
+  }
+  const successRatio = dashboard.statusDistribution.success / total;
+  const errorRatio = dashboard.statusDistribution.error / total;
+  const circumference = 2 * Math.PI * 50;
+  el.innerHTML = `
+    <div class="status-ring" aria-label="成功 ${dashboard.statusDistribution.success} 条，失败 ${dashboard.statusDistribution.error} 条">
+      <svg viewBox="0 0 120 120" aria-hidden="true"><circle cx="60" cy="60" r="50" class="status-ring-track" /><circle cx="60" cy="60" r="50" class="status-ring-success" stroke-dasharray="${(circumference * successRatio).toFixed(2)} ${circumference.toFixed(2)}" /><circle cx="60" cy="60" r="50" class="status-ring-error" stroke-dasharray="${(circumference * errorRatio).toFixed(2)} ${circumference.toFixed(2)}" stroke-dashoffset="${(-circumference * successRatio).toFixed(2)}" /></svg>
+      <div class="status-ring-label"><strong>${dashboard.kpis.successRate.toFixed(1)}%</strong><span>成功率</span></div>
+    </div>
+    <div class="distribution-legend">
+      <div class="distribution-item"><span><i></i>成功请求</span><strong>${fmtNumber(dashboard.statusDistribution.success)}</strong></div>
+      <div class="distribution-item error"><span><i></i>失败请求</span><strong>${fmtNumber(dashboard.statusDistribution.error)}</strong></div>
+      <p class="distribution-note">基于最近 ${fmtNumber(total)} 条、时间在 24 小时内的日志记录。</p>
+    </div>`;
+}
+
+function renderHealthSummary(dashboard) {
+  const el = $("#healthSummary");
+  if (!el) return;
+  const globalRatio = percentage(dashboard.globalHealth.inFlight, dashboard.globalHealth.capacity);
+  const runtimeStatus = state.runtimeStatus;
+  const breaker = runtimeStatus?.guard?.circuit_breaker;
+  const routeBreakers = runtimeStatus?.guard?.route_breakers || {};
+  const routeEntries = Object.values(routeBreakers);
+  const openRoutes = routeEntries.filter((item) => item?.state === "open" || item?.is_open).length;
+  const probingRoutes = routeEntries.filter((item) => item?.state === "half-open" || item?.is_half_open).length;
+  const closedRoutes = Math.max(0, routeEntries.length - openRoutes - probingRoutes);
+  const isolations = Array.isArray(runtimeStatus?.account_isolations) ? runtimeStatus.account_isolations : [];
+
+  const breakerHealth = !runtimeStatus
+    ? { value: "加载中", note: "正在同步熔断器状态", ratio: 0, tone: "warning" }
+    : !breaker
+      ? { value: "未知", note: "暂未返回熔断器状态", ratio: 0, tone: "warning" }
+      : !breaker.enabled
+        ? { value: "未启用", note: "上游熔断保护未启用", ratio: 100, tone: "warning" }
+        : breaker.is_open
+          ? { value: "已断开", note: `剩余 ${formatRuntimeSeconds(breaker.remaining_seconds)}`, ratio: 0, tone: "danger" }
+          : {
+              value: "正常",
+              note: breaker.consecutive_failures ? `连续失败 ${fmtNumber(breaker.consecutive_failures)} 次` : "当前未触发熔断",
+              ratio: 100,
+              tone: breaker.consecutive_failures ? "warning" : "",
+            };
+  const routeHealth = !runtimeStatus
+    ? { value: "加载中", note: "正在同步路由状态", ratio: 0, tone: "warning" }
+    : routeEntries.length
+      ? {
+          value: `${fmtNumber(closedRoutes)} / ${fmtNumber(routeEntries.length)}`,
+          note: openRoutes
+            ? `${fmtNumber(openRoutes)} 条已打开${probingRoutes ? ` · ${fmtNumber(probingRoutes)} 条探测中` : ""}`
+            : probingRoutes
+              ? `${fmtNumber(probingRoutes)} 条探测中`
+              : "全部路由正常",
+          ratio: percentage(closedRoutes, routeEntries.length),
+          tone: openRoutes ? "danger" : probingRoutes ? "warning" : "",
+        }
+      : { value: "无记录", note: "尚未记录路由状态", ratio: 100, tone: "" };
+  const isolationHealth = !runtimeStatus
+    ? { value: "加载中", note: "正在同步账号隔离状态", ratio: 0, tone: "warning" }
+    : isolations.length
+      ? { value: `${fmtNumber(isolations.length)} 个`, note: "隔离账号不会接收新的生成请求", ratio: 0, tone: "danger" }
+      : { value: "0 个", note: "当前无故障隔离账号", ratio: 100, tone: "" };
+  const rows = [
+    { label: "全局生图并发", value: `${fmtNumber(dashboard.globalHealth.inFlight)} / ${fmtNumber(dashboard.globalHealth.capacity)}`, note: "全局生成准入槽位", ratio: globalRatio, tone: globalRatio >= 90 ? "danger" : globalRatio >= 60 ? "warning" : "" },
+    { label: "熔断器", ...breakerHealth },
+    { label: "路由", ...routeHealth },
+    { label: "账号隔离", ...isolationHealth },
+  ];
+  el.innerHTML = rows.map((row) => `<div class="health-row ${row.tone}"><div class="health-row-head"><span>${row.label}</span><strong>${row.value}</strong></div><div class="health-progress"><span style="width:${row.ratio.toFixed(1)}%"></span></div><span class="health-row-note">${row.note}</span></div>`).join("");
+}
+
+function renderAttentionItems(dashboard) {
+  const el = $("#attentionItems");
+  const count = $("#attentionCount");
+  if (!el) return;
+  const actionable = dashboard.attentionItems.filter((item) => item.tone !== "success").length;
+  if (count) count.textContent = actionable ? `${actionable} 项需要关注` : "状态良好";
+  el.innerHTML = dashboard.attentionItems.slice(0, 5).map((item) => `<div class="attention-item ${item.tone}"><span class="attention-mark"></span><div class="attention-copy"><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.detail)}</span></div><button class="attention-action" type="button" data-dashboard-page="${escapeHtml(item.page)}">${escapeHtml(item.action)}</button></div>`).join("");
+  el.querySelectorAll("[data-dashboard-page]").forEach((button) => button.addEventListener("click", () => showAdminPage(button.dataset.dashboardPage, { updateHistory: true })));
+}
+
+function renderRecentActivity(dashboard) {
+  const el = $("#recentActivity");
+  if (!el) return;
+  if (!dashboard.recentActivity.length) {
+    el.innerHTML = '<div class="admin-empty-state"><span>暂无生成活动。</span></div>';
+    return;
+  }
+  el.innerHTML = dashboard.recentActivity.map((log) => `<div class="activity-item"><span class="activity-status ${log.status === "success" ? "success" : "error"}">${log.status === "success" ? "✓" : "!"}</span><div class="activity-copy"><strong>${escapeHtml(log.model || humanMode(log.mode))}</strong><span>${escapeHtml(log.username || "匿名用户")} · ${escapeHtml(fmtRelativeTime(log.timestamp))}${log.error_message ? ` · ${escapeHtml(truncateText(log.error_message, 34))}` : ""}</span></div><span class="mono table-note">${escapeHtml(fmtDuration(log.response_time_ms))}</span></div>`).join("");
+}
+
+function renderBusiestAccounts(dashboard) {
+  const el = $("#busiestAccountSummary");
+  if (!el) return;
+  if (!dashboard.busiestAccounts.length) {
+    el.innerHTML = '<div class="admin-empty-state"><span>暂无账号数据。</span></div>';
+    return;
+  }
+  el.innerHTML = dashboard.busiestAccounts.map((account) => `<div class="busiest-item"><div class="busiest-copy"><strong>${escapeHtml(shortAccount(account.name))}</strong><span>${escapeHtml(account.name || "未命名账号")}</span></div><span class="busiest-ratio">${fmtNumber(account.in_flight || 0)} / ${fmtNumber(account.max_inflight || 0)}</span></div>`).join("");
+}
+
+function renderDashboardKpis(dashboard) {
+  const el = $("#overview");
+  if (!el) return;
+  if (!state.lastUpdatedAt && state.refreshing) {
+    el.innerHTML = ["近 24 小时生成请求", "成功率", "启用账号 / 当前请求 / 账号并发槽位", "总生图数"].map((label) => `<div class="stat-card"><p class="stat-label">${label}</p><div class="stat-value">—</div><p class="stat-meta">数据同步中…</p></div>`).join("");
+    return;
+  }
+  const kpi = dashboard.kpis;
+  el.innerHTML = `
+    <div class="stat-card"><p class="stat-label">近 24 小时生成请求</p><div class="stat-value">${fmtNumber(kpi.requests24h)}</div><p class="stat-meta">成功 ${fmtNumber(kpi.success)} · 失败 ${fmtNumber(kpi.error)}</p></div>
+    <div class="stat-card"><p class="stat-label">成功率</p><div class="stat-value stat-success">${kpi.successRate.toFixed(1)}%</div><p class="stat-meta">基于近 24 小时已加载日志</p></div>
+    <div class="stat-card"><p class="stat-label">启用账号 / 当前请求 / 账号并发槽位</p><div class="stat-value">${fmtNumber(kpi.activeAccounts)}<span class="stat-value-sub"> / ${fmtNumber(kpi.accountInFlight)} / ${fmtNumber(kpi.accountCapacity)}</span></div><p class="stat-meta">账号槽位占用 ${percentage(kpi.accountInFlight, kpi.accountCapacity).toFixed(0)}%</p></div>
+    <div class="stat-card"><p class="stat-label">总生图数</p><div class="stat-value">${fmtNumber(kpi.totalGeneratedImages)}</div><p class="stat-meta">永久累计 · 不受日志和图片清理影响</p></div>`;
+}
+
+function renderDashboardPanels(metrics) {
+  const dashboard = buildDashboardMetrics(metrics);
+  state.dashboardMetrics = dashboard;
+  renderDashboardKpis(dashboard);
+  renderTrendChart(dashboard);
+  renderStatusDistribution(dashboard);
+  renderHealthSummary(dashboard);
+  renderAttentionItems(dashboard);
+  renderRecentActivity(dashboard);
+  renderBusiestAccounts(dashboard);
+  const meta = $("#trendSampleMeta");
+  if (meta) meta.textContent = `最近 24 小时 · 最近 ${fmtNumber(dashboard.sampledLogCount)} 条已加载日志`;
+  const overviewMeta = $("#overviewMeta");
+  if (overviewMeta) {
+    overviewMeta.textContent = state.lastUpdatedAt
+      ? `最近同步 ${fmtTime(state.lastUpdatedAt)} · ${state.sync.successCount || 0}/${state.sync.totalCount || 0} 数据块成功`
+      : state.refreshing
+        ? "正在同步账号、用户与最近 24 小时日志…"
+        : "尚未完成首次同步";
+  }
+}
+
 function renderSyncState() {
   const adminBadge = $("#adminIdentityBadge");
   if (adminBadge) {
     adminBadge.textContent = state.admin?.username ? `管理员 · ${state.admin.username}` : "管理员";
+  }
+  const sync = $("#adminSyncStatus");
+  if (sync) {
+    if (state.refreshing) sync.textContent = `正在同步 ${state.sync.successCount}/${state.sync.totalCount}`;
+    else if (state.sync.status === "partial") sync.textContent = `部分同步 · ${state.sync.successCount}/${state.sync.totalCount}`;
+    else if (state.lastUpdatedAt) sync.textContent = `已同步 · ${fmtTime(state.lastUpdatedAt)}`;
+    else sync.textContent = "等待同步";
   }
 }
 
@@ -892,8 +1318,8 @@ function renderHeroGlance(metrics) {
   el.innerHTML = `
     <article class="glance-card">
       <p class="glance-label">总生图数</p>
-      <strong class="glance-value">${fmtNumber(metrics.totalGenerations)}</strong>
-      <span class="glance-meta">成功 ${fmtNumber(metrics.successGenerations)}，失败 ${fmtNumber(metrics.errorGenerations)}</span>
+      <strong class="glance-value">${fmtNumber(metrics.totalGeneratedImages)}</strong>
+      <span class="glance-meta">永久累计 · 不受日志和图片清理影响</span>
     </article>
     <article class="glance-card">
       <p class="glance-label">用户活跃度</p>
@@ -938,8 +1364,8 @@ function renderOverview() {
     </div>
     <div class="stat-card">
       <p class="stat-label">总生图数</p>
-      <div class="stat-value">${fmtNumber(metrics.totalGenerations)}</div>
-      <p class="stat-meta">成功 ${fmtNumber(metrics.successGenerations)} / 失败 ${fmtNumber(metrics.errorGenerations)}</p>
+      <div class="stat-value">${fmtNumber(metrics.totalGeneratedImages)}</div>
+      <p class="stat-meta">永久累计 · 不受日志和图片清理影响</p>
     </div>
     <div class="stat-card">
       <p class="stat-label">用户</p>
@@ -992,12 +1418,12 @@ function renderNavBadges(metrics) {
   );
   setNavBadge(
     "navBadgeAccounts",
-    metrics.saturatedAccounts ? `${metrics.saturatedAccounts}险` : `${fmtNumber(metrics.activeAccounts)}`,
+    metrics.saturatedAccounts ? `${fmtNumber(metrics.saturatedAccounts)}` : `${fmtNumber(metrics.activeAccounts)}`,
     metrics.saturatedAccounts ? "danger" : metrics.activeAccounts ? "success" : "",
   );
   setNavBadge(
     "navBadgeUsers",
-    userRiskCount ? `${userRiskCount}险` : `${fmtNumber(metrics.activeUsers)}`,
+    userRiskCount ? `${fmtNumber(userRiskCount)}` : `${fmtNumber(metrics.activeUsers)}`,
     userRiskCount ? "warning" : metrics.activeUsers ? "success" : "",
   );
   setNavBadge(
@@ -1007,7 +1433,7 @@ function renderNavBadges(metrics) {
   );
   setNavBadge(
     "navBadgeLogs",
-    metrics.errorGenerations ? `${fmtNumber(metrics.errorGenerations)}错` : `${fmtNumber(metrics.successGenerations)}`,
+    metrics.errorGenerations ? `${fmtNumber(metrics.errorGenerations)}` : `${fmtNumber(metrics.successGenerations)}`,
     metrics.errorGenerations ? "danger" : metrics.successGenerations ? "success" : "",
   );
 }
@@ -1335,10 +1761,17 @@ function renderRuntimeStatusCard() {
     return;
   }
 
-  const gate = status.guard?.generation_admission;
+  const configuredGlobalSlots = Number(state.runtimeConfig?.generation?.global_max_concurrent);
+  const gate = {
+    ...(Number.isFinite(configuredGlobalSlots)
+      ? { enabled: configuredGlobalSlots > 0, total_slots: configuredGlobalSlots, max_concurrent: configuredGlobalSlots }
+      : {}),
+    ...(status.guard?.generation_admission || {}),
+    ...(state.runtimeMetrics?.generation || {}),
+  };
   const breaker = status.guard?.circuit_breaker;
   const routeBreakers = status.guard?.route_breakers || {};
-  const generationAdmission = status.guard?.generation_admission || {};
+  const generationAdmission = gate;
   const imagePersistence = status.image_persistence || {};
   const isolations = status.account_isolations || [];
   const routeEntries = Object.entries(routeBreakers).sort(([, left], [, right]) => {
@@ -1548,11 +1981,24 @@ function renderRuntimeStatusCard() {
   });
 }
 
+let _runtimeMetricsTimer = null;
 let _runtimeStatusTimer = null;
+let _dashboardRefreshTimer = null;
+
+async function refreshRuntimeMetrics() {
+  try {
+    state.runtimeMetrics = await api("/api/admin/runtime-metrics");
+    renderLiveCapacityPanels();
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 async function refreshRuntimeStatus() {
   try {
     state.runtimeStatus = await api("/api/admin/runtime-status");
+    renderLiveCapacityPanels();
     renderRuntimeStatusCard();
     return true;
   } catch (err) {
@@ -1562,12 +2008,27 @@ async function refreshRuntimeStatus() {
   }
 }
 
+function startRuntimeMetricsPolling() {
+  stopRuntimeMetricsPolling();
+  _runtimeMetricsTimer = window.setInterval(() => {
+    if (document.hidden) return;
+    refreshRuntimeMetrics();
+  }, 5000);
+}
+
+function stopRuntimeMetricsPolling() {
+  if (_runtimeMetricsTimer) {
+    window.clearInterval(_runtimeMetricsTimer);
+    _runtimeMetricsTimer = null;
+  }
+}
+
 function startRuntimeStatusPolling() {
   stopRuntimeStatusPolling();
   _runtimeStatusTimer = window.setInterval(() => {
     if (document.hidden) return; // 页面不可见时暂停轮询
     refreshRuntimeStatus();
-  }, 5000);
+  }, 30 * 1000);
 }
 
 function stopRuntimeStatusPolling() {
@@ -1577,12 +2038,40 @@ function stopRuntimeStatusPolling() {
   }
 }
 
+async function refreshDashboardLightweight() {
+  if (state.refreshing || document.hidden || !getToken()) return;
+  const results = await Promise.all([refreshOverview(), refreshLogs()]);
+  if (results.some(Boolean)) {
+    state.lastUpdatedAt = new Date();
+    renderInsightPanels();
+  }
+}
+
+function startDashboardRefreshPolling() {
+  stopDashboardRefreshPolling();
+  _dashboardRefreshTimer = window.setInterval(refreshDashboardLightweight, 60 * 1000);
+}
+
+function stopDashboardRefreshPolling() {
+  if (_dashboardRefreshTimer) {
+    window.clearInterval(_dashboardRefreshTimer);
+    _dashboardRefreshTimer = null;
+  }
+}
+
+function renderLiveCapacityPanels() {
+  const dashboard = buildDashboardMetrics(deriveMetrics());
+  renderDashboardKpis(dashboard);
+  renderHealthSummary(dashboard);
+}
+
 function renderInsightPanels() {
   const metrics = deriveMetrics();
 
   renderHeroGlance(metrics);
   renderSyncState();
   renderOverview();
+  renderDashboardPanels(metrics);
   renderOverviewUptime();
   renderNavBadges(metrics);
   renderPriorityBoard(metrics);
@@ -1834,12 +2323,17 @@ function renderAccountRow(account) {
         </div>
       </td>
       <td class="col-account-actions" data-label="操作">
-        <div class="table-actions table-actions-grid">
+        <div class="table-actions">
           <button class="${toggle.className}" data-action="toggle-account" type="button">${toggle.label}</button>
-          <button class="btn btn-ghost" data-action="test" type="button">测试</button>
-          <button class="btn btn-ghost" data-action="edit" type="button">编辑</button>
-          ${account.isolation_seconds ? `<button class="btn btn-ghost" data-action="clear-isolation" type="button">解除隔离</button>` : ""}
-          <button class="btn btn-danger" data-action="delete" type="button">删除</button>
+          <details class="table-more">
+            <summary aria-haspopup="menu">更多</summary>
+            <div class="table-more-menu">
+              <button class="btn btn-ghost" data-action="test" type="button">测试</button>
+              <button class="btn btn-ghost" data-action="edit" type="button">编辑</button>
+              ${account.isolation_seconds ? `<button class="btn btn-ghost" data-action="clear-isolation" type="button">解除隔离</button>` : ""}
+              <button class="btn btn-danger" data-action="delete" type="button">删除</button>
+            </div>
+          </details>
         </div>
       </td>
     </tr>
@@ -1918,6 +2412,29 @@ function bindAccountActions(items) {
   });
 }
 
+function bindMoreMenus() {
+  $$(".table-more").forEach((details) => {
+    const summary = details.querySelector("summary");
+    if (!summary) return;
+    const syncExpandedState = () => {
+      summary.setAttribute("aria-expanded", details.open ? "true" : "false");
+    };
+    details.addEventListener("toggle", syncExpandedState);
+    details.querySelectorAll(".table-more-menu button").forEach((button) => {
+      button.addEventListener("click", () => {
+        details.open = false;
+      });
+    });
+    syncExpandedState();
+  });
+}
+
+function closeTableMoreMenus(except = null) {
+  $$(".table-more[open]").forEach((details) => {
+    if (details !== except) details.open = false;
+  });
+}
+
 function renderAccountsTable() {
   const tbody = $("#accountsTable tbody");
   const summary = $("#accountsSummary");
@@ -1950,6 +2467,7 @@ function renderAccountsTable() {
   }
   tbody.innerHTML = items.map(renderAccountRow).join("");
   bindAccountActions(items);
+  bindMoreMenus();
 }
 
 async function refreshAccounts() {
@@ -2060,7 +2578,7 @@ async function deleteAllAccounts(button) {
     });
     showToast("全部账号已删除", "success");
   } catch (err) {
-    showToast(`${deletingFiltered ? "删除筛选结果失败" : "全部删除失败"}：${err.message}`, "error");
+    showToast(`全部删除失败：${err.message}`, "error");
   }
 }
 
@@ -2127,8 +2645,13 @@ function renderUserRow(user) {
       <td class="col-user-actions" data-label="操作">
         <div class="table-actions">
           <button class="${toggle.className}" data-action="toggle-user" type="button">${toggle.label}</button>
-          <button class="btn btn-ghost" data-action="edit-user" type="button">编辑</button>
-          <button class="btn btn-danger" data-action="delete-user" type="button">删除</button>
+          <details class="table-more">
+            <summary aria-haspopup="menu">更多</summary>
+            <div class="table-more-menu">
+              <button class="btn btn-ghost" data-action="edit-user" type="button">编辑</button>
+              <button class="btn btn-danger" data-action="delete-user" type="button">删除</button>
+            </div>
+          </details>
         </div>
       </td>
     </tr>
@@ -2211,6 +2734,7 @@ function renderUsersTable() {
   }
   tbody.innerHTML = items.map(renderUserRow).join("");
   bindUserActions(items);
+  bindMoreMenus();
 }
 
 async function refreshUsers() {
@@ -2647,7 +3171,7 @@ async function refreshLogs() {
   const tbody = $("#logsTable tbody");
   tbody.innerHTML = renderEmptyRow(7, "日志加载中…", "正在同步最近生成记录。");
   try {
-    const data = await api("/api/admin/logs?limit=80");
+    const data = await api("/api/admin/logs?limit=200");
     state.logs = Array.isArray(data.items) ? data.items : [];
     renderLogsTable();
     renderInsightPanels();
@@ -2833,7 +3357,7 @@ async function refreshAdminProfile() {
 async function refreshAll() {
   if (state.refreshing) return;
   state.refreshing = true;
-  state.sync = { status: "loading", successCount: 0, totalCount: 8 };
+  state.sync = { status: "loading", successCount: 0, totalCount: 9 };
   const refreshButton = $("#refreshAllBtn");
   if (refreshButton) refreshButton.disabled = true;
   renderInsightPanels();
@@ -2846,6 +3370,7 @@ async function refreshAll() {
     refreshInvites(),
     refreshLogs(),
     refreshSettings(),
+    refreshRuntimeMetrics(),
     refreshRuntimeStatus(),
   ]);
 
@@ -3020,11 +3545,13 @@ function renderRuntimeConfig(config) {
 async function refreshSettings() {
   try {
     const data = await api("/api/admin/settings");
+    state.runtimeConfig = data.runtime_config || null;
     renderSettingsForm(data.items);
     renderRuntimeConfig(data.runtime_config);
     renderStorageStats(data.storage);
     return true;
   } catch (err) {
+    state.runtimeConfig = null;
     RETENTION_FIELDS.forEach((field) => {
       const meta = $(`#${field.metaId}`);
       if (meta) meta.textContent = `加载失败：${err.message}`;
@@ -3061,6 +3588,7 @@ async function saveSettings() {
   if (button) button.disabled = true;
   try {
     const data = await api("/api/admin/settings", { method: "PUT", body: JSON.stringify(body) });
+    state.runtimeConfig = data.runtime_config || null;
     renderSettingsForm(data.items);
     renderRuntimeConfig(data.runtime_config);
     renderStorageStats(data.storage);
@@ -3080,6 +3608,7 @@ async function resetRetentionField(field) {
       method: "PUT",
       body: JSON.stringify({ [field.key]: null }),
     });
+    state.runtimeConfig = data.runtime_config || null;
     renderSettingsForm(data.items);
     renderRuntimeConfig(data.runtime_config);
     renderStorageStats(data.storage);
@@ -3124,7 +3653,7 @@ function openAccountModal(account = null) {  state.editing.accountId = account ?
   $("#m_api_key").value = "";
   $("#m_private_api_key").value = "";
   $("#m_status").value = account?.status || "active";
-  $("#m_max_inflight").value = String(account?.max_inflight ?? 2);
+  $("#m_max_inflight").value = String(account?.max_inflight ?? 10);
   $("#m_api_key").placeholder = account ? "留空保持原值" : "sk-...";
   $("#m_private_api_key").placeholder = account?.private_api_key_set ? "留空保持原值" : "sk-...";
   $("#accountModalError").classList.add("is-hidden");
@@ -3240,7 +3769,7 @@ async function saveAccount() {
     api_key: $("#m_api_key").value.trim(),
     private_api_key: privateRaw.trim(),
     status: $("#m_status").value,
-    max_inflight: Number($("#m_max_inflight").value || 2),
+    max_inflight: Number($("#m_max_inflight").value || 10),
   };
 
   if (!Number.isFinite(payload.max_inflight) || payload.max_inflight < 1) {
@@ -3600,10 +4129,11 @@ function bindFilters() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-  if (window.STImagen) window.STImagen.bindThemeToggle();
+  bindAdminThemeToggle();
 
   bindFilters();
   initConsoleNav();
+  bindAdminNavigation();
   bindPreviewModal();
   bindSettingsPage();
   renderInsightPanels();
@@ -3623,6 +4153,10 @@ document.addEventListener("DOMContentLoaded", () => {
       closeLogModal();
       return;
     }
+    if (event.key === "Escape" && $$(".modal-mask.show").length) {
+      closeAllModals();
+      return;
+    }
     if (state.previewVisible && event.key === "ArrowLeft") {
       event.preventDefault();
       stepLogPreview(-1);
@@ -3639,6 +4173,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   $("#refreshAllBtn").addEventListener("click", refreshAll);
+  $("#overviewRefreshBtn")?.addEventListener("click", refreshAll);
 
   $("#importAccountsBtn").addEventListener("click", openAccountImportModal);
   $("#newAccountBtn").addEventListener("click", () => openAccountModal());

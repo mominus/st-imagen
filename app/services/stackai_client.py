@@ -81,7 +81,7 @@ class StackAIClient:
             float(os.getenv("STACKAI_STREAM_READ_TIMEOUT_SECONDS", "330")),
         )
         self.connect_timeout = float(os.getenv("STACKAI_CONNECT_TIMEOUT_SECONDS", "10"))
-        self.max_connections = max(1, int(os.getenv("HTTP_MAX_CONNECTIONS", "96")))
+        self.max_connections = max(1, int(os.getenv("HTTP_MAX_CONNECTIONS", "128")))
         self.max_keepalive_connections = max(
             1, int(os.getenv("HTTP_MAX_KEEPALIVE", str(self.max_connections)))
         )

@@ -488,7 +488,7 @@ class GenerationGuard:
     def __init__(self) -> None:
         self._rpm_rejected = 0
         self.generation_admission = GenerationAdmission(
-            _env_int("GENERATION_GLOBAL_MAX_CONCURRENT", 60),
+            _env_int("GENERATION_GLOBAL_MAX_CONCURRENT", 90),
         )
         self.user_rpm = SlidingWindowRateLimiter(
             _env_int("USER_RPM_LIMIT", 12),

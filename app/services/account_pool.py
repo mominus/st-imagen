@@ -44,7 +44,7 @@ class AccountPoolService:
     # 单 worker 部署下，容量计数只保存在内存。锁只保护一次很短的
     # SELECT + counter update，不会持有 SQLite 写事务，也不会等待上游。
     _select_lock: asyncio.Lock = asyncio.Lock()
-    DEFAULT_MAX_INFLIGHT = max(1, int(os.getenv("ACCOUNT_MAX_INFLIGHT", "2")))
+    DEFAULT_MAX_INFLIGHT = max(1, int(os.getenv("ACCOUNT_MAX_INFLIGHT", "10")))
     _account_isolations: Dict[str, Tuple[float, str]] = {}
 
     def __init__(self) -> None:
@@ -308,6 +308,10 @@ class AccountPoolService:
 
     def runtime_in_flight(self, account_id: str) -> int:
         return max(0, int(self._runtime_in_flight.get(str(account_id), 0)))
+
+    def runtime_total_in_flight(self) -> int:
+        """返回当前所有已占用账号槽位的总数，不访问数据库。"""
+        return max(0, sum(max(0, int(value)) for value in self._runtime_in_flight.values()))
 
     async def select_account(
         self,

@@ -10,10 +10,15 @@ from unittest.mock import patch
 from pydantic import ValidationError
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy import delete
 
 from app.models import database as database_mod
-from app.models.database import AppSetting, Base
+from app.models.database import AppSetting, Base, GenerationCounter, GenerationLog
 from app.services import app_settings
+from app.services.generation_stats import (
+    get_total_generated_images,
+    increment_total_generated_images,
+)
 from app.routers.admin import (
     AppSettingsUpdateRequest,
     StorageCleanupRequest,
@@ -167,13 +172,51 @@ class SettingsValidationTests(unittest.TestCase):
         self.assertNotIn("reference_upload_retention_days", provided)
 
 
+class GenerationCounterTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        db_path = Path(self._tmpdir.name) / "test.db"
+        self._engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+        async with self._engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        self._factory = async_sessionmaker(self._engine, expire_on_commit=False)
+
+    async def asyncTearDown(self) -> None:
+        await self._engine.dispose()
+        self._tmpdir.cleanup()
+
+    async def test_counter_is_incremented_and_survives_log_cleanup(self) -> None:
+        async with self._factory() as session:
+            await increment_total_generated_images(session, 3)
+            await session.commit()
+            session.add(
+                GenerationLog(
+                    id="log-1",
+                    mode="text2img",
+                    status="success",
+                    output_preview="/uploads/generated/a.png",
+                )
+            )
+            await session.commit()
+
+            await session.execute(delete(GenerationLog))
+            await session.commit()
+            self.assertEqual(await get_total_generated_images(session), 3)
+
+            counter = (
+                await session.get(GenerationCounter, "total_generated_images")
+            )
+            self.assertIsNotNone(counter)
+            self.assertEqual(counter.value, 3)
+
+
 class RuntimeConfigPayloadTests(unittest.TestCase):
     def test_reports_live_capacity_policy_as_read_only_direct_rejection(self) -> None:
         guard = SimpleNamespace(
             generation_admission=SimpleNamespace(max_concurrent=32),
             user_rpm=SimpleNamespace(limit=12),
         )
-        pool = SimpleNamespace(DEFAULT_MAX_INFLIGHT=2)
+        pool = SimpleNamespace(DEFAULT_MAX_INFLIGHT=10)
         client = SimpleNamespace(max_connections=40, max_keepalive_connections=40)
 
         with patch("app.routers.admin.get_stackai_client", return_value=client):
@@ -182,7 +225,7 @@ class RuntimeConfigPayloadTests(unittest.TestCase):
         self.assertEqual(payload["generation"]["admission_mode"], "reject_when_full")
         self.assertEqual(payload["generation"]["busy_status_code"], 429)
         self.assertEqual(payload["generation"]["global_max_concurrent"], 32)
-        self.assertEqual(payload["generation"]["account_default_max_inflight"], 2)
+        self.assertEqual(payload["generation"]["account_default_max_inflight"], 10)
         self.assertEqual(payload["network"]["http_max_connections"], 40)
 
 

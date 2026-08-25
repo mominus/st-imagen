@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import logging
+import json
 from datetime import datetime
 from typing import AsyncGenerator, Optional
 
@@ -68,7 +69,7 @@ class Account(Base):
     total_requests = Column(Integer, default=0, nullable=False)
     last_used_at = Column(DateTime, nullable=True)
     # 实时在途数只保存在单 worker 进程内；数据库仅保存账号并发上限。
-    max_inflight = Column(Integer, default=2, nullable=False)
+    max_inflight = Column(Integer, default=10, nullable=False)
     created_at = Column(DateTime, default=_utcnow, nullable=False)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow, nullable=False)
 
@@ -204,6 +205,16 @@ class GenerationLog(Base):
     is_stream = Column(Boolean, default=False, nullable=False)
 
 
+class GenerationCounter(Base):
+    """永久累计的生成图片计数，不随生成日志清理而删除。"""
+
+    __tablename__ = "generation_counters"
+
+    key = Column(String(64), primary_key=True)
+    value = Column(Integer, default=0, nullable=False)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow, nullable=False)
+
+
 # ---------- 引擎/会话工厂 ----------
 _engine = None
 _session_factory: Optional[async_sessionmaker] = None
@@ -262,6 +273,7 @@ async def init_database() -> None:
         await conn.run_sync(Base.metadata.create_all)
         # 兼容已有库：补齐增量列（SQLite 加可空列是安全的）
         await _ensure_columns(conn)
+        await _ensure_generation_counter(conn)
         # journal_mode 是数据库级设置，设一次持久生效
         await conn.execute(text("PRAGMA journal_mode=WAL"))
         await conn.execute(text("UPDATE users SET in_flight = 0 WHERE in_flight <> 0"))
@@ -290,6 +302,53 @@ async def _ensure_columns(conn) -> None:
                 logger.info("schema migrated: %s.%s added", table, column)
         except Exception as exc:
             logger.warning("schema migration skipped for %s.%s: %s", table, column, exc)
+
+
+def _legacy_output_image_count(output_images: object, output_preview: object) -> int:
+    """从旧日志中恢复成功输出图片数，供首次建立永久计数时回填。"""
+    if output_images:
+        raw = str(output_images).strip()
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            parsed = None
+        if isinstance(parsed, list):
+            return len([item for item in parsed if str(item or "").strip()])
+        if isinstance(parsed, dict):
+            images = parsed.get("images")
+            if isinstance(images, list):
+                return len([item for item in images if str(item or "").strip()])
+            if parsed.get("url"):
+                return 1
+        return 1
+    return 1 if output_preview else 0
+
+
+async def _ensure_generation_counter(conn) -> None:
+    """为已有数据库初始化一次永久累计图片数。"""
+    key = "total_generated_images"
+    result = await conn.execute(
+        text("SELECT value FROM generation_counters WHERE key = :key"),
+        {"key": key},
+    )
+    if result.first() is not None:
+        return
+
+    rows = await conn.execute(
+        text(
+            "SELECT output_images, output_preview "
+            "FROM generation_logs WHERE status = 'success'"
+        )
+    )
+    total = sum(_legacy_output_image_count(row[0], row[1]) for row in rows.fetchall())
+    await conn.execute(
+        text(
+            "INSERT OR IGNORE INTO generation_counters (key, value, updated_at) "
+            "VALUES (:key, :value, :updated_at)"
+        ),
+        {"key": key, "value": total, "updated_at": _utcnow()},
+    )
+    logger.info("generation counter initialized: total_generated_images=%s", total)
 
 
 async def close_database() -> None:

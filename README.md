@@ -266,7 +266,7 @@ python3 scripts/vps_stress.py run-concurrent --ensure-up --build --concurrency 2
 - 上游生成完成后立即释放推理槽，图片本地下载/落盘不占用生成容量；响应会等待本地文件落盘完成，绝不回退或暴露上游图片 URL。历史数据库写入在落盘后异步完成。
 - 浏览器不自动重试 429，避免高峰时形成重试风暴。
 
-建议的 2c2g 默认值：`GENERATION_GLOBAL_MAX_CONCURRENT=60`、`ACCOUNT_MAX_INFLIGHT=2`、`HTTP_MAX_CONNECTIONS=96`、`GENERATED_IMAGE_DOWNLOAD_CONCURRENCY=32`、`DB_POOL_SIZE=4`、`DB_MAX_OVERFLOW=0`。容量不足时请求直接返回 429，不在服务端等待。60 个请求能否全部进入上游，还取决于启用账号的并发容量总和；账号池不足时仍会按设计返回 429。
+建议的 2c2g 默认值：`GENERATION_GLOBAL_MAX_CONCURRENT=90`、`ACCOUNT_MAX_INFLIGHT=10`、`HTTP_MAX_CONNECTIONS=128`、`GENERATED_IMAGE_DOWNLOAD_CONCURRENCY=32`、`DB_POOL_SIZE=4`、`DB_MAX_OVERFLOW=0`。容量不足时请求直接返回 429，不在服务端等待。90 个请求能否全部进入上游，还取决于启用账号的并发容量总和；账号池不足时仍会按设计返回 429。
 
 账号并发槽位只保存在单 worker 进程内，使用一次性 token 保证重复清理不会重复释放；当前没有持久化账号租约，也没有账号等待队列。账号“故障隔离”是另一项保护：仅在密钥、账号配置或明确的账号级上游错误时临时停用该账号，隔离时间由 `ACCOUNT_FAILURE_ISOLATION_SECONDS` 控制，不参与正常租约管理。旧数据库中的 `account_leases` 历史表及 `accounts` 表历史调度列不会被主动删除，但运行时不再读取或写入。
 
@@ -297,7 +297,8 @@ python3 scripts/vps_stress.py run-concurrent --ensure-up --build --concurrency 2
 - `GET  /api/admin/invite-codes`、`POST /api/admin/invite-codes`
 - `GET  /api/admin/users`、`POST /api/admin/users`、`POST /api/admin/users/batch`
 - `GET  /api/admin/stats/overview`
-- `GET  /api/admin/runtime-status` —— 返回全局/账号实际容量、满载拒绝计数、图片本地落盘状态和当前生效运行参数
+- `GET  /api/admin/runtime-metrics` —— 轻量实时快照：全局/账号在途并发和各模型并发，不访问数据库
+- `GET  /api/admin/runtime-status` —— 低频运行诊断：熔断器、路由、账号隔离和图片落盘状态；无隔离账号时完全不访问数据库，隔离账号名称仅在需要时查询
 - `GET  /api/admin/settings` —— 返回图片保留设置，以及只读的并发、连接池、单 worker 配置
 - `PUT  /api/admin/settings`、`POST /api/admin/settings/cleanup` —— 更新图片保留设置、清理日志或图片
 - `POST /api/admin/circuit-breaker/reset`、`POST /api/admin/circuit-breaker/routes/reset`
