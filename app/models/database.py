@@ -28,6 +28,8 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.pool import AsyncAdaptedQueuePool
 
+from app.services.failure_classifier import classify_dashboard_failure, dashboard_failure_code
+
 
 logger = logging.getLogger(__name__)
 Base = declarative_base()
@@ -111,6 +113,22 @@ class Admin(Base):
     password_hash = Column(String(255), nullable=False)
     token_version = Column(Integer, default=0, nullable=False)
     created_at = Column(DateTime, default=_utcnow, nullable=False)
+
+
+class AdminAuditLog(Base):
+    """管理员危险操作审计记录；detail_json 只保存脱敏后的摘要。"""
+
+    __tablename__ = "admin_audit_logs"
+
+    id = Column(String(36), primary_key=True)
+    timestamp = Column(DateTime, default=_utcnow, nullable=False, index=True)
+    admin_id = Column(String(36), nullable=True, index=True)
+    admin_username = Column(String(255), nullable=True)
+    action = Column(String(64), nullable=False, index=True)
+    target_type = Column(String(64), nullable=True)
+    target_id = Column(String(255), nullable=True)
+    detail_json = Column(Text, nullable=True)
+    success = Column(Boolean, nullable=False, default=True, index=True)
 
 
 class InviteCode(Base):
@@ -202,7 +220,21 @@ class GenerationLog(Base):
     response_time_ms = Column(Integer, nullable=True)
     status = Column(String(20), nullable=False)  # success / error
     error_message = Column(Text, nullable=True)
+    error_code = Column(String(64), nullable=True, index=True)
+    failure_category = Column(String(32), nullable=True, index=True)
     is_stream = Column(Boolean, default=False, nullable=False)
+
+
+@event.listens_for(GenerationLog, "before_insert")
+def _populate_generation_failure_fields(_mapper, _connection, target: GenerationLog) -> None:
+    """Persist stable failure metadata while retaining the raw redacted message."""
+    if target.status == "success":
+        target.error_code = None
+        target.failure_category = None
+        return
+    category = target.failure_category or classify_dashboard_failure(target.error_message)
+    target.failure_category = category
+    target.error_code = target.error_code or dashboard_failure_code(category)
 
 
 class GenerationCounter(Base):
@@ -290,6 +322,8 @@ async def _ensure_columns(conn) -> None:
         ("users", "auth_kind", "VARCHAR(24) NOT NULL DEFAULT 'password'"),
         ("generation_logs", "user_id", "VARCHAR(36)"),
         ("generation_logs", "output_images", "TEXT"),
+        ("generation_logs", "error_code", "VARCHAR(64)"),
+        ("generation_logs", "failure_category", "VARCHAR(32)"),
     ]
     for table, column, coltype in pending:
         try:

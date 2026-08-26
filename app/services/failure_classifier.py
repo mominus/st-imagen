@@ -18,6 +18,57 @@ ROUTE_CONFIG_SCOPE = "route_config"
 REQUEST_SCOPE = "request"
 UNKNOWN_SCOPE = "unknown"
 
+DASHBOARD_FAILURE_CODES = {
+    "capacity": "CAPACITY_LIMIT",
+    "account_config": "ACCOUNT_CONFIG",
+    "reference_input": "REFERENCE_INPUT",
+    "upstream": "UPSTREAM_FAILURE",
+    "storage": "STORAGE_FAILURE",
+    "other": "UNKNOWN_FAILURE",
+}
+
+_DASHBOARD_FAILURE_PATTERNS = (
+    (
+        "capacity",
+        ("容量", "并发", "限流", "rate limit", "too many", "quota", "busy", "429", "capacity"),
+    ),
+    (
+        "storage",
+        ("保存图片", "保存失败", "落盘", "持久化", "存储", "磁盘", "download image", "图片为空"),
+    ),
+    (
+        "account_config",
+        (
+            "账号", "api key", "apikey", "access token", "credential", "authentication",
+            "authorization", "org", "flow", "workflow", "deployment", "配置",
+            "model not found", "invalid model",
+        ),
+    ),
+    (
+        "reference_input",
+        ("参考图", "输入", "prompt", "image url", "图片 url", "参数", "invalid input", "bad request", "400", "422"),
+    ),
+    (
+        "upstream",
+        ("上游", "upstream", "超时", "timeout", "连接", "connection", "502", "503", "504", "gateway"),
+    ),
+)
+
+
+def classify_dashboard_failure(error_message: Any) -> str:
+    """Return a stable dashboard category for persisted generation failures."""
+    text = str(error_message or "").strip().lower()
+    if not text:
+        return "other"
+    for category, hints in _DASHBOARD_FAILURE_PATTERNS:
+        if any(hint in text for hint in hints):
+            return category
+    return "other"
+
+
+def dashboard_failure_code(category: Any) -> str:
+    return DASHBOARD_FAILURE_CODES.get(str(category or ""), DASHBOARD_FAILURE_CODES["other"])
+
 _ACCOUNT_HINTS = re.compile(
     r"(?:api[ _-]?key|access[ _-]?token|credential|authentication|authorization|"
     r"bearer|token\s+(?:expired|revoked|invalid)|key\s+(?:expired|revoked|invalid)|"

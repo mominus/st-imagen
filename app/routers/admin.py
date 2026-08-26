@@ -8,8 +8,9 @@ import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -18,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import database as database_mod
 from app.models.database import (
     Account,
+    AdminAuditLog,
     GenerationLog,
     InviteCode,
     User,
@@ -34,6 +36,8 @@ from app.services.crypto import CryptoService
 from app.services.deps import require_admin
 from app.services import app_settings
 from app.services.generation_stats import get_total_generated_images
+from app.services.dashboard_analytics import get_dashboard_analytics, normalize_failure_category
+from app.services.failure_classifier import dashboard_failure_code
 from app.services.guard import get_generation_guard, get_login_throttle
 from app.services.stackai_client import StackAIError, get_stackai_client
 from app.services.upstream_redaction import redact_upstream_text
@@ -50,6 +54,47 @@ from app.services.user_auth import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+
+async def _record_admin_audit(
+    payload: Optional[dict],
+    *,
+    action: str,
+    target_type: Optional[str] = None,
+    target_id: Optional[str] = None,
+    detail: Optional[dict] = None,
+    success: bool = True,
+) -> None:
+    """Persist a safe summary of an admin operation without blocking it.
+
+    Audit writes use a short-lived independent session so runtime-only admin
+    actions can be audited too. Callers must pass already-sanitized details;
+    this helper deliberately has no access to request credentials or secrets.
+    """
+    try:
+        factory = get_session_factory()
+        async with factory() as session:
+            session.add(
+                AdminAuditLog(
+                    id=str(uuid4()),
+                    admin_id=str((payload or {}).get("sub") or "") or None,
+                    admin_username=str((payload or {}).get("username") or "") or None,
+                    action=action,
+                    target_type=target_type,
+                    target_id=target_id,
+                    detail_json=(
+                        json.dumps(detail, ensure_ascii=False, separators=(",", ":"))
+                        if detail is not None
+                        else None
+                    ),
+                    success=bool(success),
+                )
+            )
+            await session.commit()
+    except Exception as exc:
+        # Operations remain available if the audit store is temporarily
+        # unavailable; the failure is still visible to server operators.
+        logger.warning("admin audit write failed: action=%s error=%s", action, exc)
 
 
 # ---------------- Schemas ----------------
@@ -533,15 +578,8 @@ def _runtime_config_payload(guard, pool) -> dict:
     }
 
 # ---------------- Runtime Metrics / Status ----------------
-@router.get("/runtime-metrics")
-async def runtime_metrics(payload=Depends(require_admin)):
-    """Return only volatile in-process concurrency counters.
-
-    This endpoint intentionally avoids a database session. Account capacity
-    and enabled-account metadata come from the account snapshot; only current
-    counters are sampled every few seconds.
-    """
-    del payload
+def _runtime_metrics_payload() -> dict:
+    """Return only volatile in-process concurrency counters."""
     guard_snapshot = get_generation_guard().generation_admission.snapshot()
     pool = get_account_pool_service()
     return {
@@ -555,11 +593,13 @@ async def runtime_metrics(payload=Depends(require_admin)):
     }
 
 
-@router.get("/runtime-status")
-async def runtime_status(
-    payload=Depends(require_admin),
-):
+@router.get("/runtime-metrics")
+async def runtime_metrics(payload=Depends(require_admin)):
     del payload
+    return _runtime_metrics_payload()
+
+
+async def _runtime_status_payload(session: Optional[AsyncSession] = None) -> dict:
     guard = get_generation_guard()
     pool = get_account_pool_service()
 
@@ -569,13 +609,20 @@ async def runtime_status(
         # The normal 30-second diagnostic poll is in-memory. Only open a
         # short-lived DB session when there are isolated accounts and the UI
         # needs their display names.
-        factory = get_session_factory()
-        async with factory() as session:
+        if session is not None:
             rows = (
                 await session.execute(
                     select(Account.id, Account.name).where(Account.id.in_(list(isolation_map.keys())))
                 )
             ).all()
+        else:
+            factory = get_session_factory()
+            async with factory() as status_session:
+                rows = (
+                    await status_session.execute(
+                        select(Account.id, Account.name).where(Account.id.in_(list(isolation_map.keys())))
+                    )
+                ).all()
         name_by_id = {row.id: row.name for row in rows}
         for account_id, info in isolation_map.items():
             isolation_items.append(
@@ -605,43 +652,118 @@ async def runtime_status(
     }
 
 
+@router.get("/runtime-status")
+async def runtime_status(payload=Depends(require_admin)):
+    del payload
+    return await _runtime_status_payload()
+
+
 @router.post("/circuit-breaker/reset")
 async def reset_circuit_breaker(payload=Depends(require_admin)):
-    del payload
     breaker = get_generation_guard().upstream_breaker
     was_open = breaker.snapshot()["is_open"]
-    breaker.reset()
+    try:
+        breaker.reset()
+    except Exception as exc:
+        await _record_admin_audit(
+            payload,
+            action="reset_circuit_breaker",
+            target_type="circuit_breaker",
+            detail={"was_open": bool(was_open), "error": str(exc)[:240]},
+            success=False,
+        )
+        raise
     logger.info("circuit breaker reset by admin (was_open=%s)", was_open)
+    await _record_admin_audit(
+        payload,
+        action="reset_circuit_breaker",
+        target_type="circuit_breaker",
+        detail={"was_open": bool(was_open)},
+    )
     return {"success": True, "was_open": bool(was_open), "circuit_breaker": breaker.snapshot()}
 
 
 @router.post("/circuit-breaker/routes/reset")
 async def reset_route_circuit_breakers(payload=Depends(require_admin)):
-    del payload
     guard = get_generation_guard()
     before = guard.route_breakers.snapshot()
-    guard.route_breakers.reset()
+    try:
+        guard.route_breakers.reset()
+    except Exception as exc:
+        await _record_admin_audit(
+            payload,
+            action="reset_route_circuit_breakers",
+            target_type="route_circuit_breakers",
+            detail={"route_count": len(before), "error": str(exc)[:240]},
+            success=False,
+        )
+        raise
     logger.info("route circuit breakers reset by admin: count=%s", len(before))
+    await _record_admin_audit(
+        payload,
+        action="reset_route_circuit_breakers",
+        target_type="route_circuit_breakers",
+        detail={"route_count": len(before)},
+    )
     return {"success": True, "reset_count": len(before), "route_breakers": guard.route_breakers.snapshot()}
 
 
 @router.post("/accounts/isolation/clear")
 async def clear_account_isolations(payload=Depends(require_admin)):
-    del payload
     pool = get_account_pool_service()
-    cleared = pool.clear_all_account_isolations()
+    try:
+        cleared = pool.clear_all_account_isolations()
+    except Exception as exc:
+        await _record_admin_audit(
+            payload,
+            action="clear_all_account_isolations",
+            target_type="account_isolations",
+            detail={"error": str(exc)[:240]},
+            success=False,
+        )
+        raise
     logger.info("account failure isolations cleared by admin: count=%s", cleared)
+    await _record_admin_audit(
+        payload,
+        action="clear_all_account_isolations",
+        target_type="account_isolations",
+        detail={"cleared": int(cleared)},
+    )
     return {"success": True, "cleared": cleared}
 
 
 @router.post("/accounts/{account_id}/isolation/clear")
 async def clear_account_isolation(account_id: str, payload=Depends(require_admin)):
-    del payload
     pool = get_account_pool_service()
-    cleared = pool.clear_account_isolation(account_id)
+    try:
+        cleared = pool.clear_account_isolation(account_id)
+    except Exception as exc:
+        await _record_admin_audit(
+            payload,
+            action="clear_account_isolation",
+            target_type="account",
+            target_id=account_id,
+            detail={"error": str(exc)[:240]},
+            success=False,
+        )
+        raise
     if not cleared:
+        await _record_admin_audit(
+            payload,
+            action="clear_account_isolation",
+            target_type="account",
+            target_id=account_id,
+            detail={"cleared": False},
+        )
         return {"success": True, "cleared": False}
     logger.info("account failure isolation cleared by admin: account=%s", account_id[:8])
+    await _record_admin_audit(
+        payload,
+        action="clear_account_isolation",
+        target_type="account",
+        target_id=account_id,
+        detail={"cleared": True},
+    )
     return {"success": True, "cleared": True}
 
 
@@ -1156,12 +1278,7 @@ async def delete_all_users(
 
 
 # ---------------- 简单统计 ----------------
-@router.get("/stats/overview")
-async def stats_overview(
-    payload=Depends(require_admin),
-    session: AsyncSession = Depends(get_session),
-):
-    del payload
+async def _stats_overview_payload(session: AsyncSession) -> dict:
     await get_user_auth_service().ensure_user_schema(session)
     # 账号统计
     total_acc = (await session.execute(select(func.count(Account.id)))).scalar_one()
@@ -1208,13 +1325,68 @@ async def stats_overview(
     }
 
 
-@router.get("/logs")
-async def recent_logs(
+@router.get("/stats/overview")
+async def stats_overview(
     payload=Depends(require_admin),
     session: AsyncSession = Depends(get_session),
-    limit: int = 50,
 ):
     del payload
+    return await _stats_overview_payload(session)
+
+
+@router.get("/stats/dashboard")
+async def stats_dashboard(
+    period: str = Query(default="24h"),
+    payload=Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Return complete-period dashboard aggregates, independent of log pagination."""
+    del payload
+    try:
+        return await get_dashboard_analytics(session, period)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/dashboard/snapshot")
+async def dashboard_snapshot(
+    period: str = Query(default="24h"),
+    payload=Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    """Return the data needed to paint the dashboard's first viewport.
+
+    Management tables remain separate endpoints so a slow or broken account
+    list cannot prevent operators from seeing service health and recent work.
+    """
+    try:
+        # The snapshot shares one AsyncSession for the database-backed pieces;
+        # keep those reads sequential because AsyncSession is not concurrent.
+        overview = await _stats_overview_payload(session)
+        analytics = await get_dashboard_analytics(session, period)
+        runtime_status_data = await _runtime_status_payload(session)
+        # Volatile counters are intentionally sampled as part of the same
+        # response, but do not require another database round trip.
+        recent = await _recent_logs_payload(session, limit=20)
+        return {
+            "admin": {
+                "id": payload.get("sub"),
+                "username": payload.get("username"),
+            },
+            "overview": overview,
+            "analytics": analytics,
+            "runtime_metrics": _runtime_metrics_payload(),
+            "runtime_status": runtime_status_data,
+            "runtime_config": _runtime_config_payload(
+                get_generation_guard(), get_account_pool_service()
+            ),
+            "recent_logs": recent["items"],
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+async def _recent_logs_payload(session: AsyncSession, limit: int = 50) -> dict:
     limit = max(1, min(200, int(limit)))
     # 左连接 Account 表以拿到账号名
     rows = await session.execute(
@@ -1226,6 +1398,10 @@ async def recent_logs(
     )
     items = []
     for r, account_name, username in rows.all():
+        failure_category = (
+            getattr(r, "failure_category", None)
+            or (normalize_failure_category(r.error_message) if r.status != "success" else None)
+        )
         items.append(
             {
                 "id": r.id,
@@ -1245,7 +1421,19 @@ async def recent_logs(
                 "response_time_ms": r.response_time_ms,
                 "status": r.status,
                 "error_message": redact_upstream_text(r.error_message),
+                "failure_category": failure_category,
+                "error_code": getattr(r, "error_code", None) or (dashboard_failure_code(failure_category) if failure_category else None),
                 "is_stream": getattr(r, "is_stream", False),
             }
         )
     return {"items": items, "total": len(items)}
+
+
+@router.get("/logs")
+async def recent_logs(
+    payload=Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+    limit: int = 50,
+):
+    del payload
+    return await _recent_logs_payload(session, limit)

@@ -149,42 +149,69 @@
               </div>
             </div>
 
+            <section class="admin-surface capacity-panel" aria-labelledby="capacityTitle">
+              <div class="admin-surface-head">
+                <div><p class="panel-kicker">Live capacity</p><h2 id="capacityTitle">全局生图并发</h2></div>
+                <div class="capacity-head-meta"><span id="capacityStatusBadge" class="capacity-status">同步中</span><span id="capacityUpdatedAt" class="surface-meta" aria-live="polite">—</span></div>
+              </div>
+              <div class="capacity-main">
+                <div class="capacity-number" aria-live="polite"><strong id="capacityInFlight">—</strong><span>/</span><strong id="capacityTotal">—</strong></div>
+                <p id="capacityStateText" class="capacity-state">正在读取容量配置…</p>
+                <div id="capacityProgress" class="capacity-progress" role="progressbar" aria-label="全局生图并发占用" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span></span></div>
+                <div class="capacity-progress-meta"><span id="capacityPercent">—</span><span>实时占用</span></div>
+              </div>
+              <div class="capacity-models" aria-label="模型实时占用">
+                <div class="capacity-model"><span>GPT Image 2</span><strong id="liveGptImage2">0</strong><small>当前在途</small></div>
+                <div class="capacity-model"><span>Nano Banana Pro</span><strong id="liveNanoBanana">0</strong><small>当前在途</small></div>
+              </div>
+              <div class="capacity-meta-row">
+                <span>启用账号 <strong id="capacityActiveAccounts">—</strong></span>
+                <span>账号在途 <strong id="capacityAccountInFlight">—</strong></span>
+                <span>账号容量 <strong id="capacityAccountTotal">—</strong></span>
+              </div>
+            </section>
+
             <div class="stat-grid" id="overview"></div>
+
+            <div class="dashboard-period-toolbar" aria-label="分析周期">
+              <div><p class="panel-kicker">Analytics</p><strong>运营分析</strong><span id="analyticsPeriodMeta">最近 24 小时 · UTC 聚合</span><span id="analyticsSecondaryMeta" class="analytics-secondary-meta"></span></div>
+              <div class="period-switch" role="group" aria-label="选择分析周期">
+                <button type="button" class="period-button is-active" data-dashboard-period="24h" aria-pressed="true">24 小时</button>
+                <button type="button" class="period-button" data-dashboard-period="7d" aria-pressed="false">7 天</button>
+                <button type="button" class="period-button" data-dashboard-period="30d" aria-pressed="false">30 天</button>
+              </div>
+            </div>
 
             <div class="admin-dashboard-grid">
               <section class="admin-surface trend-panel">
                 <div class="admin-surface-head">
                   <div><p class="panel-kicker">Activity</p><h2>生成请求趋势</h2></div>
-                  <span id="trendSampleMeta" class="surface-meta">最近 24 小时 · 最近 200 条日志</span>
+                  <span id="trendSampleMeta" class="surface-meta">完整周期 · 后端聚合</span>
                 </div>
-                <div id="hourlyTrendChart" class="trend-chart" role="img" aria-label="最近 24 小时生成请求趋势"></div>
+                <div id="hourlyTrendChart" class="trend-chart" role="img" aria-label="生成请求趋势"></div>
+                <p id="trendAccessibleSummary" class="visually-hidden"></p>
                 <div id="trendLegend" class="trend-legend" aria-label="趋势图例"></div>
               </section>
-              <section class="admin-surface distribution-panel">
-                <div class="admin-surface-head"><div><p class="panel-kicker">Outcome</p><h2>结果分布</h2></div><span class="surface-meta">采样日志</span></div>
-                <div id="statusDistribution" class="status-distribution"></div>
+              <section class="admin-surface failure-panel">
+                <div class="admin-surface-head"><div><p class="panel-kicker">Failures</p><h2>失败统计</h2></div><a class="surface-link" href="#" data-page-link="logs">查看失败日志</a></div>
+                <div id="failureSummary" class="failure-summary" aria-live="polite"></div>
+                <div id="failureChart" class="failure-chart" aria-label="失败类型统计"></div>
               </section>
-              <section class="admin-surface health-panel">
-                <div class="admin-surface-head"><div><p class="panel-kicker">Capacity</p><h2>资源健康</h2></div><span class="surface-meta">实时快照</span></div>
-                <div id="healthSummary" class="health-summary"></div>
-              </section>
-              <section class="admin-surface attention-panel">
-                <div class="admin-surface-head"><div><p class="panel-kicker">Attention</p><h2>待处理事项</h2></div><span id="attentionCount" class="surface-meta">—</span></div>
-                <div id="attentionItems" class="attention-list"></div>
+              <section class="admin-surface protection-panel">
+                <div class="admin-surface-head"><div><p class="panel-kicker">Protection</p><h2>资源保护状态</h2></div><span class="surface-meta">实时快照</span></div>
+                <div id="protectionStatus" class="protection-status" aria-live="polite"></div>
               </section>
               <section class="admin-surface activity-panel">
                 <div class="admin-surface-head"><div><p class="panel-kicker">Latest</p><h2>最近生成活动</h2></div><a class="surface-link" href="#" data-page-link="logs">查看全部</a></div>
                 <div id="recentActivity" class="activity-list"></div>
               </section>
-              <section class="admin-surface busiest-panel">
-                <div class="admin-surface-head"><div><p class="panel-kicker">Accounts</p><h2>最繁忙账号</h2></div><a class="surface-link" href="#" data-page-link="accounts">管理账号</a></div>
-                <div id="busiestAccountSummary" class="busiest-list"></div>
-              </section>
-              <div id="runtimeStatusPanel" class="is-hidden" aria-hidden="true"></div>
-              <div id="opsSnapshot" class="is-hidden" aria-hidden="true"></div>
-              <div id="accountHealthPanel" class="is-hidden" aria-hidden="true"></div>
-              <div id="logHealthPanel" class="is-hidden" aria-hidden="true"></div>
             </div>
+
+            <section class="admin-surface models-panel">
+              <div class="admin-surface-head"><div><p class="panel-kicker">Models</p><h2>模型分析</h2><p class="surface-note">仅统计文生图；图生图仍纳入总体趋势和失败日志。</p></div><span id="modelAnalyticsMeta" class="surface-meta">完整周期 · 后端聚合</span></div>
+              <div id="modelAnalytics" class="model-analytics" aria-live="polite"></div>
+            </section>
+
           </section>
 
           <section id="accountsPage" class="admin-page is-hidden">
@@ -397,6 +424,18 @@
                       <option value="all">全部模式</option>
                       <option value="text2img">文生图</option>
                       <option value="img2img">图生图</option>
+                    </select>
+                  </label>
+                  <label class="toolbar-select">
+                    <span>失败类型</span>
+                    <select id="logFailureCategoryFilter">
+                      <option value="all">全部类型</option>
+                      <option value="capacity">容量 / 限流</option>
+                      <option value="account_config">账号 / 配置</option>
+                      <option value="reference_input">参考图 / 输入</option>
+                      <option value="upstream">上游服务</option>
+                      <option value="storage">存储 / 落盘</option>
+                      <option value="other">其他</option>
                     </select>
                   </label>
                 </div>

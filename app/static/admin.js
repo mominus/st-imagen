@@ -15,7 +15,15 @@ const DEFAULT_FILTERS = {
   accounts: { query: "", status: "all", load: "all" },
   users: { query: "", status: "all", lifecycle: "all" },
   invites: { query: "", status: "all" },
-  logs: { query: "", status: "all", mode: "all" },
+  logs: { query: "", status: "all", mode: "all", category: "all" },
+};
+const FAILURE_CATEGORY_LABELS = {
+  capacity: "容量 / 限流",
+  account_config: "账号 / 配置",
+  reference_input: "参考图 / 输入",
+  upstream: "上游服务",
+  storage: "存储 / 落盘",
+  other: "其他",
 };
 const adminBasePath = (() => {
   const segments = window.location.pathname.split("/").filter(Boolean);
@@ -31,6 +39,7 @@ const state = {
   overview: null,
   runtimeStatus: null,
   runtimeMetrics: null,
+  runtimeMetricsUpdatedAt: null,
   runtimeConfig: null,
   accounts: [],
   users: [],
@@ -58,6 +67,13 @@ const state = {
   modalReturnFocus: null,
   userCreateMode: "manual",
   dashboardMetrics: null,
+  dashboardAnalytics: null,
+  dashboardPeriod: "24h",
+  dashboardAnalyticsLoading: false,
+  dashboardAnalyticsRequestId: 0,
+  dashboardAnalyticsAbortController: null,
+  dashboardSnapshotLoading: false,
+  batchRendering: false,
 };
 
 function escapeHtml(value) {
@@ -546,6 +562,7 @@ function syncFilterInputs(group) {
     $("#logSearchInput").value = state.filters.logs.query;
     $("#logStatusFilter").value = state.filters.logs.status;
     $("#logModeFilter").value = state.filters.logs.mode;
+    $("#logFailureCategoryFilter").value = state.filters.logs.category;
   }
 }
 
@@ -741,6 +758,11 @@ function bindAdminNavigation() {
     if (event.key === "Escape" && document.body.classList.contains("admin-nav-open")) closeAdminNav();
   });
   document.addEventListener("click", (event) => {
+    const protectionLink = event.target instanceof Element ? event.target.closest("[data-protection-page]") : null;
+    if (protectionLink && !(event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0)) {
+      event.preventDefault();
+      showAdminPage(protectionLink.dataset.protectionPage, { updateHistory: true });
+    }
     if (!event.target.closest(".admin-topbar-search")) $("#adminSearchResults")?.classList.add("is-hidden");
     const tableMore = event.target instanceof Element ? event.target.closest(".table-more") : null;
     closeTableMoreMenus(tableMore);
@@ -1035,79 +1057,6 @@ function deriveMetrics() {
   };
 }
 
-function buildDashboardMetrics(metrics) {
-  const now = Date.now();
-  const recentLogs = state.logs
-    .map((log) => ({ log, date: parseApiDate(log.timestamp) }))
-    .filter((item) => item.date && now - item.date.getTime() >= 0 && now - item.date.getTime() <= 24 * 60 * 60 * 1000)
-    .sort((a, b) => a.date.getTime() - b.date.getTime());
-  const success = recentLogs.filter(({ log }) => log.status === "success").length;
-  const errors = recentLogs.filter(({ log }) => log.status === "error").length;
-  const total = recentLogs.length;
-  const hourlySeries = [];
-
-  if (recentLogs.length) {
-    const currentHour = Math.floor(now / 3600000) * 3600000;
-    for (let index = 23; index >= 0; index -= 1) {
-      const start = currentHour - index * 3600000;
-      const end = start + 3600000;
-      const items = recentLogs.filter(({ date }) => date.getTime() >= start && date.getTime() < end);
-      hourlySeries.push({
-        label: formatInShanghai(new Date(start), { hour: "2-digit" }),
-        total: items.length,
-        success: items.filter(({ log }) => log.status === "success").length,
-        error: items.filter(({ log }) => log.status === "error").length,
-      });
-    }
-  }
-
-  const isolations = Array.isArray(state.runtimeStatus?.account_isolations)
-    ? state.runtimeStatus.account_isolations
-    : [];
-  const attentionItems = [];
-  if (metrics.saturatedAccounts) {
-    attentionItems.push({ tone: "danger", title: `${metrics.saturatedAccounts} 个账号已打满`, detail: "检查账号并发或暂时扩充账号池。", page: "accounts", action: "查看账号" });
-  }
-  if (isolations.length) {
-    attentionItems.push({ tone: "danger", title: `${isolations.length} 个账号处于故障隔离`, detail: "隔离期间不会接收新的生成请求。", page: "accounts", action: "处理隔离" });
-  }
-  if (errors) {
-    attentionItems.push({ tone: "danger", title: `${errors} 条失败日志`, detail: "失败数来自最近 24 小时已加载日志。", page: "logs", action: "查看日志" });
-  }
-  if (metrics.expiredUsers || metrics.expiringUsers) {
-    attentionItems.push({ tone: "warning", title: `${metrics.expiredUsers + metrics.expiringUsers} 个用户需要关注`, detail: `${metrics.expiredUsers} 个已过期，${metrics.expiringUsers} 个 7 天内到期。`, page: "users", action: "查看用户" });
-  }
-  if (!metrics.activeInvites || metrics.inviteRemainingUses <= Math.max(3, metrics.activeUsers)) {
-    attentionItems.push({ tone: "warning", title: "邀请码库存偏低", detail: `当前剩余可用次数 ${fmtNumber(metrics.inviteRemainingUses)}。`, page: "invites", action: "补充库存" });
-  }
-  if (!attentionItems.length) {
-    attentionItems.push({ tone: "success", title: "暂时没有待处理事项", detail: "账号、用户、邀请码和最近日志均未报告异常。", page: "overview", action: "保持观察" });
-  }
-
-  return {
-    kpis: {
-      requests24h: total,
-      successRate: total ? (success / total) * 100 : 0,
-      success,
-      error: errors,
-      activeAccounts: metrics.activeAccounts,
-      accountCapacity: metrics.runtimeAccountSlotsTotal,
-      accountInFlight: metrics.runtimeAccountSlotsUsed,
-      activeUsers: metrics.activeUsers,
-      userRisk: metrics.expiredUsers + metrics.expiringUsers,
-      totalGeneratedImages: metrics.totalGeneratedImages,
-    },
-    hourlySeries,
-    statusDistribution: { total, success, error: errors },
-    globalHealth: { capacity: metrics.globalSlotsTotal, inFlight: metrics.globalSlotsUsed },
-    attentionItems,
-    recentActivity: [...state.logs].sort((a, b) => (parseApiDate(b.timestamp)?.getTime() || 0) - (parseApiDate(a.timestamp)?.getTime() || 0)).slice(0, 6),
-    busiestAccounts: metrics.busiestAccounts,
-    sampledLogCount: state.logs.length,
-    lastUpdatedAt: state.lastUpdatedAt,
-  };
-}
-
 function svgPolyline(values, width, height, padding, maxValue) {
   const usableWidth = width - padding.left - padding.right;
   const usableHeight = height - padding.top - padding.bottom;
@@ -1117,128 +1066,6 @@ function svgPolyline(values, width, height, padding, maxValue) {
     const y = padding.top + usableHeight - (Number(value || 0) / Math.max(1, maxValue)) * usableHeight;
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(" ");
-}
-
-function renderTrendChart(dashboard) {
-  const el = $("#hourlyTrendChart");
-  const legend = $("#trendLegend");
-  if (!el) return;
-  if (!dashboard.hourlySeries.length) {
-    el.innerHTML = '<div class="admin-empty-state"><span>最近 24 小时没有可用日志，趋势图暂不生成。</span></div>';
-    if (legend) legend.innerHTML = "";
-    return;
-  }
-
-  const width = 760;
-  const height = 218;
-  const padding = { top: 12, right: 8, bottom: 28, left: 8 };
-  const totals = dashboard.hourlySeries.map((item) => item.total);
-  const maxValue = Math.max(...totals, 1);
-  const totalPoints = svgPolyline(totals, width, height, padding, maxValue);
-  const successPoints = svgPolyline(dashboard.hourlySeries.map((item) => item.success), width, height, padding, maxValue);
-  const errorPoints = svgPolyline(dashboard.hourlySeries.map((item) => item.error), width, height, padding, maxValue);
-  const areaPoints = `${padding.left},${height - padding.bottom} ${totalPoints} ${width - padding.right},${height - padding.bottom}`;
-  const labelIndexes = [0, 6, 12, 18, 23];
-  const labelStep = dashboard.hourlySeries.length > 1 ? (width - padding.left - padding.right) / (dashboard.hourlySeries.length - 1) : 0;
-  const labels = labelIndexes.map((index) => {
-    const item = dashboard.hourlySeries[index];
-    if (!item) return "";
-    return `<text x="${(padding.left + index * labelStep).toFixed(1)}" y="${height - 6}" text-anchor="middle" class="trend-axis-label">${escapeHtml(item.label)}</text>`;
-  }).join("");
-  const grid = [0, 1, 2, 3].map((index) => {
-    const y = padding.top + ((height - padding.top - padding.bottom) / 3) * index;
-    return `<line x1="${padding.left}" y1="${y.toFixed(1)}" x2="${width - padding.right}" y2="${y.toFixed(1)}" class="trend-grid-line" />`;
-  }).join("");
-  el.innerHTML = `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true">${grid}<polygon points="${areaPoints}" class="trend-area" /><polyline points="${totalPoints}" class="trend-line" /><polyline points="${successPoints}" class="trend-success-line" /><polyline points="${errorPoints}" class="trend-error-line" />${labels}</svg>`;
-  if (legend) legend.innerHTML = '<span><i></i>全部请求</span><span class="success"><i></i>成功</span><span class="error"><i></i>失败</span>';
-}
-
-function renderStatusDistribution(dashboard) {
-  const el = $("#statusDistribution");
-  if (!el) return;
-  const total = dashboard.statusDistribution.total;
-  if (!total) {
-    el.innerHTML = '<div class="admin-empty-state" style="grid-column:1/-1"><span>暂无最近 24 小时日志。</span></div>';
-    return;
-  }
-  const successRatio = dashboard.statusDistribution.success / total;
-  const errorRatio = dashboard.statusDistribution.error / total;
-  const circumference = 2 * Math.PI * 50;
-  el.innerHTML = `
-    <div class="status-ring" aria-label="成功 ${dashboard.statusDistribution.success} 条，失败 ${dashboard.statusDistribution.error} 条">
-      <svg viewBox="0 0 120 120" aria-hidden="true"><circle cx="60" cy="60" r="50" class="status-ring-track" /><circle cx="60" cy="60" r="50" class="status-ring-success" stroke-dasharray="${(circumference * successRatio).toFixed(2)} ${circumference.toFixed(2)}" /><circle cx="60" cy="60" r="50" class="status-ring-error" stroke-dasharray="${(circumference * errorRatio).toFixed(2)} ${circumference.toFixed(2)}" stroke-dashoffset="${(-circumference * successRatio).toFixed(2)}" /></svg>
-      <div class="status-ring-label"><strong>${dashboard.kpis.successRate.toFixed(1)}%</strong><span>成功率</span></div>
-    </div>
-    <div class="distribution-legend">
-      <div class="distribution-item"><span><i></i>成功请求</span><strong>${fmtNumber(dashboard.statusDistribution.success)}</strong></div>
-      <div class="distribution-item error"><span><i></i>失败请求</span><strong>${fmtNumber(dashboard.statusDistribution.error)}</strong></div>
-      <p class="distribution-note">基于最近 ${fmtNumber(total)} 条、时间在 24 小时内的日志记录。</p>
-    </div>`;
-}
-
-function renderHealthSummary(dashboard) {
-  const el = $("#healthSummary");
-  if (!el) return;
-  const globalRatio = percentage(dashboard.globalHealth.inFlight, dashboard.globalHealth.capacity);
-  const runtimeStatus = state.runtimeStatus;
-  const breaker = runtimeStatus?.guard?.circuit_breaker;
-  const routeBreakers = runtimeStatus?.guard?.route_breakers || {};
-  const routeEntries = Object.values(routeBreakers);
-  const openRoutes = routeEntries.filter((item) => item?.state === "open" || item?.is_open).length;
-  const probingRoutes = routeEntries.filter((item) => item?.state === "half-open" || item?.is_half_open).length;
-  const closedRoutes = Math.max(0, routeEntries.length - openRoutes - probingRoutes);
-  const isolations = Array.isArray(runtimeStatus?.account_isolations) ? runtimeStatus.account_isolations : [];
-
-  const breakerHealth = !runtimeStatus
-    ? { value: "加载中", note: "正在同步熔断器状态", ratio: 0, tone: "warning" }
-    : !breaker
-      ? { value: "未知", note: "暂未返回熔断器状态", ratio: 0, tone: "warning" }
-      : !breaker.enabled
-        ? { value: "未启用", note: "上游熔断保护未启用", ratio: 100, tone: "warning" }
-        : breaker.is_open
-          ? { value: "已断开", note: `剩余 ${formatRuntimeSeconds(breaker.remaining_seconds)}`, ratio: 0, tone: "danger" }
-          : {
-              value: "正常",
-              note: breaker.consecutive_failures ? `连续失败 ${fmtNumber(breaker.consecutive_failures)} 次` : "当前未触发熔断",
-              ratio: 100,
-              tone: breaker.consecutive_failures ? "warning" : "",
-            };
-  const routeHealth = !runtimeStatus
-    ? { value: "加载中", note: "正在同步路由状态", ratio: 0, tone: "warning" }
-    : routeEntries.length
-      ? {
-          value: `${fmtNumber(closedRoutes)} / ${fmtNumber(routeEntries.length)}`,
-          note: openRoutes
-            ? `${fmtNumber(openRoutes)} 条已打开${probingRoutes ? ` · ${fmtNumber(probingRoutes)} 条探测中` : ""}`
-            : probingRoutes
-              ? `${fmtNumber(probingRoutes)} 条探测中`
-              : "全部路由正常",
-          ratio: percentage(closedRoutes, routeEntries.length),
-          tone: openRoutes ? "danger" : probingRoutes ? "warning" : "",
-        }
-      : { value: "无记录", note: "尚未记录路由状态", ratio: 100, tone: "" };
-  const isolationHealth = !runtimeStatus
-    ? { value: "加载中", note: "正在同步账号隔离状态", ratio: 0, tone: "warning" }
-    : isolations.length
-      ? { value: `${fmtNumber(isolations.length)} 个`, note: "隔离账号不会接收新的生成请求", ratio: 0, tone: "danger" }
-      : { value: "0 个", note: "当前无故障隔离账号", ratio: 100, tone: "" };
-  const rows = [
-    { label: "全局生图并发", value: `${fmtNumber(dashboard.globalHealth.inFlight)} / ${fmtNumber(dashboard.globalHealth.capacity)}`, note: "全局生成准入槽位", ratio: globalRatio, tone: globalRatio >= 90 ? "danger" : globalRatio >= 60 ? "warning" : "" },
-    { label: "熔断器", ...breakerHealth },
-    { label: "路由", ...routeHealth },
-    { label: "账号隔离", ...isolationHealth },
-  ];
-  el.innerHTML = rows.map((row) => `<div class="health-row ${row.tone}"><div class="health-row-head"><span>${row.label}</span><strong>${row.value}</strong></div><div class="health-progress"><span style="width:${row.ratio.toFixed(1)}%"></span></div><span class="health-row-note">${row.note}</span></div>`).join("");
-}
-
-function renderAttentionItems(dashboard) {
-  const el = $("#attentionItems");
-  const count = $("#attentionCount");
-  if (!el) return;
-  const actionable = dashboard.attentionItems.filter((item) => item.tone !== "success").length;
-  if (count) count.textContent = actionable ? `${actionable} 项需要关注` : "状态良好";
-  el.innerHTML = dashboard.attentionItems.slice(0, 5).map((item) => `<div class="attention-item ${item.tone}"><span class="attention-mark"></span><div class="attention-copy"><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.detail)}</span></div><button class="attention-action" type="button" data-dashboard-page="${escapeHtml(item.page)}">${escapeHtml(item.action)}</button></div>`).join("");
-  el.querySelectorAll("[data-dashboard-page]").forEach((button) => button.addEventListener("click", () => showAdminPage(button.dataset.dashboardPage, { updateHistory: true })));
 }
 
 function renderRecentActivity(dashboard) {
@@ -1251,49 +1078,234 @@ function renderRecentActivity(dashboard) {
   el.innerHTML = dashboard.recentActivity.map((log) => `<div class="activity-item"><span class="activity-status ${log.status === "success" ? "success" : "error"}">${log.status === "success" ? "✓" : "!"}</span><div class="activity-copy"><strong>${escapeHtml(log.model || humanMode(log.mode))}</strong><span>${escapeHtml(log.username || "匿名用户")} · ${escapeHtml(fmtRelativeTime(log.timestamp))}${log.error_message ? ` · ${escapeHtml(truncateText(log.error_message, 34))}` : ""}</span></div><span class="mono table-note">${escapeHtml(fmtDuration(log.response_time_ms))}</span></div>`).join("");
 }
 
-function renderBusiestAccounts(dashboard) {
-  const el = $("#busiestAccountSummary");
+function dashboardPeriodLabel(period = state.dashboardPeriod) {
+  return period === "7d" ? "最近 7 天" : period === "30d" ? "最近 30 天" : "最近 24 小时";
+}
+
+function normalizeLiveModelKey(value) {
+  const token = String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  if (["gpt image 2", "gptimage2"].includes(token)) return "gpt_image_2";
+  if (["nano banana pro", "gemini 3 pro image preview", "gemini 3 pro image"].includes(token)) return "nano_banana_pro";
+  return "other";
+}
+
+function liveModelCount(models, target) {
+  return Object.entries(models || {}).reduce((sum, [model, snapshot]) => {
+    return sum + (normalizeLiveModelKey(model) === target ? Number(snapshot?.in_flight || 0) : 0);
+  }, 0);
+}
+
+function renderCapacityPanel() {
+  const configured = Number(state.runtimeConfig?.generation?.global_max_concurrent);
+  const hasCapacity = Number.isFinite(configured) && configured > 0;
+  const inFlight = Number(state.runtimeMetrics?.generation?.in_flight || 0);
+  const percent = hasCapacity ? Math.min(100, Math.max(0, (inFlight / configured) * 100)) : 0;
+  const activeAccounts = state.accounts.filter((item) => item.status === "active").length || Number(state.overview?.accounts?.active || 0);
+  const accountInFlight = Number(state.runtimeMetrics?.account?.in_flight ?? sumBy(state.accounts, (item) => item.in_flight));
+  const accountTotal = sumBy(state.accounts.filter((item) => item.status === "active"), (item) => item.max_inflight);
+  const status = !hasCapacity ? { label: "容量未配置", tone: "warning", state: "当前进程未配置全局容量，暂不显示虚假占用比例。" }
+    : inFlight >= configured ? { label: "容量已满", tone: "danger", state: "全局并发已达到上限，新请求将按准入策略处理。" }
+      : percent >= 80 ? { label: "接近上限", tone: "warning", state: "当前运行中，请关注剩余可用容量。" }
+        : inFlight > 0 ? { label: "运行中", tone: "success", state: "有生图请求正在处理。" }
+          : { label: "空闲", tone: "success", state: "当前没有在途生图请求。" };
+  const badge = $("#capacityStatusBadge");
+  const inFlightEl = $("#capacityInFlight");
+  const totalEl = $("#capacityTotal");
+  const stateEl = $("#capacityStateText");
+  const percentEl = $("#capacityPercent");
+  const progress = $("#capacityProgress");
+  if (badge) {
+    badge.className = `capacity-status ${status.tone}`;
+    badge.textContent = status.label;
+  }
+  if (inFlightEl) inFlightEl.textContent = hasCapacity ? fmtNumber(inFlight) : "—";
+  if (totalEl) totalEl.textContent = hasCapacity ? fmtNumber(configured) : "—";
+  if (stateEl) stateEl.textContent = status.state;
+  if (percentEl) percentEl.textContent = hasCapacity ? `${percent.toFixed(0)}%` : "—";
+  if (progress) {
+    progress.className = `capacity-progress ${hasCapacity ? status.tone : "unavailable"}`;
+    progress.setAttribute("aria-valuenow", String(Math.round(percent)));
+    const fill = progress.querySelector("span");
+    if (fill) fill.style.width = `${percent}%`;
+  }
+  const models = state.runtimeMetrics?.generation?.models || {};
+  const liveGpt = $("#liveGptImage2");
+  const liveNano = $("#liveNanoBanana");
+  if (liveGpt) liveGpt.textContent = fmtNumber(liveModelCount(models, "gpt_image_2"));
+  if (liveNano) liveNano.textContent = fmtNumber(liveModelCount(models, "nano_banana_pro"));
+  const activeEl = $("#capacityActiveAccounts");
+  const accountInFlightEl = $("#capacityAccountInFlight");
+  const accountTotalEl = $("#capacityAccountTotal");
+  if (activeEl) activeEl.textContent = fmtNumber(activeAccounts);
+  if (accountInFlightEl) accountInFlightEl.textContent = fmtNumber(accountInFlight);
+  if (accountTotalEl) accountTotalEl.textContent = fmtNumber(accountTotal);
+  const updated = $("#capacityUpdatedAt");
+  if (updated) updated.textContent = state.runtimeMetricsUpdatedAt ? `更新于 ${fmtTime(state.runtimeMetricsUpdatedAt)}` : "实时轮询 · 5 秒";
+}
+
+function renderProtectionStatus() {
+  const el = $("#protectionStatus");
   if (!el) return;
-  if (!dashboard.busiestAccounts.length) {
-    el.innerHTML = '<div class="admin-empty-state"><span>暂无账号数据。</span></div>';
+  const runtime = state.runtimeStatus;
+  if (!runtime) {
+    el.innerHTML = '<div class="admin-empty-state"><span>保护状态同步中…</span></div>';
     return;
   }
-  el.innerHTML = dashboard.busiestAccounts.map((account) => `<div class="busiest-item"><div class="busiest-copy"><strong>${escapeHtml(shortAccount(account.name))}</strong><span>${escapeHtml(account.name || "未命名账号")}</span></div><span class="busiest-ratio">${fmtNumber(account.in_flight || 0)} / ${fmtNumber(account.max_inflight || 0)}</span></div>`).join("");
+  const breaker = runtime.guard?.circuit_breaker;
+  const routes = Object.values(runtime.guard?.route_breakers || {});
+  const openRoutes = routes.filter((item) => item?.state === "open" || item?.is_open).length;
+  const probingRoutes = routes.filter((item) => item?.state === "half-open" || item?.is_half_open).length;
+  const isolations = Array.isArray(runtime.account_isolations) ? runtime.account_isolations.length : 0;
+  const rows = [
+    { label: "熔断器", value: !breaker?.enabled ? "未启用" : breaker.is_open ? "已断开" : "正常", note: breaker?.is_open ? `剩余 ${formatRuntimeSeconds(breaker.remaining_seconds)}` : "上游故障保护", tone: breaker?.is_open ? "danger" : !breaker?.enabled ? "warning" : "", actionLabel: "查看日志", actionPage: "logs" },
+    { label: "路由状态", value: routes.length ? `${routes.length - openRoutes - probingRoutes} / ${routes.length}` : "无记录", note: openRoutes ? `${openRoutes} 条已打开${probingRoutes ? ` · ${probingRoutes} 条探测中` : ""}` : probingRoutes ? `${probingRoutes} 条探测中` : "全部路由正常", tone: openRoutes ? "danger" : probingRoutes ? "warning" : "", actionLabel: "查看日志", actionPage: "logs" },
+    { label: "账号隔离", value: `${isolations} 个`, note: isolations ? "隔离账号不会接收新的生成请求" : "当前无故障隔离账号", tone: isolations ? "danger" : "", actionLabel: "管理账号", actionPage: "accounts" },
+  ];
+  el.innerHTML = rows.map((row) => `<div class="protection-item ${row.tone}"><span class="protection-dot"></span><div class="protection-copy"><strong>${escapeHtml(row.label)}</strong><span>${escapeHtml(row.note)}</span></div><span class="protection-value">${escapeHtml(row.value)}</span><a class="protection-action" href="${buildAdminPageHref(row.actionPage)}" data-protection-page="${escapeHtml(row.actionPage)}">${escapeHtml(row.actionLabel)}</a></div>`).join("");
+}
+
+function renderAnalyticsTrend(analytics) {
+  const el = $("#hourlyTrendChart");
+  const legend = $("#trendLegend");
+  const accessibleSummary = $("#trendAccessibleSummary");
+  const timeline = Array.isArray(analytics?.timeline) ? analytics.timeline : [];
+  if (!el) return;
+  if (!analytics || !timeline.length || !Number(analytics.summary?.requests || 0)) {
+    const emptyLabel = state.dashboardAnalyticsLoading || state.refreshing ? "分析数据加载中…" : "当前周期暂无生成请求。";
+    el.innerHTML = `<div class="admin-empty-state"><span>${emptyLabel}</span></div>`;
+    el.setAttribute("aria-busy", state.dashboardAnalyticsLoading ? "true" : "false");
+    if (accessibleSummary) accessibleSummary.textContent = emptyLabel;
+    if (legend) legend.innerHTML = "";
+    return;
+  }
+  const series = timeline.map((item) => ({
+    ...item,
+    total: Number(item.requests || 0),
+    error: Number(item.failure || 0),
+  }));
+  const width = 760;
+  const height = 218;
+  const padding = { top: 12, right: 8, bottom: 28, left: 8 };
+  const maxValue = Math.max(...series.map((item) => item.total), 1);
+  const totalPoints = svgPolyline(series.map((item) => item.total), width, height, padding, maxValue);
+  const successPoints = svgPolyline(series.map((item) => item.success), width, height, padding, maxValue);
+  const errorPoints = svgPolyline(series.map((item) => item.error), width, height, padding, maxValue);
+  const areaPoints = `${padding.left},${height - padding.bottom} ${totalPoints} ${width - padding.right},${height - padding.bottom}`;
+  const labelIndexes = series.length <= 7 ? series.map((_, index) => index) : [0, Math.floor((series.length - 1) / 3), Math.floor((series.length - 1) * 2 / 3), series.length - 1];
+  const labelStep = series.length > 1 ? (width - padding.left - padding.right) / (series.length - 1) : 0;
+  const labels = labelIndexes.map((index) => {
+    const item = series[index];
+    const label = formatInShanghai(item.start, analytics.period === "24h" ? { hour: "2-digit" } : { month: "2-digit", day: "2-digit" });
+    return `<text x="${(padding.left + index * labelStep).toFixed(1)}" y="${height - 6}" text-anchor="middle" class="trend-axis-label">${escapeHtml(label)}</text>`;
+  }).join("");
+  const grid = [0, 1, 2, 3].map((index) => {
+    const y = padding.top + ((height - padding.top - padding.bottom) / 3) * index;
+    return `<line x1="${padding.left}" y1="${y.toFixed(1)}" x2="${width - padding.right}" y2="${y.toFixed(1)}" class="trend-grid-line" />`;
+  }).join("");
+  el.setAttribute("aria-label", `${dashboardPeriodLabel(analytics.period)}生成请求趋势，共 ${fmtNumber(analytics.summary.requests)} 次请求`);
+  el.setAttribute("aria-busy", state.dashboardAnalyticsLoading ? "true" : "false");
+  if (accessibleSummary) accessibleSummary.textContent = `${dashboardPeriodLabel(analytics.period)}共 ${fmtNumber(analytics.summary.requests)} 次请求，其中成功 ${fmtNumber(analytics.summary.success)} 次，失败 ${fmtNumber(analytics.summary.failure)} 次。`;
+  el.innerHTML = `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true">${grid}<polygon points="${areaPoints}" class="trend-area" /><polyline points="${totalPoints}" class="trend-line" /><polyline points="${successPoints}" class="trend-success-line" /><polyline points="${errorPoints}" class="trend-error-line" />${labels}</svg>`;
+  if (legend) legend.innerHTML = '<span><i></i>全部请求</span><span class="success"><i></i>成功</span><span class="error"><i></i>失败</span>';
+}
+
+function renderFailureAnalytics(analytics) {
+  const summaryEl = $("#failureSummary");
+  const chart = $("#failureChart");
+  const failures = Array.isArray(analytics?.failures) ? analytics.failures : [];
+  const total = Number(analytics?.summary?.failure || 0);
+  if (chart) chart.setAttribute("aria-busy", state.dashboardAnalyticsLoading ? "true" : "false");
+  if (summaryEl) summaryEl.innerHTML = `<strong>${fmtNumber(total)}</strong><span>周期内失败请求</span>`;
+  if (!chart) return;
+  if (!total) {
+    chart.innerHTML = `<div class="admin-empty-state"><span>${state.dashboardAnalyticsLoading || state.refreshing ? "分析数据加载中…" : "当前周期暂无失败记录。"}</span></div>`;
+    return;
+  }
+  chart.innerHTML = failures.map((item) => `<button class="failure-row ${item.count ? "" : "zero"}" type="button" data-failure-category="${escapeHtml(item.key)}"><span class="failure-row-head"><span>${escapeHtml(item.label)}</span><strong>${fmtNumber(item.count)} · ${Number(item.share || 0).toFixed(1)}%</strong></span><span class="failure-track"><span style="width:${Math.min(100, Math.max(0, Number(item.share || 0)))}%"></span></span></button>`).join("");
+  chart.querySelectorAll("[data-failure-category]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.filters.logs.status = "error";
+      state.filters.logs.category = button.dataset.failureCategory || "all";
+      syncFilterInputs("logs");
+      showAdminPage("logs", { updateHistory: true });
+      renderLogsTable();
+    });
+  });
+}
+
+function renderModelAnalytics(analytics) {
+  const el = $("#modelAnalytics");
+  if (!el) return;
+  el.setAttribute("aria-busy", state.dashboardAnalyticsLoading ? "true" : "false");
+  const models = Array.isArray(analytics?.models) ? analytics.models : [];
+  const known = ["gpt_image_2", "nano_banana_pro"];
+  const ordered = [...known.map((key) => models.find((item) => item.key === key) || { key, label: key === "gpt_image_2" ? "GPT Image 2" : "Nano Banana Pro", requests: 0, request_share: 0, success: 0, failure: 0, success_rate: 0, avg_response_ms: 0, specs: key === "gpt_image_2" ? [{ label: "Quality", items: [] }, { label: "Size", items: [] }] : [{ label: "分辨率", items: [] }] }), ...models.filter((item) => item.key === "other")];
+  if (!analytics) {
+    el.innerHTML = '<div class="admin-empty-state"><span>模型分析加载中…</span></div>';
+    return;
+  }
+  el.innerHTML = ordered.map((model) => {
+    const requestCount = Number(model.requests || 0);
+    const specs = Array.isArray(model.specs) ? model.specs : [];
+    const maxSpecCount = Math.max(1, ...specs.flatMap((group) => (group.items || []).map((item) => Number(item.requests || 0))));
+    return `<article class="model-card"><div class="model-card-head"><div><h3>${escapeHtml(model.label)}</h3><p class="model-card-caption">${model.key === "other" ? "未识别模型" : "文生图"}</p></div><span class="model-card-share">${Number(model.request_share || 0).toFixed(1)}%</span></div><div class="model-metrics"><div class="model-metric"><span>请求数</span><strong>${fmtNumber(requestCount)}</strong></div><div class="model-metric"><span>成功数</span><strong>${fmtNumber(model.success)}</strong></div><div class="model-metric failure"><span>失败数</span><strong>${fmtNumber(model.failure)}</strong></div><div class="model-metric"><span>成功率</span><strong>${Number(model.success_rate || 0).toFixed(1)}%</strong></div></div><div class="model-card-foot"><span>平均处理时长</span><strong>${requestCount ? fmtDuration(model.avg_response_ms) : "—"}</strong></div>${specs.length ? `<div class="model-spec-groups">${specs.map((group) => `<div class="model-spec-group"><strong>${escapeHtml(group.label)}</strong>${(group.items || []).map((item) => `<div class="model-spec-row"><span>${escapeHtml(item.label)}</span><div class="model-spec-track"><span style="width:${requestCount ? Math.min(100, (Number(item.requests || 0) / maxSpecCount) * 100) : 0}%"></span></div><strong>${fmtNumber(item.requests)}</strong><span class="model-spec-failure">失败 ${fmtNumber(item.failure)}</span></div>`).join("")}</div>`).join("")}</div>` : ""}</article>`;
+  }).join("");
 }
 
 function renderDashboardKpis(dashboard) {
   const el = $("#overview");
   if (!el) return;
-  if (!state.lastUpdatedAt && state.refreshing) {
-    el.innerHTML = ["近 24 小时生成请求", "成功率", "启用账号 / 当前请求 / 账号并发槽位", "总生图数"].map((label) => `<div class="stat-card"><p class="stat-label">${label}</p><div class="stat-value">—</div><p class="stat-meta">数据同步中…</p></div>`).join("");
+  if (!dashboard?.period && (state.refreshing || state.dashboardAnalyticsLoading)) {
+    el.innerHTML = ["周期内生成请求", "成功率", "平均处理时长"].map((label) => `<div class="stat-card"><p class="stat-label">${label}</p><div class="stat-value">—</div><p class="stat-meta">数据同步中…</p></div>`).join("");
     return;
   }
-  const kpi = dashboard.kpis;
+  const kpi = dashboard?.kpis || {};
+  const period = dashboard?.period || state.dashboardPeriod;
+  const avgResponse = Number(kpi.avgResponseMs) > 0 ? fmtDuration(kpi.avgResponseMs) : "—";
   el.innerHTML = `
-    <div class="stat-card"><p class="stat-label">近 24 小时生成请求</p><div class="stat-value">${fmtNumber(kpi.requests24h)}</div><p class="stat-meta">成功 ${fmtNumber(kpi.success)} · 失败 ${fmtNumber(kpi.error)}</p></div>
-    <div class="stat-card"><p class="stat-label">成功率</p><div class="stat-value stat-success">${kpi.successRate.toFixed(1)}%</div><p class="stat-meta">基于近 24 小时已加载日志</p></div>
-    <div class="stat-card"><p class="stat-label">启用账号 / 当前请求 / 账号并发槽位</p><div class="stat-value">${fmtNumber(kpi.activeAccounts)}<span class="stat-value-sub"> / ${fmtNumber(kpi.accountInFlight)} / ${fmtNumber(kpi.accountCapacity)}</span></div><p class="stat-meta">账号槽位占用 ${percentage(kpi.accountInFlight, kpi.accountCapacity).toFixed(0)}%</p></div>
-    <div class="stat-card"><p class="stat-label">总生图数</p><div class="stat-value">${fmtNumber(kpi.totalGeneratedImages)}</div><p class="stat-meta">永久累计 · 不受日志和图片清理影响</p></div>`;
+    <div class="stat-card"><p class="stat-label">${dashboardPeriodLabel(period)}生成请求</p><div class="stat-value">${fmtNumber(kpi.requests)}</div><p class="stat-meta">成功 ${fmtNumber(kpi.success)} · 失败 ${fmtNumber(kpi.failure)}</p></div>
+    <div class="stat-card"><p class="stat-label">成功率</p><div class="stat-value">${Number(kpi.successRate || 0).toFixed(1)}<span class="stat-value-sub">%</span></div><p class="stat-meta">${dashboardPeriodLabel(period)}完成情况</p></div>
+    <div class="stat-card"><p class="stat-label">平均处理时长</p><div class="stat-value">${escapeHtml(avgResponse)}</div><p class="stat-meta">${dashboardPeriodLabel(period)} · 包含成功与失败请求</p></div>`;
 }
 
 function renderDashboardPanels(metrics) {
-  const dashboard = buildDashboardMetrics(metrics);
+  const analytics = state.dashboardAnalytics;
+  const dashboard = {
+    period: analytics?.period || null,
+    kpis: {
+      requests: Number(analytics?.summary?.requests || 0),
+      success: Number(analytics?.summary?.success || 0),
+      failure: Number(analytics?.summary?.failure || 0),
+      successRate: analytics?.summary?.requests ? (Number(analytics.summary.success || 0) / Number(analytics.summary.requests || 1)) * 100 : 0,
+      avgResponseMs: Number(analytics?.summary?.avg_response_ms || 0),
+      totalGeneratedImages: metrics.totalGeneratedImages,
+      activeUsers: metrics.activeUsers,
+      totalUsers: metrics.totalUsers,
+    },
+    recentActivity: [...state.logs].sort((a, b) => (parseApiDate(b.timestamp)?.getTime() || 0) - (parseApiDate(a.timestamp)?.getTime() || 0)).slice(0, 6),
+  };
   state.dashboardMetrics = dashboard;
   renderDashboardKpis(dashboard);
-  renderTrendChart(dashboard);
-  renderStatusDistribution(dashboard);
-  renderHealthSummary(dashboard);
-  renderAttentionItems(dashboard);
+  renderCapacityPanel();
+  renderAnalyticsTrend(analytics);
+  renderFailureAnalytics(analytics);
+  renderProtectionStatus();
   renderRecentActivity(dashboard);
-  renderBusiestAccounts(dashboard);
   const meta = $("#trendSampleMeta");
-  if (meta) meta.textContent = `最近 24 小时 · 最近 ${fmtNumber(dashboard.sampledLogCount)} 条已加载日志`;
+  if (meta) meta.textContent = state.dashboardAnalyticsLoading ? `正在加载${dashboardPeriodLabel(state.dashboardPeriod)}…` : analytics ? `${dashboardPeriodLabel(analytics.period)} · 完整日志聚合` : "正在加载完整周期聚合…";
+  const analyticsMeta = $("#analyticsPeriodMeta");
+  if (analyticsMeta) analyticsMeta.textContent = state.dashboardAnalyticsLoading ? `正在加载${dashboardPeriodLabel(state.dashboardPeriod)} · UTC 聚合` : `${dashboardPeriodLabel(state.dashboardPeriod)} · UTC 聚合`;
+  const secondaryMeta = $("#analyticsSecondaryMeta");
+  if (secondaryMeta) secondaryMeta.textContent = `累计图片 ${fmtNumber(metrics.totalGeneratedImages)} · 活跃用户 ${fmtNumber(metrics.activeUsers)} / ${fmtNumber(metrics.totalUsers)}`;
+  const modelMeta = $("#modelAnalyticsMeta");
+  if (modelMeta) modelMeta.textContent = state.dashboardAnalyticsLoading ? `正在加载${dashboardPeriodLabel(state.dashboardPeriod)}…` : analytics ? `${dashboardPeriodLabel(analytics.period)} · 仅文生图` : "正在加载…";
+  renderModelAnalytics(analytics);
   const overviewMeta = $("#overviewMeta");
   if (overviewMeta) {
     overviewMeta.textContent = state.lastUpdatedAt
       ? `最近同步 ${fmtTime(state.lastUpdatedAt)} · ${state.sync.successCount || 0}/${state.sync.totalCount || 0} 数据块成功`
       : state.refreshing
-        ? "正在同步账号、用户与最近 24 小时日志…"
+        ? "正在同步账号、用户与后台聚合数据…"
         : "尚未完成首次同步";
   }
 }
@@ -1309,90 +1321,6 @@ function renderSyncState() {
     else if (state.sync.status === "partial") sync.textContent = `部分同步 · ${state.sync.successCount}/${state.sync.totalCount}`;
     else if (state.lastUpdatedAt) sync.textContent = `已同步 · ${fmtTime(state.lastUpdatedAt)}`;
     else sync.textContent = "等待同步";
-  }
-}
-
-function renderHeroGlance(metrics) {
-  const el = $("#heroGlance");
-  if (!el) return;
-  el.innerHTML = `
-    <article class="glance-card">
-      <p class="glance-label">总生图数</p>
-      <strong class="glance-value">${fmtNumber(metrics.totalGeneratedImages)}</strong>
-      <span class="glance-meta">永久累计 · 不受日志和图片清理影响</span>
-    </article>
-    <article class="glance-card">
-      <p class="glance-label">用户活跃度</p>
-      <strong class="glance-value">${fmtNumber(metrics.activeUsers)} / ${fmtNumber(metrics.totalUsers)}</strong>
-      <span class="glance-meta">${fmtNumber(metrics.expiringUsers)} 个 7 天内到期，${fmtNumber(metrics.disabledUsers)} 个停用</span>
-    </article>
-    <article class="glance-card">
-      <p class="glance-label">邀请码库存</p>
-      <strong class="glance-value">${fmtNumber(metrics.activeInvites)} / ${fmtNumber(metrics.totalInvites)}</strong>
-      <span class="glance-meta">剩余可用次数 ${fmtNumber(metrics.inviteRemainingUses)}</span>
-    </article>
-    <article class="glance-card">
-      <p class="glance-label">生成质量</p>
-      <strong class="glance-value">${metrics.successRate.toFixed(1)}%</strong>
-      <span class="glance-meta">成功 ${fmtNumber(metrics.successGenerations)}，失败 ${fmtNumber(metrics.errorGenerations)}</span>
-    </article>
-  `;
-}
-
-function renderOverview() {
-  const el = $("#overview");
-  const metaEl = $("#overviewMeta");
-  if (!el) return;
-  if (!state.overview) {
-    el.innerHTML = `
-      <div class="stat-card stat-card-empty">
-        <p class="stat-label">总览</p>
-        <div class="stat-value">—</div>
-        <p class="stat-meta">等待数据</p>
-      </div>
-    `;
-    if (metaEl) metaEl.textContent = "总览接口尚未返回";
-    return;
-  }
-
-  const metrics = deriveMetrics();
-  el.innerHTML = `
-    <div class="stat-card">
-      <p class="stat-label">账号池</p>
-      <div class="stat-value">${fmtNumber(metrics.activeAccounts)}<span class="stat-value-sub">/ ${fmtNumber(metrics.totalAccounts)}</span></div>
-      <p class="stat-meta">启用账号占比 ${metrics.totalAccounts ? Math.round((metrics.activeAccounts / metrics.totalAccounts) * 100) : 0}%</p>
-    </div>
-    <div class="stat-card">
-      <p class="stat-label">总生图数</p>
-      <div class="stat-value">${fmtNumber(metrics.totalGeneratedImages)}</div>
-      <p class="stat-meta">永久累计 · 不受日志和图片清理影响</p>
-    </div>
-    <div class="stat-card">
-      <p class="stat-label">用户</p>
-      <div class="stat-value">${fmtNumber(metrics.activeUsers)}<span class="stat-value-sub">/ ${fmtNumber(metrics.totalUsers)}</span></div>
-      <p class="stat-meta">${fmtNumber(metrics.expiredUsers)} 个已过期，${fmtNumber(metrics.disabledUsers)} 个停用</p>
-    </div>
-    <div class="stat-card">
-      <p class="stat-label">邀请码</p>
-      <div class="stat-value">${fmtNumber(metrics.activeInvites)}<span class="stat-value-sub">/ ${fmtNumber(metrics.totalInvites)}</span></div>
-      <p class="stat-meta">剩余可用次数 ${fmtNumber(metrics.inviteRemainingUses)}</p>
-    </div>
-    <div class="stat-card">
-      <p class="stat-label">成功率</p>
-      <div class="stat-value"><span class="stat-success">${metrics.successRate.toFixed(1)}%</span></div>
-      <p class="stat-meta">成功 ${fmtNumber(metrics.successGenerations)} / 失败 ${fmtNumber(metrics.errorGenerations)}</p>
-    </div>
-    <div class="stat-card">
-      <p class="stat-label">近 24h</p>
-      <div class="stat-value">${fmtNumber(metrics.logs24h.length)}<span class="stat-value-sub">/ ${fmtNumber(metrics.totalGenerations)}</span></div>
-      <p class="stat-meta">平均耗时 ${fmtDuration(metrics.avgDuration)}，流式 ${fmtNumber(metrics.streamCount)}</p>
-    </div>
-  `;
-
-  if (metaEl) {
-    metaEl.textContent = state.lastUpdatedAt
-      ? `上次刷新 ${fmtTime(state.lastUpdatedAt)} · ${state.sync.successCount || 0}/${state.sync.totalCount || 0} 数据块成功`
-      : "等待首次刷新";
   }
 }
 
@@ -1684,27 +1612,7 @@ function renderSectionStatusBoard(metrics) {
   }
 }
 
-function renderInsightCard(el, title, subtitle, bodyHtml) {
-  if (!el) return;
-  el.innerHTML = `
-    <div class="insight-head">
-      <div>
-        <p class="panel-kicker">${escapeHtml(subtitle)}</p>
-        <h3>${escapeHtml(title)}</h3>
-      </div>
-    </div>
-    ${bodyHtml}
-  `;
-}
-
 // ==================== 运行状态（流量守卫） ====================
-
-function formatOverviewUptime(seconds) {
-  const value = Math.max(0, Math.floor(Number(seconds) || 0));
-  const minutes = Math.floor(value / 60);
-  const secs = value % 60;
-  return `${minutes}分${secs}秒`;
-}
 
 function formatRuntimeSeconds(seconds) {
   const value = Math.max(0, Math.ceil(Number(seconds) || 0));
@@ -1715,23 +1623,6 @@ function formatRuntimeSeconds(seconds) {
   const hours = Math.floor(minutes / 60);
   const minutePart = minutes % 60;
   return minutePart ? `${hours}小时${minutePart}分` : `${hours}小时`;
-}
-
-function runtimeRouteMeta(routeKey) {
-  const parts = String(routeKey || "").split("|");
-  if (parts.length < 5) {
-    return { title: truncateText(routeKey, 58), detail: "路由标识不可解析" };
-  }
-  return {
-    title: `${parts[4]} · ${parts[3]}`,
-    detail: `org ${truncateText(parts[1], 24)} · flow ${truncateText(parts[2], 24)}`,
-  };
-}
-
-function runtimeRouteVariant(snapshot) {
-  if (snapshot?.state === "open" || snapshot?.is_open) return "danger";
-  if (snapshot?.state === "half-open" || snapshot?.is_half_open) return "warning";
-  return "success";
 }
 
 function renderOverviewUptime() {
@@ -1751,236 +1642,6 @@ function renderOverviewUptime() {
   }
 }
 
-function renderRuntimeStatusCard() {
-  const el = $("#runtimeStatusPanel");
-  if (!el) return;
-  renderOverviewUptime();
-  const status = state.runtimeStatus;
-  if (!status) {
-    renderInsightCard(el, "运行状态", "Runtime", `<p class="insight-empty muted">加载中…</p>`);
-    return;
-  }
-
-  const configuredGlobalSlots = Number(state.runtimeConfig?.generation?.global_max_concurrent);
-  const gate = {
-    ...(Number.isFinite(configuredGlobalSlots)
-      ? { enabled: configuredGlobalSlots > 0, total_slots: configuredGlobalSlots, max_concurrent: configuredGlobalSlots }
-      : {}),
-    ...(status.guard?.generation_admission || {}),
-    ...(state.runtimeMetrics?.generation || {}),
-  };
-  const breaker = status.guard?.circuit_breaker;
-  const routeBreakers = status.guard?.route_breakers || {};
-  const generationAdmission = gate;
-  const imagePersistence = status.image_persistence || {};
-  const isolations = status.account_isolations || [];
-  const routeEntries = Object.entries(routeBreakers).sort(([, left], [, right]) => {
-    const leftOpen = left?.state === "open" || left?.is_open ? 1 : 0;
-    const rightOpen = right?.state === "open" || right?.is_open ? 1 : 0;
-    return rightOpen - leftOpen || Number(right?.failure_rate || 0) - Number(left?.failure_rate || 0);
-  });
-  const openRouteCount = routeEntries.filter(([, item]) => item?.state === "open" || item?.is_open).length;
-  const modelEntries = Object.entries(generationAdmission.models || {}).sort(([, left], [, right]) => {
-    return Number(right?.in_flight || 0) - Number(left?.in_flight || 0);
-  });
-
-  const gateCell = gate?.enabled
-    ? `<strong class="mono">${fmtNumber(gate.in_flight)} / ${fmtNumber(gate.max_concurrent)}</strong>`
-    : `<strong>未启用</strong>`;
-
-  const breakerCell = !breaker?.enabled
-    ? "<strong>未启用</strong>"
-    : breaker.is_open
-      ? `<strong class="runtime-danger">已断开 ${formatRuntimeSeconds(breaker.remaining_seconds)}</strong>`
-      : `<strong>正常</strong>`;
-
-  const isolationLines = isolations.length
-    ? isolations
-        .slice(0, 4)
-        .map(
-          (item) =>
-            `<li class="runtime-isolation-row">
-              <span title="${escapeHtml(item.reason || "账号故障隔离")}"><span class="mono">${escapeHtml(item.name || item.account_id)}</span> · ${formatRuntimeSeconds(item.remaining_seconds)}</span>
-              <button class="btn btn-ghost btn-compact" data-action="clear-isolation" data-account-id="${escapeHtml(item.account_id)}" type="button">解除</button>
-            </li>`,
-        )
-        .join("") +
-      (isolations.length > 4 ? `<li class="muted">… 共 ${isolations.length} 个</li>` : "")
-    : `<li class="muted">无</li>`;
-
-  const modelLines = modelEntries.length
-    ? modelEntries
-        .map(([model, item]) => {
-          const current = Number(item?.in_flight || 0);
-          const sharedCapacity = Math.max(
-            1,
-            Number(generationAdmission.total_slots || gate?.max_concurrent || 1),
-          );
-          return `
-            <div class="runtime-model-row">
-              <div class="runtime-row-head">
-                <span>${escapeHtml(model)}</span>
-                <strong class="mono">${fmtNumber(current)} 在途 / ${fmtNumber(sharedCapacity)} 共享容量</strong>
-              </div>
-              ${renderCapacityBar(current, sharedCapacity)}
-            </div>
-          `;
-        })
-        .join("")
-    : `<p class="muted runtime-empty-line">模型请求开始后显示实时分配。</p>`;
-
-  const routeLines = routeEntries.length
-    ? routeEntries
-        .slice(0, 6)
-        .map(([key, item]) => {
-          const meta = runtimeRouteMeta(key);
-          const variant = runtimeRouteVariant(item);
-          const stateLabel = item?.state === "open" || item?.is_open ? "open" : item?.state === "half-open" || item?.is_half_open ? "探测中" : "closed";
-          const rate = `${Math.round(Number(item?.failure_rate || 0) * 100)}%`;
-          return `
-            <div class="runtime-route-row is-${variant}">
-              <div class="runtime-route-copy">
-                <strong title="${escapeHtml(key)}">${escapeHtml(meta.title)}</strong>
-                <span>${escapeHtml(meta.detail)} · ${fmtNumber(item?.samples)} 样本 · 失败率 ${rate}</span>
-              </div>
-              <div class="runtime-route-state">
-                ${badgeHtml(stateLabel, variant)}
-                ${item?.remaining_seconds ? `<span class="mono runtime-route-remaining">${formatRuntimeSeconds(item.remaining_seconds)}</span>` : ""}
-              </div>
-            </div>
-          `;
-        })
-        .join("") +
-      (routeEntries.length > 6 ? `<p class="muted runtime-empty-line">… 另有 ${fmtNumber(routeEntries.length - 6)} 条路由</p>` : "")
-    : `<p class="muted runtime-empty-line">尚未记录路由故障。</p>`;
-
-  renderInsightCard(
-    el,
-    "运行状态",
-    "Runtime",
-    `
-      <div class="insight-metrics runtime-grid">
-        <div class="insight-metric">
-          <span>全局生图容量${gate?.enabled && gate.rejected ? ` · 拒 ${fmtNumber(gate.rejected)}` : ""}</span>
-          ${gateCell}
-        </div>
-        <div class="insight-metric">
-          <span>全局熔断</span>
-          ${breakerCell}
-        </div>
-      </div>
-      <div class="runtime-section">
-        <div class="runtime-section-head">
-          <div>
-            <p class="runtime-section-title">共享生成容量</p>
-            <p class="runtime-section-note">${fmtNumber(generationAdmission.total_slots || gate?.max_concurrent || 0)} 个模型共享槽位；容量不足立即返回 HTTP 429。下载与历史落盘不占生成槽。</p>
-          </div>
-          ${generationAdmission.rejected ? badgeHtml(`拒 ${fmtNumber(generationAdmission.rejected)}`, "warning") : ""}
-        </div>
-        <div class="runtime-model-list">${modelLines}</div>
-      </div>
-      <div class="runtime-section">
-        <div class="runtime-section-head">
-          <div>
-            <p class="runtime-section-title">历史日志写入</p>
-            <p class="runtime-section-note">上游生成完成后立即释放生图槽；本地下载落盘完成后才返回本站图片地址，数据库历史随后异步写入。</p>
-          </div>
-        </div>
-        <div class="runtime-persistence-grid">
-          <span>当前任务 <strong class="mono">${fmtNumber(imagePersistence.active_tasks || 0)}</strong></span>
-          <span>已启动 <strong class="mono">${fmtNumber(imagePersistence.started || 0)}</strong></span>
-          <span>已完成 <strong class="mono">${fmtNumber(imagePersistence.completed || 0)}</strong></span>
-          <span>异常 <strong class="mono">${fmtNumber(imagePersistence.failed || 0)}</strong></span>
-        </div>
-      </div>
-      <div class="runtime-section">
-        <div class="runtime-section-head">
-          <div>
-            <p class="runtime-section-title">路由熔断</p>
-            <p class="runtime-section-note">按 base URL / org / flow / 模式 / 模型隔离${openRouteCount ? ` · ${fmtNumber(openRouteCount)} 条已打开` : ""}</p>
-          </div>
-          ${routeEntries.length ? badgeHtml(`${fmtNumber(routeEntries.length)} 条`, openRouteCount ? "warning" : "muted") : ""}
-        </div>
-        <div class="runtime-route-list">${routeLines}</div>
-      </div>
-      <div class="runtime-isolations">
-        <div class="runtime-section-head">
-          <p class="runtime-section-title">故障隔离账号（${isolations.length}）</p>
-          ${isolations.length ? `<button id="clearAllIsolationsBtn" class="btn btn-ghost btn-compact" type="button">解除全部</button>` : ""}
-        </div>
-        <ul>${isolationLines}</ul>
-      </div>
-      <div class="runtime-actions">
-        ${breaker?.enabled ? `<button id="resetBreakerBtn" class="btn btn-ghost btn-compact" type="button" ${breaker.is_open ? "" : "disabled"}>复位全局熔断</button>` : ""}
-        ${routeEntries.length ? `<button id="resetRouteBreakersBtn" class="btn btn-ghost btn-compact" type="button">重置路由熔断</button>` : ""}
-      </div>
-    `,
-  );
-
-  const resetBtn = $("#resetBreakerBtn");
-  if (resetBtn) {
-    resetBtn.addEventListener("click", async () => {
-      try {
-        await withBusyButton(resetBtn, "复位中…", async () =>
-          api("/api/admin/circuit-breaker/reset", { method: "POST" })
-        );
-        await refreshRuntimeStatus();
-        showToast("熔断器已复位", "success");
-      } catch (err) {
-        showToast(`复位失败：${err.message}`, "error");
-      }
-    });
-  }
-
-  const resetRoutesBtn = $("#resetRouteBreakersBtn");
-  if (resetRoutesBtn) {
-    resetRoutesBtn.addEventListener("click", async () => {
-      if (!confirm("确认重置全部路由熔断状态？这会立即允许新的探测请求。")) return;
-      try {
-        await withBusyButton(resetRoutesBtn, "重置中…", async () =>
-          api("/api/admin/circuit-breaker/routes/reset", { method: "POST" })
-        );
-        await refreshRuntimeStatus();
-        showToast("路由熔断已重置", "success");
-      } catch (err) {
-        showToast(`重置失败：${err.message}`, "error");
-      }
-    });
-  }
-
-  const clearAllBtn = $("#clearAllIsolationsBtn");
-  if (clearAllBtn) {
-    clearAllBtn.addEventListener("click", async () => {
-      if (!confirm("确认解除全部账号故障隔离？不会修改账号启停状态。")) return;
-      try {
-        await withBusyButton(clearAllBtn, "清除中…", async () =>
-          api("/api/admin/accounts/isolation/clear", { method: "POST" })
-        );
-        await Promise.all([refreshRuntimeStatus(), refreshAccounts()]);
-        showToast("账号故障隔离已解除", "success");
-      } catch (err) {
-        showToast(`清除失败：${err.message}`, "error");
-      }
-    });
-  }
-
-  el.querySelectorAll('[data-action="clear-isolation"]').forEach((button) => {
-    button.addEventListener("click", async () => {
-      const accountId = button.dataset.accountId;
-      if (!accountId) return;
-      try {
-        await withBusyButton(button, "清除中…", async () =>
-            api(`/api/admin/accounts/${encodeURIComponent(accountId)}/isolation/clear`, { method: "POST" })
-        );
-        await Promise.all([refreshRuntimeStatus(), refreshAccounts()]);
-        showToast("账号故障隔离已解除", "success");
-      } catch (err) {
-        showToast(`清除失败：${err.message}`, "error");
-      }
-    });
-  });
-}
-
 let _runtimeMetricsTimer = null;
 let _runtimeStatusTimer = null;
 let _dashboardRefreshTimer = null;
@@ -1988,6 +1649,7 @@ let _dashboardRefreshTimer = null;
 async function refreshRuntimeMetrics() {
   try {
     state.runtimeMetrics = await api("/api/admin/runtime-metrics");
+    state.runtimeMetricsUpdatedAt = new Date();
     renderLiveCapacityPanels();
     return true;
   } catch {
@@ -1998,12 +1660,14 @@ async function refreshRuntimeMetrics() {
 async function refreshRuntimeStatus() {
   try {
     state.runtimeStatus = await api("/api/admin/runtime-status");
-    renderLiveCapacityPanels();
-    renderRuntimeStatusCard();
+    if (!state.batchRendering) {
+      renderLiveCapacityPanels();
+      renderProtectionStatus();
+    }
     return true;
   } catch (err) {
-    const el = $("#runtimeStatusPanel");
-    if (el) renderInsightCard(el, "运行状态", "Runtime", `<p class="insight-empty muted">加载失败：${escapeHtml(err.message)}</p>`);
+    const el = $("#protectionStatus");
+    if (el) el.innerHTML = `<div class="admin-empty-state"><span>保护状态加载失败：${escapeHtml(err.message)}</span></div>`;
     return false;
   }
 }
@@ -2040,7 +1704,7 @@ function stopRuntimeStatusPolling() {
 
 async function refreshDashboardLightweight() {
   if (state.refreshing || document.hidden || !getToken()) return;
-  const results = await Promise.all([refreshOverview(), refreshLogs()]);
+  const results = await Promise.all([refreshOverview(), refreshLogs(), refreshDashboardAnalytics()]);
   if (results.some(Boolean)) {
     state.lastUpdatedAt = new Date();
     renderInsightPanels();
@@ -2060,127 +1724,19 @@ function stopDashboardRefreshPolling() {
 }
 
 function renderLiveCapacityPanels() {
-  const dashboard = buildDashboardMetrics(deriveMetrics());
-  renderDashboardKpis(dashboard);
-  renderHealthSummary(dashboard);
+  if (state.batchRendering) return;
+  renderCapacityPanel();
 }
 
 function renderInsightPanels() {
+  if (state.batchRendering) return;
   const metrics = deriveMetrics();
 
-  renderHeroGlance(metrics);
   renderSyncState();
-  renderOverview();
   renderDashboardPanels(metrics);
   renderOverviewUptime();
   renderNavBadges(metrics);
-  renderPriorityBoard(metrics);
-  renderSectionStatusBoard(metrics);
-  renderRuntimeStatusCard();
-
-  renderInsightCard(
-    $("#opsSnapshot"),
-    "运行快照",
-    "Operations",
-    `
-      <div class="insight-metrics">
-        <div class="insight-metric">
-          <span>最近成功</span>
-          <strong>${metrics.lastSuccess ? fmtRelativeTime(metrics.lastSuccess.timestamp) : "暂无"}</strong>
-        </div>
-        <div class="insight-metric">
-          <span>最近失败</span>
-          <strong>${metrics.lastError ? fmtRelativeTime(metrics.lastError.timestamp) : "暂无"}</strong>
-        </div>
-        <div class="insight-metric">
-          <span>流式占比</span>
-          <strong>${metrics.totalGenerations ? ((metrics.streamCount / metrics.totalGenerations) * 100).toFixed(1) : "0.0"}%</strong>
-        </div>
-        <div class="insight-metric">
-          <span>用户并发</span>
-          <strong>${fmtNumber(metrics.userInflight)} / ${fmtNumber(metrics.userCapacity || 0)}</strong>
-        </div>
-      </div>
-    `,
-  );
-
-  renderInsightCard(
-    $("#accountHealthPanel"),
-    "账号健康",
-    "Accounts",
-    metrics.busiestAccounts.length
-      ? `
-          <div class="insight-list">
-            ${metrics.busiestAccounts
-              .map((account) => {
-                const load = computeAccountLoadMeta(account);
-                return `
-                  <div class="insight-item">
-                    <div>
-                      <strong>${escapeHtml(shortAccount(account.name))}</strong>
-                      <span>${escapeHtml(account.name)}</span>
-                    </div>
-                    <div class="insight-item-side">
-                      ${badgeHtml(load.label, load.variant)}
-                      <span class="mono">${account.in_flight || 0}/${account.max_inflight || 0}</span>
-                    </div>
-                  </div>
-                `;
-              })
-              .join("")}
-          </div>
-        `
-      : '<div class="insight-empty">暂无账号数据。</div>',
-  );
-
-  renderInsightCard(
-    $("#logHealthPanel"),
-    "异常与模型分布",
-    "Logs",
-    `
-      <div class="insight-split">
-        <div>
-          <p class="insight-caption">最近错误</p>
-          ${
-            metrics.recentErrors.length
-              ? metrics.recentErrors
-                  .map(
-                    (log) => `
-                      <div class="insight-item compact">
-                        <div>
-                          <strong>${escapeHtml(log.model || humanMode(log.mode))}</strong>
-                          <span>${escapeHtml(truncateText(log.error_message || "未知错误", 42))}</span>
-                        </div>
-                        <span>${escapeHtml(fmtRelativeTime(log.timestamp))}</span>
-                      </div>
-                    `,
-                  )
-                  .join("")
-              : '<div class="insight-empty">最近没有错误记录。</div>'
-          }
-        </div>
-        <div>
-          <p class="insight-caption">常用模型</p>
-          ${
-            metrics.modelCounts.length
-              ? metrics.modelCounts
-                  .map(
-                    ([model, count]) => `
-                      <div class="insight-item compact">
-                        <div>
-                          <strong>${escapeHtml(model)}</strong>
-                          <span>${escapeHtml(count)} 次调用</span>
-                        </div>
-                      </div>
-                    `,
-                  )
-                  .join("")
-              : '<div class="insight-empty">暂无模型分布数据。</div>'
-          }
-        </div>
-      </div>
-    `,
-  );
+  renderProtectionStatus();
 }
 
 function accountFilterChips() {
@@ -2257,6 +1813,9 @@ function logFilterChips() {
   }
   if (state.filters.logs.mode !== "all") {
     chips.push(filterChipHtml("模式", state.filters.logs.mode === "img2img" ? "图生图" : "文生图"));
+  }
+  if (state.filters.logs.category !== "all") {
+    chips.push(filterChipHtml("失败类型", FAILURE_CATEGORY_LABELS[state.filters.logs.category] || state.filters.logs.category));
   }
   return chips;
 }
@@ -3068,7 +2627,8 @@ function filteredLogs() {
         .some((value) => String(value).toLowerCase().includes(query));
     const matchesStatus = state.filters.logs.status === "all" || log.status === state.filters.logs.status;
     const matchesMode = state.filters.logs.mode === "all" || log.mode === state.filters.logs.mode;
-    return matchesQuery && matchesStatus && matchesMode;
+    const matchesCategory = state.filters.logs.category === "all" || log.failure_category === state.filters.logs.category;
+    return matchesQuery && matchesStatus && matchesMode && matchesCategory;
   });
 }
 
@@ -3119,6 +2679,7 @@ function renderLogRow(log) {
       <td class="col-log-status" data-label="状态">
         <div class="stack-cell log-status-cell">
           ${statusBadge}
+          ${log.failure_category ? `<span class="entity-meta">${escapeHtml(FAILURE_CATEGORY_LABELS[log.failure_category] || log.failure_category)}</span>` : ""}
           ${errorSnippet ? `<span class="table-note table-note-danger" title="${escapeHtml(errorMessage)}">${escapeHtml(errorSnippet)}</span>` : ""}
         </div>
       </td>
@@ -3328,6 +2889,91 @@ function bindPreviewModal() {
   });
 }
 
+function syncDashboardPeriodControls() {
+  $$(`[data-dashboard-period]`).forEach((button) => {
+    const active = button.dataset.dashboardPeriod === state.dashboardPeriod;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+    button.disabled = state.dashboardAnalyticsLoading;
+  });
+}
+
+async function refreshDashboardSnapshot(period = state.dashboardPeriod) {
+  const previousPeriod = state.dashboardPeriod;
+  const requestId = state.dashboardAnalyticsRequestId + 1;
+  state.dashboardAnalyticsRequestId = requestId;
+  state.dashboardAnalyticsAbortController?.abort();
+  const controller = new AbortController();
+  state.dashboardAnalyticsAbortController = controller;
+  state.dashboardPeriod = period;
+  state.dashboardAnalyticsLoading = true;
+  state.dashboardSnapshotLoading = true;
+  syncDashboardPeriodControls();
+  renderInsightPanels();
+
+  try {
+    const data = await api(`/api/admin/dashboard/snapshot?period=${encodeURIComponent(period)}`, { signal: controller.signal });
+    if (requestId !== state.dashboardAnalyticsRequestId) return false;
+    state.admin = data.admin || state.admin;
+    state.overview = data.overview || null;
+    state.dashboardAnalytics = data.analytics || null;
+    state.runtimeMetrics = data.runtime_metrics || null;
+    state.runtimeStatus = data.runtime_status || null;
+    state.runtimeConfig = data.runtime_config || state.runtimeConfig;
+    state.runtimeMetricsUpdatedAt = new Date();
+    state.logs = Array.isArray(data.recent_logs) ? data.recent_logs : [];
+    return true;
+  } catch (err) {
+    if (requestId !== state.dashboardAnalyticsRequestId || err?.name === "AbortError") return false;
+    state.dashboardPeriod = previousPeriod;
+    const meta = $("#overviewMeta");
+    if (meta) meta.textContent = `驾驶舱快照加载失败，正在使用分接口同步：${err.message}`;
+    return false;
+  } finally {
+    if (requestId === state.dashboardAnalyticsRequestId) {
+      state.dashboardAnalyticsLoading = false;
+      state.dashboardSnapshotLoading = false;
+      state.dashboardAnalyticsAbortController = null;
+      syncDashboardPeriodControls();
+      renderInsightPanels();
+    }
+  }
+}
+
+async function refreshDashboardAnalytics(period = state.dashboardPeriod) {
+  const previousPeriod = state.dashboardPeriod;
+  const requestId = state.dashboardAnalyticsRequestId + 1;
+  state.dashboardAnalyticsRequestId = requestId;
+  state.dashboardAnalyticsAbortController?.abort();
+  const controller = new AbortController();
+  state.dashboardAnalyticsAbortController = controller;
+  state.dashboardPeriod = period;
+  state.dashboardAnalyticsLoading = true;
+  state.dashboardSnapshotLoading = false;
+  syncDashboardPeriodControls();
+  renderInsightPanels();
+
+  try {
+    const data = await api(`/api/admin/stats/dashboard?period=${encodeURIComponent(period)}`, { signal: controller.signal });
+    if (requestId !== state.dashboardAnalyticsRequestId) return false;
+    state.dashboardAnalytics = data;
+    return true;
+  } catch (err) {
+    if (requestId !== state.dashboardAnalyticsRequestId || err?.name === "AbortError") return false;
+    state.dashboardPeriod = previousPeriod;
+    const meta = $("#overviewMeta");
+    if (meta) meta.textContent = `分析数据加载失败：${err.message}`;
+    return false;
+  } finally {
+    if (requestId === state.dashboardAnalyticsRequestId) {
+      state.dashboardAnalyticsLoading = false;
+      state.dashboardAnalyticsAbortController = null;
+      syncDashboardPeriodControls();
+      renderInsightPanels();
+    }
+  }
+}
+
 async function refreshOverview() {
   try {
     state.overview = await api("/api/admin/stats/overview");
@@ -3357,22 +3003,53 @@ async function refreshAdminProfile() {
 async function refreshAll() {
   if (state.refreshing) return;
   state.refreshing = true;
-  state.sync = { status: "loading", successCount: 0, totalCount: 9 };
+  state.sync = { status: "loading", successCount: 0, totalCount: 5 };
   const refreshButton = $("#refreshAllBtn");
   if (refreshButton) refreshButton.disabled = true;
   renderInsightPanels();
 
-  const results = await Promise.all([
-    refreshAdminProfile(),
-    refreshOverview(),
-    refreshAccounts(),
-    refreshUsers(),
-    refreshInvites(),
-    refreshLogs(),
-    refreshSettings(),
-    refreshRuntimeMetrics(),
-    refreshRuntimeStatus(),
-  ]);
+  state.batchRendering = true;
+  let results;
+  try {
+    const snapshotReady = await refreshDashboardSnapshot();
+    if (snapshotReady) {
+      // Paint the operator-facing viewport as soon as the snapshot arrives;
+      // management tables can finish loading without holding the cockpit.
+      state.batchRendering = false;
+      renderLogsTable();
+      renderInsightPanels();
+      state.batchRendering = true;
+      results = [
+        true,
+        ...(await Promise.all([
+          refreshAccounts(),
+          refreshUsers(),
+          refreshInvites(),
+          refreshSettings(),
+        ])),
+      ];
+    } else {
+      // Keep the established per-endpoint path as a complete fallback when
+      // the aggregate endpoint is unavailable or returns stale data.
+      results = await Promise.all([
+        refreshAdminProfile(),
+        refreshOverview(),
+        refreshAccounts(),
+        refreshUsers(),
+        refreshInvites(),
+        refreshLogs(),
+        refreshSettings(),
+        refreshRuntimeMetrics(),
+        refreshRuntimeStatus(),
+        refreshDashboardAnalytics(),
+      ]);
+    }
+  } catch (err) {
+    results = Array.from({ length: 5 }, () => false);
+    showToast(`控制台刷新异常：${err.message}`, "error");
+  } finally {
+    state.batchRendering = false;
+  }
 
   state.refreshing = false;
   state.lastUpdatedAt = new Date();
@@ -3382,6 +3059,7 @@ async function refreshAll() {
     totalCount: results.length,
   };
   if (refreshButton) refreshButton.disabled = false;
+  renderLogsTable();
   renderInsightPanels();
   if (state.sync.status === "partial") {
     showToast(`控制台已刷新，${state.sync.successCount}/${state.sync.totalCount} 个数据块成功。`, "warning");
@@ -4142,6 +3820,11 @@ function bindFilters() {
     state.filters.logs.mode = event.currentTarget.value;
     renderLogsTable();
   });
+  $("#logFailureCategoryFilter").addEventListener("change", (event) => {
+    state.filters.logs.category = event.currentTarget.value;
+    if (event.currentTarget.value !== "all") state.filters.logs.status = "error";
+    renderLogsTable();
+  });
 }
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -4190,6 +3873,13 @@ document.addEventListener("DOMContentLoaded", () => {
 
   $("#refreshAllBtn").addEventListener("click", refreshAll);
   $("#overviewRefreshBtn")?.addEventListener("click", refreshAll);
+  $$("[data-dashboard-period]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const period = button.dataset.dashboardPeriod;
+      if (!period || period === state.dashboardPeriod && state.dashboardAnalytics) return;
+      refreshDashboardAnalytics(period);
+    });
+  });
 
   $("#importAccountsBtn").addEventListener("click", openAccountImportModal);
   $("#newAccountBtn").addEventListener("click", () => openAccountModal());
