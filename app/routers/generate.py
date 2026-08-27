@@ -34,6 +34,11 @@ from app.models.database import Account, GenerationLog, get_session
 from app.services.deps import GenerationPrincipal, require_generation_principal
 from app.services import app_settings
 from app.services.generation_stats import increment_total_generated_images
+from app.services.generation_billing import (
+    is_free_workflow_timeout,
+    upstream_error_consumes_quota,
+    upstream_event_consumes_quota,
+)
 from app.services.guard import get_generation_guard
 from app.services.account_pool import (
     NoAvailableAccountError,
@@ -1598,7 +1603,6 @@ async def generate(
             # Private API Key 仅用于失败后拉 analytics；stackai 对 inference key 返回 401
             private_api_key = pool.decrypt_private_api_key(account)
             try:
-                user_should_count_usage = True
                 raw = await client.run_inference(
                     org_id=account.org_id,
                     flow_id=account.flow_id,
@@ -1607,6 +1611,11 @@ async def generate(
                 )
                 elapsed_ms = int((time.time() - request_started) * 1000)
                 images = extract_image_urls(raw)
+                user_should_count_usage = (
+                    user_should_count_usage
+                    or upstream_event_consumes_quota(raw)
+                    or bool(images)
+                )
             # 上游 200 但没拿到图片：判定为失败（典型场景：参考图被 StackAI 节点拉取失败）
                 if not images:
                 # 优先从上游响应体里抽出真实错误
@@ -1772,6 +1781,10 @@ async def generate(
             except StackAIError as exc:
                 elapsed_ms = int((time.time() - request_started) * 1000)
                 last_error = exc
+                if is_free_workflow_timeout(exc.payload):
+                    user_should_count_usage = False
+                elif upstream_error_consumes_quota(exc.message, exc.payload):
+                    user_should_count_usage = True
                 decision = classify_stackai_error(exc)
                 if decision.count_route_failure:
                     guard.record_upstream_failure(route, retry_after=exc.retry_after)
@@ -2390,7 +2403,6 @@ async def generate_stream(
                     stream_idle_timeout_seconds = _stream_idle_timeout_seconds_for_request(req)
 
                     try:
-                        user_should_count_usage = True
                         upstream_stream = client.stream_inference(
                             org_id=account.org_id,
                             flow_id=account.flow_id,
@@ -2435,6 +2447,8 @@ async def generate_stream(
                                 except Exception:
                                     parsed = None
                                 if isinstance(parsed, dict):
+                                    if upstream_event_consumes_quota(parsed):
+                                        user_should_count_usage = True
                                     last_event = parsed
                                     outputs = parsed.get("outputs")
                                     if (
@@ -2461,6 +2475,10 @@ async def generate_stream(
                             await upstream_stream.aclose()
                     except StackAIError as exc:
                         elapsed_ms = int((time.time() - started) * 1000)
+                        if is_free_workflow_timeout(exc.payload):
+                            user_should_count_usage = False
+                        elif upstream_error_consumes_quota(exc.message, exc.payload):
+                            user_should_count_usage = True
                         decision = classify_stackai_error(exc)
                         if decision.count_route_failure:
                             guard.record_upstream_failure(route, retry_after=exc.retry_after)
@@ -2560,6 +2578,8 @@ async def generate_stream(
                             last_completed_nodes,
                         )
                         if upstream_error_full:
+                            if upstream_error_consumes_quota(upstream_error_full):
+                                user_should_count_usage = True
                             log_msg = redact_upstream_text(upstream_error_full)
                             shown_msg = _concise_upstream_error(upstream_error_full)
                         else:
@@ -2657,6 +2677,7 @@ async def generate_stream(
 
                     # 成功：先释放账号槽（统计记为成功），下载落盘不再占用账号容量。
                     # 上游已出图，后续保存失败也算一次真实消耗。
+                    user_should_count_usage = True
                     completed_account_id = account_id
                     completed_slot_token = getattr(account, "_slot_token", None)
                     account_id = await _release_account_if_needed(

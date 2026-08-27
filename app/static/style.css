@@ -5714,3 +5714,97 @@ td strong {
 .admin-ui .table-more[open] summary { color: var(--admin-coral); border-color: var(--admin-coral); background: var(--admin-coral-soft); }
 .admin-ui .table-more-menu { position: absolute; z-index: 20; top: calc(100% + 5px); right: 0; display: grid; min-width: 116px; gap: 3px; padding: 5px; border: 1px solid var(--admin-line); border-radius: 8px; background: var(--admin-surface); box-shadow: 0 12px 24px rgba(37, 35, 31, .14); }
 .admin-ui .table-more-menu .btn { width: 100%; justify-content: flex-start; min-height: 30px; padding: 5px 8px; border: 0; }
+
+/* Mobile operations dock: keep the five highest-frequency destinations within
+   thumb reach while the full information architecture remains in the drawer. */
+.admin-mobile-nav { display: none; }
+
+@media (max-width: 760px) {
+  .admin-ui:not(.admin-login-state) { padding-bottom: calc(76px + env(safe-area-inset-bottom)); }
+  .admin-ui .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 70;
+    min-height: 60px;
+    padding-top: max(10px, env(safe-area-inset-top));
+    backdrop-filter: blur(18px);
+  }
+  .admin-ui .admin-shell { padding: 16px 12px 32px; }
+  .admin-ui .admin-page { gap: 14px; }
+  .admin-welcome { gap: 12px; }
+  .admin-welcome h1 { font-size: clamp(25px, 8vw, 32px); }
+  .admin-welcome-actions { width: 100%; }
+  .admin-welcome-actions .btn { min-height: 42px; }
+  .admin-surface,
+  .admin-ui .panel,
+  .admin-ui .console-panel { border-radius: 14px; }
+  .admin-ui .panel-head { align-items: flex-start; padding: 16px; }
+  .admin-ui .panel-actions {
+    width: calc(100% + 4px);
+    margin-right: -4px;
+    padding-bottom: 3px;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: none;
+  }
+  .admin-ui .panel-actions::-webkit-scrollbar { display: none; }
+  .admin-ui .panel-actions .btn { flex: 0 0 auto; min-height: 40px; }
+  .admin-ui .module-toolbar { gap: 10px; padding: 12px; }
+  .admin-ui .admin-sidebar {
+    width: min(330px, 90vw);
+    padding-top: max(20px, env(safe-area-inset-top));
+    padding-bottom: max(20px, env(safe-area-inset-bottom));
+  }
+  .admin-mobile-nav {
+    position: fixed;
+    z-index: 85;
+    right: 10px;
+    bottom: max(10px, env(safe-area-inset-bottom));
+    left: 10px;
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    min-height: 62px;
+    padding: 6px;
+    border: 1px solid var(--admin-line);
+    border-radius: 18px;
+    background: color-mix(in srgb, var(--admin-surface) 94%, transparent);
+    box-shadow: 0 14px 40px rgba(20, 22, 21, .22);
+    backdrop-filter: blur(20px);
+  }
+  .admin-mobile-nav a {
+    display: grid;
+    place-items: center;
+    align-content: center;
+    gap: 3px;
+    min-width: 0;
+    min-height: 48px;
+    border-radius: 12px;
+    color: var(--admin-ink-faint);
+    text-decoration: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .admin-mobile-nav a span { font-size: 18px; line-height: 1; }
+  .admin-mobile-nav a small { font-size: 10px; font-weight: 650; }
+  .admin-mobile-nav a.is-active {
+    color: var(--admin-coral);
+    background: var(--admin-coral-soft);
+  }
+}
+
+@media (max-width: 560px) {
+  .admin-topbar-search { display: none; }
+  .admin-ui .topbar-nav { margin-left: auto; }
+  .admin-ui .theme-toggle,
+  .admin-menu-toggle { width: 40px; height: 40px; }
+  .admin-ui .capacity-number strong { font-size: 38px; }
+  .admin-ui .dashboard-period-toolbar { padding: 12px; }
+  .admin-ui .trend-chart { min-height: 190px; overflow-x: auto; }
+  .admin-ui .trend-chart svg { min-width: 520px; height: 190px; }
+  .protection-item {
+    grid-template-columns: 9px minmax(0, 1fr) auto;
+    padding: 8px 0;
+  }
+  .protection-action { grid-column: 2 / -1; justify-self: start; }
+}
