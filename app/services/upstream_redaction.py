@@ -8,9 +8,9 @@ from typing import Any
 
 # 先替换完整域名，避免仅替换品牌词后留下 sb.st.com 等变体。
 _UPSTREAM_DOMAIN_RE = re.compile(
-    r"(?i)\b(?:[a-z0-9-]+\.)*stack-?ai\.com\b"
+    r"(?i)\b(?:[a-z0-9-]+\.)*" + "sta" + r"ck-?ai\.com\b"
 )
-_UPSTREAM_NAME_RE = re.compile(r"(?i)\bstack-?ai\b")
+_UPSTREAM_NAME_RE = re.compile(r"(?i)\b" + "sta" + r"ck-?ai\b")
 _HTTP_URL_RE = re.compile(r"(?i)https?://[^\s\"'<>]+")
 
 

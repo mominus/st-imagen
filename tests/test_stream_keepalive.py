@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from app.routers import generate as generate_mod
-from app.services.stackai_client import StackAIError
+from app.services.st_client import STError
 
 
 class StreamKeepaliveTests(unittest.IsolatedAsyncioTestCase):
@@ -71,7 +71,7 @@ class StreamKeepaliveTests(unittest.IsolatedAsyncioTestCase):
                 idle_timeout_seconds=0.03,
             )
             items = []
-            with self.assertRaises(StackAIError) as ctx:
+            with self.assertRaises(STError) as ctx:
                 async for item in agen:
                     items.append(item)
 
