@@ -5718,9 +5718,14 @@ td strong {
 /* Mobile operations dock: keep the five highest-frequency destinations within
    thumb reach while the full information architecture remains in the drawer. */
 .admin-mobile-nav { display: none; }
+.mobile-scroll-hint { display: none; }
 
 @media (max-width: 760px) {
   .admin-ui:not(.admin-login-state) { padding-bottom: calc(76px + env(safe-area-inset-bottom)); }
+  .admin-ui .modal-mask { z-index: 180; }
+  .admin-ui:not(.admin-login-state) .toast-stack {
+    bottom: calc(88px + env(safe-area-inset-bottom));
+  }
   .admin-ui .topbar {
     position: sticky;
     top: 0;
@@ -5757,6 +5762,38 @@ td strong {
     padding-top: max(20px, env(safe-area-inset-top));
     padding-bottom: max(20px, env(safe-area-inset-bottom));
   }
+  .admin-ui .modal-mask:not(#previewModal) {
+    align-items: flex-end;
+    padding:
+      max(10px, env(safe-area-inset-top))
+      10px
+      max(10px, env(safe-area-inset-bottom));
+    overscroll-behavior: contain;
+  }
+  .admin-ui .modal-mask:not(#previewModal) .modal,
+  .admin-ui #userModal .modal,
+  .admin-ui #accountImportModal .modal {
+    width: 100%;
+    height: auto;
+    max-height: calc(100dvh - max(20px, env(safe-area-inset-top)) - max(20px, env(safe-area-inset-bottom)));
+    padding: 20px 16px max(16px, env(safe-area-inset-bottom));
+    border-radius: 18px;
+    overscroll-behavior: contain;
+    scroll-padding-bottom: 82px;
+  }
+  .admin-ui .modal > .modal-actions:last-child {
+    position: sticky;
+    z-index: 2;
+    bottom: calc(-1 * max(16px, env(safe-area-inset-bottom)));
+    margin: 20px -16px calc(-1 * max(16px, env(safe-area-inset-bottom)));
+    padding: 12px 16px max(14px, env(safe-area-inset-bottom));
+    border-top: 1px solid var(--admin-line);
+    background: color-mix(in srgb, var(--admin-surface) 96%, transparent);
+    backdrop-filter: blur(16px);
+  }
+  .admin-ui .modal input,
+  .admin-ui .modal select,
+  .admin-ui .modal textarea { font-size: 16px; }
   .admin-mobile-nav {
     position: fixed;
     z-index: 85;
@@ -5802,9 +5839,33 @@ td strong {
   .admin-ui .dashboard-period-toolbar { padding: 12px; }
   .admin-ui .trend-chart { min-height: 190px; overflow-x: auto; }
   .admin-ui .trend-chart svg { min-width: 520px; height: 190px; }
+  .mobile-scroll-hint {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 8px 0 0;
+    color: var(--admin-ink-faint);
+    font-size: 10px;
+  }
+  .mobile-scroll-hint span { color: var(--admin-coral); font-size: 14px; }
+  .admin-ui .modal-field-row { grid-template-columns: 1fr; }
   .protection-item {
     grid-template-columns: 9px minmax(0, 1fr) auto;
     padding: 8px 0;
   }
   .protection-action { grid-column: 2 / -1; justify-self: start; }
+}
+
+@media (max-width: 360px) {
+  .admin-ui { overflow-x: clip; }
+  .admin-ui .topbar { padding-right: 10px; padding-left: 10px; }
+  .admin-ui .brand-text { display: none; }
+  .admin-ui .admin-shell { padding-right: 8px; padding-left: 8px; }
+  .admin-mobile-nav { right: 6px; left: 6px; padding-right: 3px; padding-left: 3px; }
+  .admin-mobile-nav a { min-height: 46px; }
+  .admin-mobile-nav a span { font-size: 16px; }
+  .admin-mobile-nav a small { font-size: 9px; }
+  .admin-ui .modal-mask:not(#previewModal) { padding-right: 6px; padding-left: 6px; }
+  .admin-ui .modal-actions { gap: 6px; }
+  .admin-ui .modal-actions .btn { min-width: 0; padding-right: 10px; padding-left: 10px; }
 }
