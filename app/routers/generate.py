@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+from app.time_utils import utcnow_naive
+
 import asyncio
 import json
 import logging
@@ -39,8 +41,6 @@ from app.services.account_pool import (
     get_account_pool_service,
 )
 from app.services.failure_classifier import (
-    ACCOUNT_SCOPE,
-    ROUTE_CONFIG_SCOPE,
     UPSTREAM_ROUTE_SCOPE,
     classify_stackai_error,
     route_key as build_route_key,
@@ -864,7 +864,7 @@ async def _write_generation_log(job: Dict[str, Any], saved_images: List[str], st
             persist_session.add(
                 GenerationLog(
                     id=job["generation_id"],
-                    timestamp=datetime.utcnow(),
+                    timestamp=utcnow_naive(),
                     user_id=job["user_id"],
                     account_id=job["account_id"],
                     mode=job["mode"],
@@ -1566,7 +1566,7 @@ async def generate(
                 session.add(
                     GenerationLog(
                         id=str(uuid.uuid4()),
-                        timestamp=datetime.utcnow(),
+                        timestamp=utcnow_naive(),
                         user_id=current_user_id,
                         account_id=account.id,
                         mode=req.mode,
@@ -1683,7 +1683,7 @@ async def generate(
                     session.add(
                         GenerationLog(
                             id=str(uuid.uuid4()),
-                            timestamp=datetime.utcnow(),
+                            timestamp=utcnow_naive(),
                             user_id=current_user_id,
                             account_id=account.id,
                             mode=req.mode,
@@ -1786,7 +1786,7 @@ async def generate(
                 session.add(
                     GenerationLog(
                         id=str(uuid.uuid4()),
-                        timestamp=datetime.utcnow(),
+                        timestamp=utcnow_naive(),
                         user_id=current_user_id,
                         account_id=account.id,
                         mode=req.mode,
@@ -2352,7 +2352,7 @@ async def generate_stream(
                         session.add(
                             GenerationLog(
                                 id=str(uuid.uuid4()),
-                                timestamp=datetime.utcnow(),
+                                timestamp=utcnow_naive(),
                                 user_id=current_user_id,
                                 account_id=account.id,
                                 mode=req.mode,
@@ -2475,7 +2475,7 @@ async def generate_stream(
                         session.add(
                             GenerationLog(
                                 id=str(uuid.uuid4()),
-                                timestamp=datetime.utcnow(),
+                                timestamp=utcnow_naive(),
                                 user_id=current_user_id,
                                 account_id=account.id,
                                 mode=req.mode,
@@ -2620,7 +2620,7 @@ async def generate_stream(
                         session.add(
                             GenerationLog(
                                 id=str(uuid.uuid4()),
-                                timestamp=datetime.utcnow(),
+                                timestamp=utcnow_naive(),
                                 user_id=current_user_id,
                                 account_id=account.id,
                                 mode=req.mode,

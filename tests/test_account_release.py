@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -31,7 +31,7 @@ class AccountUsagePersistenceTests(unittest.IsolatedAsyncioTestCase):
         self._tmpdir.cleanup()
 
     async def _create_account(self, **overrides) -> str:
-        now = datetime.utcnow()
+        now = datetime.now(UTC).replace(tzinfo=None)
         fields = dict(
             id="acc-1",
             name="t@test.local",

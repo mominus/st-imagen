@@ -5,9 +5,11 @@
 """
 from __future__ import annotations
 
+from app.time_utils import utcnow_naive
+
 import os
 import uuid
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any, Dict, Optional, Tuple
 
 import jwt
@@ -52,7 +54,7 @@ class AuthService:
         return bool(password) and password not in PLACEHOLDER_ADMIN_PASSWORDS
 
     def generate_token(self, admin_id: str, username: str, *, token_version: int) -> str:
-        now = datetime.utcnow()
+        now = utcnow_naive()
         payload = {
             "sub": admin_id,
             "username": username,
@@ -115,6 +117,8 @@ class AuthService:
     async def change_password(
         self, admin_id: str, old_password: str, new_password: str
     ) -> bool:
+        if len(new_password or "") < 12 or len((new_password or "").encode("utf-8")) > 72:
+            raise ValueError("新密码必须为 12 至 72 字节")
         factory = get_session_factory()
         async with factory() as session:
             row = await session.execute(select(Admin).where(Admin.id == admin_id))
@@ -142,7 +146,7 @@ class AuthService:
                 username=self._default_username,
                 password_hash=CryptoService.hash_password(self._default_password),
                 token_version=0,
-                created_at=datetime.utcnow(),
+                created_at=utcnow_naive(),
             )
             session.add(admin)
             await session.commit()

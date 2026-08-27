@@ -148,12 +148,31 @@ cd /path/to/st-imagen
 cp .env.example .env
 # 修改 .env 中的 ENCRYPTION_KEY、JWT_SECRET_KEY、ADMIN_PASSWORD、PUBLIC_BASE_URL 等生产配置
 mkdir -p data/uploads/generated
+sudo chown -R 10001:10001 data
 docker compose -f compose.prod.yml config --quiet
 docker compose -f compose.prod.yml up -d --build
 docker compose -f compose.prod.yml ps
 ```
 
 `data/` 是唯一需要持久化的目录，包含 SQLite 数据库和上传/生成图片；压测报告、临时图片、Python 缓存和本地虚拟环境不属于部署内容。生产环境不要使用 `compose.vps-stress.yml`，该文件只用于受限容器压测。当前 Compose 暴露 HTTP `80` 端口，HTTPS 证书应由云 LB 或外层反向代理负责；启用 `USER_SESSION_SECURE=true` 时，生产访问必须经过 HTTPS。
+
+### 数据库迁移与备份
+
+新部署和版本升级使用 Alembic 管理数据库版本：
+
+```bash
+alembic upgrade head
+```
+
+已有数据库首次接入迁移体系时，先备份并确认当前应用可正常启动，再执行
+`alembic stamp 20260827_0001`。生产升级前可创建 SQLite 一致性备份：
+
+```bash
+python scripts/backup_data.py --include-uploads
+```
+
+容器以 UID/GID `10001` 的非 root 用户运行，因此宿主机 `data/` 必须授予该用户写权限。
+存活检查为 `/health/live`，就绪检查为 `/health/ready`；后者同时检查数据库和磁盘余量。
 
 ## 2c2g VPS 仿真压测
 

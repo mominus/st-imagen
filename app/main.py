@@ -1,15 +1,22 @@
 """FastAPI 主入口：注册路由 + 静态文件 + 生命周期。"""
+
 from __future__ import annotations
 
 import logging
 import os
+import secrets
+import shutil
+import time
+import uuid
+from collections import Counter
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import text
 
 from app import __version__ as APP_VERSION
 from app.env import (
@@ -26,11 +33,12 @@ from app.env import (
 # backed constants (SQLite pool, account defaults, stream limits, etc.).
 ENV_PATH_LOADED, FORCED_ENV_KEYS = load_project_env()
 
-from app.models.database import close_database, init_database
+from app.models.database import close_database, get_session_factory, init_database
 from app.routers import admin_router, generate_router, user_auth_router
 from app.routers.generate import close_downloads_client
-from app.services.auth import get_auth_service
 from app.services.account_pool import get_account_pool_service
+from app.services.auth import get_auth_service
+from app.services.database_maintenance import remove_expired_sessions, remove_old_generation_logs
 from app.services.stackai_client import close_stackai_client
 from app.services.user_auth import get_user_auth_service
 
@@ -81,10 +89,19 @@ def _validate_runtime_security_settings() -> None:
     jwt_secret = (os.getenv("JWT_SECRET_KEY") or "").strip()
     if not jwt_secret or jwt_secret == PLACEHOLDER_JWT_SECRET_KEY:
         issues.append("JWT_SECRET_KEY 未设置为真实值")
+    elif len(jwt_secret.encode("utf-8")) < 32:
+        issues.append("JWT_SECRET_KEY 必须至少为 32 字节")
 
     encryption_key = (os.getenv("ENCRYPTION_KEY") or "").strip()
     if not encryption_key or encryption_key == PLACEHOLDER_ENCRYPTION_KEY:
         issues.append("ENCRYPTION_KEY 未设置为真实值")
+    elif not is_standard_fernet_key(encryption_key) and os.getenv(
+        "ALLOW_LEGACY_ENCRYPTION_KEY", "false"
+    ).lower() not in {"1", "true", "yes"}:
+        issues.append("ENCRYPTION_KEY 必须是标准 Fernet 密钥")
+
+    if int(os.getenv("UVICORN_WORKERS", "1")) != 1:
+        issues.append("当前进程内并发模型要求 UVICORN_WORKERS=1")
 
     if issues:
         raise RuntimeError("安全配置无效: " + "; ".join(issues))
@@ -102,11 +119,19 @@ def _validate_runtime_security_settings() -> None:
 async def lifespan(_app: FastAPI):
     _validate_runtime_security_settings()
     await init_database()
+    removed_sessions = await remove_expired_sessions()
+    if removed_sessions:
+        logger.info("expired/revoked sessions removed at startup: %s", removed_sessions)
+    removed_logs = await remove_old_generation_logs(
+        int(os.getenv("GENERATION_LOG_RETENTION_DAYS", "90"))
+    )
+    if removed_logs:
+        logger.info("expired generation logs removed at startup: %s", removed_logs)
     await get_auth_service().ensure_default_admin()
 
     print("=" * 60)
     print(f" StackAI Image Gen v{APP_VERSION}")
-    print(f" Frontend  : /")
+    print(" Frontend  : /")
     print(f" Admin page: /{ADMIN_PATH}")
     print("=" * 60)
     yield
@@ -174,15 +199,37 @@ _CACHE_CONTROL_RULES = (
     ("/api/options", "public, max-age=300"),
 )
 
+_request_counts: Counter[tuple[str, str, int]] = Counter()
+_request_duration_seconds: Counter[tuple[str, str]] = Counter()
+
 
 @app.middleware("http")
 async def cache_control_middleware(request: Request, call_next):
+    started = time.monotonic()
+    request_id = request.headers.get("X-Request-ID", "").strip()[:128] or str(uuid.uuid4())
     response = await call_next(request)
     path = request.url.path
     for prefix, value in _CACHE_CONTROL_RULES:
         if path.startswith(prefix):
             response.headers.setdefault("Cache-Control", value)
             break
+    response.headers["X-Request-ID"] = request_id
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; img-src 'self' data: blob: https:; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src 'self' https://fonts.gstatic.com; script-src 'self'; connect-src 'self'; "
+        "frame-ancestors 'none'; base-uri 'self'",
+    )
+    method = request.method
+    route = request.scope.get("route")
+    path = getattr(route, "path", request.url.path)
+    _request_counts[(method, path, response.status_code)] += 1
+    _request_duration_seconds[(method, path)] += time.monotonic() - started
     return response
 
 
@@ -196,6 +243,60 @@ upload_path.mkdir(parents=True, exist_ok=True)
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok", "version": APP_VERSION}
+
+
+@app.get("/health/live")
+async def health_live() -> dict:
+    return {"status": "ok", "version": APP_VERSION}
+
+
+@app.get("/health/ready")
+async def health_ready() -> JSONResponse:
+    checks: dict[str, object] = {}
+    status_code = 200
+    try:
+        factory = get_session_factory()
+        async with factory() as session:
+            await session.execute(text("SELECT 1"))
+        checks["database"] = "ok"
+    except Exception as exc:
+        logger.warning("readiness database check failed: %s", exc)
+        checks["database"] = "error"
+        status_code = 503
+    try:
+        free_bytes = shutil.disk_usage(upload_path).free
+        minimum = max(0, int(os.getenv("GENERATED_IMAGE_MIN_FREE_BYTES", "0")))
+        checks["disk_free_bytes"] = free_bytes
+        checks["disk"] = "ok" if free_bytes >= minimum else "insufficient"
+        if free_bytes < minimum:
+            status_code = 503
+    except OSError as exc:
+        logger.warning("readiness disk check failed: %s", exc)
+        checks["disk"] = "error"
+        status_code = 503
+    return JSONResponse(
+        {"status": "ok" if status_code == 200 else "not_ready", "checks": checks},
+        status_code=status_code,
+    )
+
+
+@app.get("/metrics", include_in_schema=False)
+async def metrics(request: Request) -> PlainTextResponse:
+    expected = (os.getenv("METRICS_TOKEN") or "").strip()
+    supplied = (request.headers.get("Authorization") or "").removeprefix("Bearer ").strip()
+    if not expected or not secrets.compare_digest(supplied, expected):
+        raise HTTPException(status_code=404, detail="Not Found")
+    lines = ["# TYPE st_imagen_http_requests_total counter"]
+    for (method, path, status), value in sorted(_request_counts.items()):
+        lines.append(
+            f'st_imagen_http_requests_total{{method="{method}",path="{path}",status="{status}"}} {value}'
+        )
+    lines.append("# TYPE st_imagen_http_request_duration_seconds_total counter")
+    for (method, path), value in sorted(_request_duration_seconds.items()):
+        lines.append(
+            f'st_imagen_http_request_duration_seconds_total{{method="{method}",path="{path}"}} {value:.6f}'
+        )
+    return PlainTextResponse("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
 
 
 _NO_CACHE_HEADERS = {"Cache-Control": "no-cache"}
