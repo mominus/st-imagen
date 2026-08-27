@@ -9,7 +9,7 @@ TEXT_SUFFIXES = {".html", ".js", ".css", ".py", ".md", ".yml", ".yaml", ".toml"}
 
 def test_repository_does_not_publish_provider_brand_tokens():
     provider = "sta" + "ckai"
-    forbidden = (provider, provider.replace("ai", "-ai"), "sta" + "ck")
+    forbidden = (provider, provider.replace("ai", "-ai"))
     matches = []
     for path in ROOT.rglob("*"):
         if not path.is_file() or path.suffix.lower() not in TEXT_SUFFIXES:

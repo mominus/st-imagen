@@ -2257,7 +2257,6 @@ async def generate_stream(
                 account = admitted_account if attempt == 0 else None
                 account_id = account.id if account is not None else None
                 account_name = None
-                account_short = None
                 generation_slot_acquired = account is not None and attempt == 0
                 try:
                     if account is None:
@@ -2376,7 +2375,6 @@ async def generate_stream(
                         continue
 
                     private_api_key = pool.decrypt_private_api_key(account)
-                    account_short = _strip_email_suffix(account_name or "")
                     started = time.time()
                     started_monotonic = time.monotonic()
                     start_emitted = False

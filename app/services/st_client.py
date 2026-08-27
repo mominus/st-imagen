@@ -405,30 +405,30 @@ def extract_image_urls(response: Dict[str, Any]) -> list[str]:
     """
     import json as _json
     import re
+    from urllib.parse import urlsplit
 
     URL_PATTERN = re.compile(r"https?://[^\s)\"'<>]+", re.IGNORECASE)
 
     urls: list[str] = []
 
-    def _looks_like_image_url(v: str) -> bool:
+    def _looks_like_image_url(v: str, *, hinted: bool = False) -> bool:
         low = v.lower()
         if not (low.startswith("http://") or low.startswith("https://")):
             return False
+        path = urlsplit(low).path
         return (
-            low.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif"))
-            or "image" in low
-            or "img" in low
-            or "st" in low
-            or "st" in low
-            or "supabase" in low
-            or "cloudfront" in low
-            or "s3" in low
-            or "/storage/" in low
+            hinted
+            or path.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif"))
+            or "/image/" in path
+            or "/images/" in path
+            or "/storage/" in path
         )
 
     def _is_image_field_key(key: str) -> bool:
         k = key.lower()
-        return ("url" in k and ("image" in k or "img" in k)) or k in {
+        return ("url" in k and ("image" in k or "img" in k)) or bool(
+            re.fullmatch(r"out-\d+", k)
+        ) or k in {
             "image_url",
             "img_url",
             "url",
@@ -438,15 +438,15 @@ def extract_image_urls(response: Dict[str, Any]) -> list[str]:
             "output_url",
         }
 
-    def _emit_from_string(s: str) -> None:
+    def _emit_from_string(s: str, *, hinted: bool = False) -> None:
         # 直接是 URL
-        if _looks_like_image_url(s):
+        if _looks_like_image_url(s, hinted=hinted):
             urls.append(s)
             return
         # markdown / 混合文本里抽 URL
         for match in URL_PATTERN.findall(s):
             cleaned = match.rstrip(".,);]")
-            if _looks_like_image_url(cleaned):
+            if _looks_like_image_url(cleaned, hinted=hinted):
                 urls.append(cleaned)
 
     def _walk(value: Any, *, parent_key_hints_image: bool = False) -> None:
@@ -459,7 +459,7 @@ def extract_image_urls(response: Dict[str, Any]) -> list[str]:
                     return
                 except Exception:
                     pass
-            _emit_from_string(stripped)
+            _emit_from_string(stripped, hinted=parent_key_hints_image)
         elif isinstance(value, list):
             for item in value:
                 _walk(item, parent_key_hints_image=parent_key_hints_image)

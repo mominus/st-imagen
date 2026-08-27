@@ -2925,7 +2925,7 @@ td strong {
   width: 100%;
 }
 
-.account-org-flow-group {
+.account-org-flow-stack {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -2933,7 +2933,7 @@ td strong {
   max-width: 220px;
 }
 
-.account-org-flow-group code {
+.account-org-flow-stack code {
   display: inline-block;
   max-width: 100%;
   overflow: hidden;
@@ -4687,8 +4687,8 @@ td strong {
 }
 
 .entity-cell,
-.group-cell,
-.metric-group {
+.stack-cell,
+.metric-stack {
   display: grid;
   gap: 6px;
 }
@@ -4783,16 +4783,16 @@ td strong {
 }
 
 #accountsTable .entity-cell,
-#accountsTable .metric-group,
+#accountsTable .metric-stack,
 #accountsTable .metric-head,
 #logsTable .entity-cell,
-#logsTable .group-cell {
+#logsTable .stack-cell {
   min-width: 0;
 }
 
 #accountsTable .entity-cell strong,
 #logsTable .entity-cell strong,
-#accountsTable .account-org-flow-group code {
+#accountsTable .account-org-flow-stack code {
   display: block;
   min-width: 0;
   overflow: hidden;
@@ -4804,7 +4804,7 @@ td strong {
   white-space: nowrap;
 }
 
-#accountsTable .account-org-flow-group {
+#accountsTable .account-org-flow-stack {
   max-width: 100%;
 }
 
@@ -4836,7 +4836,7 @@ td strong {
   min-width: 180px;
 }
 
-#accountsTable .account-status-group {
+#accountsTable .account-status-stack {
   justify-items: start;
 }
 
@@ -5041,7 +5041,7 @@ td strong {
   max-height: 220px;
 }
 
-.toast-group {
+.toast-stack {
   position: fixed;
   right: 22px;
   bottom: 22px;
@@ -5489,7 +5489,7 @@ td strong {
     justify-content: flex-start;
   }
 
-  .toast-group {
+  .toast-stack {
     right: 16px;
     left: 16px;
     width: auto;
@@ -5723,7 +5723,7 @@ td strong {
 @media (max-width: 760px) {
   .admin-ui:not(.admin-login-state) { padding-bottom: calc(76px + env(safe-area-inset-bottom)); }
   .admin-ui .modal-mask { z-index: 180; }
-  .admin-ui:not(.admin-login-state) .toast-group {
+  .admin-ui:not(.admin-login-state) .toast-stack {
     bottom: calc(88px + env(safe-area-inset-bottom));
   }
   .admin-ui .topbar {
