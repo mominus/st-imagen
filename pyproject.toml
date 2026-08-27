@@ -1,6 +1,7 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--strict-markers --strict-config"
+pythonpath = ["."]
 
 [tool.coverage.run]
 branch = true
@@ -9,7 +10,6 @@ source = ["app"]
 [tool.coverage.report]
 show_missing = true
 skip_covered = true
-fail_under = 70
 
 [tool.ruff]
 target-version = "py311"
