@@ -354,7 +354,7 @@ class StageRunner:
                         local_images_only = all(
                             str(value or "").strip()
                             and urlparse(str(value)).path.startswith("/uploads/generated/")
-                            and "stack-ai" not in str(value).lower()
+                            and "st" not in str(value).lower()
                             for value in image_values
                         )
                         if image_count and first_image is None:
