@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+from app.time_utils import utcnow_naive
+
 import asyncio
 import logging
 import os
@@ -293,7 +295,6 @@ class RouteCircuitRegistry:
             return
         self._loaded = True
         try:
-            from datetime import datetime
             from sqlalchemy import select
             from app.models.database import RouteHealth, get_session_factory
 
@@ -302,7 +303,7 @@ class RouteCircuitRegistry:
                 result = await session.execute(
                     select(RouteHealth).where(RouteHealth.state == "open")
                 )
-                now = datetime.utcnow()
+                now = utcnow_naive()
                 for health in result.scalars().all():
                     if health.retry_after_at is None:
                         continue
@@ -353,7 +354,7 @@ class RouteCircuitRegistry:
 
     async def _persist_state(self, key: str, snapshot: Dict[str, object]) -> None:
         try:
-            from datetime import datetime, timedelta
+            from datetime import timedelta
             from app.models.database import RouteHealth, get_session_factory
 
             factory = get_session_factory()
@@ -365,9 +366,9 @@ class RouteCircuitRegistry:
                 health.state = str(snapshot.get("state") or "closed")
                 health.failure_count = int(snapshot.get("failures") or 0)
                 remaining = float(snapshot.get("remaining_seconds") or 0.0)
-                health.opened_at = datetime.utcnow() if health.state == "open" else None
+                health.opened_at = utcnow_naive() if health.state == "open" else None
                 health.retry_after_at = (
-                    datetime.utcnow() + timedelta(seconds=remaining) if remaining > 0 else None
+                    utcnow_naive() + timedelta(seconds=remaining) if remaining > 0 else None
                 )
                 await session.commit()
         except Exception as exc:

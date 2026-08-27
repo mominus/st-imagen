@@ -1,6 +1,8 @@
 """普通用户鉴权：邀请码激活 + 本地账号 + 服务端会话。"""
 from __future__ import annotations
 
+from app.time_utils import utcnow_naive
+
 import asyncio
 import logging
 import os
@@ -72,7 +74,7 @@ class InvalidPasswordError(UserAuthError):
 
 
 def build_user_usage_snapshot(user: User, *, now: Optional[datetime] = None) -> dict:
-    current = now or datetime.utcnow()
+    current = now or utcnow_naive()
     same_day = bool(user.last_used_at and user.last_used_at.date() == current.date())
     daily_used = max(0, int(user.daily_used or 0)) if same_day else 0
     runtime_in_flight = 0
@@ -100,7 +102,7 @@ def is_user_expired(user: Optional[User], *, now: Optional[datetime] = None) -> 
     expires_at = getattr(user, "expires_at", None)
     if expires_at is None:
         return False
-    return expires_at <= (now or datetime.utcnow())
+    return expires_at <= (now or utcnow_naive())
 
 
 def get_effective_user_status(user: User, *, now: Optional[datetime] = None) -> str:
@@ -148,7 +150,7 @@ class UserAuthService:
         return max(0, int(self._runtime_in_flight.get(str(user_id), 0)))
 
     def runtime_daily_used(self, user_id: str, *, now: Optional[datetime] = None) -> int:
-        current_date = (now or datetime.utcnow()).date()
+        current_date = (now or utcnow_naive()).date()
         entry = self._runtime_daily_used.get(str(user_id))
         if entry is None or entry[0] != current_date:
             if entry is not None:
@@ -229,7 +231,7 @@ class UserAuthService:
 
     @staticmethod
     def _ensure_user_can_access(user: User, *, now: Optional[datetime] = None) -> None:
-        current = now or datetime.utcnow()
+        current = now or utcnow_naive()
         if user.status != "active":
             raise UserDisabledError("账号已停用")
         if is_user_expired(user, now=current):
@@ -377,8 +379,8 @@ class UserAuthService:
         invite = await self.get_invite_code(session, invite_id)
         if invite is None:
             return None
-        invite.revoked_at = datetime.utcnow()
-        invite.updated_at = datetime.utcnow()
+        invite.revoked_at = utcnow_naive()
+        invite.updated_at = utcnow_naive()
         await session.flush()
         return invite
 
@@ -387,7 +389,7 @@ class UserAuthService:
         if invite is None:
             return False
 
-        now = datetime.utcnow()
+        now = utcnow_naive()
         await session.execute(
             update(User)
             .where(User.invite_code_id == invite.id)
@@ -398,7 +400,7 @@ class UserAuthService:
         return True
 
     async def delete_all_invite_codes(self, session: AsyncSession) -> int:
-        now = datetime.utcnow()
+        now = utcnow_naive()
         await session.execute(
             update(User)
             .where(User.invite_code_id.is_not(None))
@@ -507,7 +509,7 @@ class UserAuthService:
         if user is None:
             return None
 
-        now = datetime.utcnow()
+        now = utcnow_naive()
         should_revoke_sessions = False
         if status in {"active", "disabled"}:
             user.status = status
@@ -561,7 +563,7 @@ class UserAuthService:
         await self.ensure_user_schema(session)
         normalized_username = self._require_valid_username(username)
         self._require_valid_password(password)
-        now = datetime.utcnow()
+        now = utcnow_naive()
         code_hash = CryptoService.hash_api_key((invite_code or "").strip())
 
         async with self._activation_lock:
@@ -620,7 +622,7 @@ class UserAuthService:
     ) -> Tuple[User, str]:
         """使用邀请码创建无用户名密码的访客会话。"""
         await self.ensure_user_schema(session)
-        now = datetime.utcnow()
+        now = utcnow_naive()
         code_hash = CryptoService.hash_api_key((invite_code or "").strip())
 
         async with self._activation_lock:
@@ -693,7 +695,7 @@ class UserAuthService:
         user = row.scalar_one_or_none()
         if user is None or not CryptoService.verify_password(password, user.password_hash):
             raise InvalidUserCredentialsError("用户名或密码错误")
-        now = datetime.utcnow()
+        now = utcnow_naive()
         self._ensure_user_can_access(user, now=now)
         user.last_login_at = now
         user.updated_at = now
@@ -714,7 +716,7 @@ class UserAuthService:
         ip_address: Optional[str],
         user_agent: Optional[str],
     ) -> str:
-        now = datetime.utcnow()
+        now = utcnow_naive()
         raw_token = secrets.token_urlsafe(32)
         sess = UserSession(
             id=str(uuid.uuid4()),
@@ -758,7 +760,7 @@ class UserAuthService:
             return None
 
         sess, user = pair
-        now = datetime.utcnow()
+        now = utcnow_naive()
         if sess.revoked_at is not None or sess.expires_at <= now:
             return None
         if user.status != "active" or is_user_expired(user, now=now):
@@ -779,7 +781,7 @@ class UserAuthService:
         if sess is None:
             return False
         if sess.revoked_at is None:
-            sess.revoked_at = datetime.utcnow()
+            sess.revoked_at = utcnow_naive()
             await session.flush()
         return True
 
@@ -788,7 +790,7 @@ class UserAuthService:
             update(UserSession)
             .where(UserSession.user_id == user_id)
             .where(UserSession.revoked_at.is_(None))
-            .values(revoked_at=datetime.utcnow())
+            .values(revoked_at=utcnow_naive())
         )
         await session.flush()
 
@@ -815,7 +817,7 @@ class UserAuthService:
         if user is None:
             raise UserDisabledError("用户不存在")
 
-        now = datetime.utcnow()
+        now = utcnow_naive()
         self._ensure_user_can_access(user, now=now)
         same_day = bool(user.last_used_at and user.last_used_at.date() == now.date())
         current_daily_used = max(0, int(user.daily_used or 0)) if same_day else 0
@@ -851,7 +853,7 @@ class UserAuthService:
             else:
                 self._runtime_in_flight[str(user_id)] = current - 1
             if count_usage:
-                usage_now = datetime.utcnow()
+                usage_now = utcnow_naive()
                 self._runtime_daily_used[str(user_id)] = (
                     usage_now.date(),
                     self.runtime_daily_used(user_id, now=usage_now) + 1,
@@ -866,7 +868,7 @@ class UserAuthService:
         # usage updates avoids making every generation compete for a write lock.
         try:
             async with self._usage_persist_lock:
-                now = datetime.utcnow()
+                now = utcnow_naive()
                 factory = get_session_factory()
                 async with factory() as inner:
                     user = await self.get_user(inner, user_id)

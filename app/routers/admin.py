@@ -1,6 +1,8 @@
 """管理后台 API：登录 / 改密 / 账号 CRUD / 简单统计。"""
 from __future__ import annotations
 
+from app.time_utils import utcnow_naive
+
 import asyncio
 import json
 import logging
@@ -32,7 +34,6 @@ from app.services.auth import (
     InvalidCredentialsError,
     get_auth_service,
 )
-from app.services.crypto import CryptoService
 from app.services.deps import require_admin
 from app.services import app_settings
 from app.services.generation_stats import get_total_generated_images
@@ -255,7 +256,7 @@ def _get_first_text_value(item: Dict[str, Any], keys: List[str]) -> str:
 
 
 def _invite_status(invite: InviteCode) -> str:
-    now = datetime.utcnow()
+    now = utcnow_naive()
     if invite.revoked_at is not None:
         return "revoked"
     if invite.expires_at and invite.expires_at < now:
@@ -286,7 +287,7 @@ def _invite_to_dict(invite: InviteCode, *, raw_code: Optional[str] = None) -> di
 
 
 def _user_to_dict(user: User) -> dict:
-    current = datetime.utcnow()
+    current = utcnow_naive()
     usage = build_user_usage_snapshot(user)
     effective_status = get_effective_user_status(user, now=current)
     return {
@@ -336,7 +337,10 @@ async def login(req: LoginRequest):
 @router.post("/change-password")
 async def change_password(req: ChangePasswordRequest, payload=Depends(require_admin)):
     auth = get_auth_service()
-    ok = await auth.change_password(payload["sub"], req.old_password, req.new_password)
+    try:
+        ok = await auth.change_password(payload["sub"], req.old_password, req.new_password)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not ok:
         raise HTTPException(status_code=400, detail="旧密码不正确")
     return {"success": True}
@@ -1074,7 +1078,7 @@ async def create_invite_codes(
     del payload
     service = get_user_auth_service()
     expires_at = (
-        datetime.utcnow() + timedelta(days=req.expires_in_days)
+        utcnow_naive() + timedelta(days=req.expires_in_days)
         if req.expires_in_days is not None
         else None
     )
@@ -1302,7 +1306,7 @@ async def _stats_overview_payload(session: AsyncSession) -> dict:
         await session.execute(
             select(func.count(User.id))
             .where(User.status == "active")
-            .where(or_(User.expires_at.is_(None), User.expires_at > datetime.utcnow()))
+            .where(or_(User.expires_at.is_(None), User.expires_at > utcnow_naive()))
         )
     ).scalar_one()
     total_invites = (await session.execute(select(func.count(InviteCode.id)))).scalar_one()

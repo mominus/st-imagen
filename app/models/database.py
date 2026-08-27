@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+from app.time_utils import utcnow_naive
+
 import os
 import logging
 import json
@@ -15,6 +17,7 @@ from sqlalchemy import (
     Column,
     DateTime,
     Integer,
+    Index,
     String,
     Text,
     event,
@@ -36,7 +39,7 @@ Base = declarative_base()
 
 
 def _utcnow() -> datetime:
-    return datetime.utcnow()
+    return utcnow_naive()
 
 
 DATABASE_URL = os.getenv(
@@ -204,6 +207,10 @@ class GenerationLog(Base):
     """生成日志（轻量记录，便于排查与统计）。"""
 
     __tablename__ = "generation_logs"
+    __table_args__ = (
+        Index("ix_generation_logs_timestamp_status", "timestamp", "status"),
+        Index("ix_generation_logs_timestamp_model", "timestamp", "model"),
+    )
 
     id = Column(String(36), primary_key=True)
     timestamp = Column(DateTime, default=_utcnow, nullable=False, index=True)
@@ -305,6 +312,7 @@ async def init_database() -> None:
         await conn.run_sync(Base.metadata.create_all)
         # 兼容已有库：补齐增量列（SQLite 加可空列是安全的）
         await _ensure_columns(conn)
+        await _ensure_indexes(conn)
         await _ensure_generation_counter(conn)
         # journal_mode 是数据库级设置，设一次持久生效
         await conn.execute(text("PRAGMA journal_mode=WAL"))
@@ -336,6 +344,18 @@ async def _ensure_columns(conn) -> None:
                 logger.info("schema migrated: %s.%s added", table, column)
         except Exception as exc:
             logger.warning("schema migration skipped for %s.%s: %s", table, column, exc)
+
+
+async def _ensure_indexes(conn) -> None:
+    """Create performance indexes required by dashboard time-window queries."""
+    statements = (
+        "CREATE INDEX IF NOT EXISTS ix_generation_logs_timestamp_status "
+        "ON generation_logs (timestamp, status)",
+        "CREATE INDEX IF NOT EXISTS ix_generation_logs_timestamp_model "
+        "ON generation_logs (timestamp, model)",
+    )
+    for statement in statements:
+        await conn.execute(text(statement))
 
 
 def _legacy_output_image_count(output_images: object, output_preview: object) -> int:

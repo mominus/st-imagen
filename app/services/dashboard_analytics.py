@@ -1,6 +1,7 @@
 """概览页的周期聚合与模型/失败归一化。"""
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from collections import defaultdict
@@ -25,6 +26,7 @@ PERIOD_DELTAS = {
 PERIOD_BUCKETS = {"24h": ("hour", 25), "7d": ("day", 8), "30d": ("day", 31)}
 DASHBOARD_CACHE_TTL_SECONDS = 15.0
 _dashboard_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_dashboard_cache_locks = {period: asyncio.Lock() for period in PERIOD_DELTAS}
 
 FAILURE_CATEGORIES = (
     ("capacity", "容量 / 限流"),
@@ -300,11 +302,33 @@ async def get_dashboard_analytics(
     now: Optional[datetime] = None,
 ) -> dict[str, Any]:
     """Read only the small GenerationLog columns needed for aggregation."""
+    if period not in PERIOD_DELTAS:
+        raise ValueError("period 只能是 24h、7d 或 30d")
     use_cache = now is None
     if use_cache:
         cached = _dashboard_cache.get(period)
         if cached and time.monotonic() - cached[0] < DASHBOARD_CACHE_TTL_SECONDS:
             return cached[1]
+
+        # Serialize cache refreshes so a busy admin page cannot trigger several
+        # identical full-window SQLite scans at the same time.
+        async with _dashboard_cache_locks.setdefault(period, asyncio.Lock()):
+            cached = _dashboard_cache.get(period)
+            if cached and time.monotonic() - cached[0] < DASHBOARD_CACHE_TTL_SECONDS:
+                return cached[1]
+            return await _query_dashboard_analytics(session, period, now=None, use_cache=True)
+
+    return await _query_dashboard_analytics(session, period, now=now, use_cache=False)
+
+
+async def _query_dashboard_analytics(
+    session: AsyncSession,
+    period: str,
+    *,
+    now: Optional[datetime],
+    use_cache: bool,
+) -> dict[str, Any]:
+    """Execute one dashboard scan; callers coordinate cache refreshes."""
 
     start, end = period_window(period, now=now)
     rows = await session.execute(

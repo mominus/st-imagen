@@ -1,7 +1,8 @@
 """普通用户鉴权路由：邀请码激活 / 登录 / 登出 / 会话状态。"""
 from __future__ import annotations
 
-from datetime import datetime
+from app.time_utils import utcnow_naive
+
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Request
@@ -56,7 +57,7 @@ def _client_ip(request: Request) -> Optional[str]:
 
 
 def _user_to_dict(user: User) -> dict:
-    current = datetime.utcnow()
+    current = utcnow_naive()
     usage = build_user_usage_snapshot(user)
     auth_kind = str(getattr(user, "auth_kind", "password") or "password")
     is_invite_guest = auth_kind == "invite_guest"
