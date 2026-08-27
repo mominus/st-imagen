@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import unittest
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -227,7 +227,7 @@ class UserAuthServiceTests(unittest.IsolatedAsyncioTestCase):
             ]
         )
         service = user_auth_mod.UserAuthService()
-        expires_at = datetime.utcnow() + timedelta(days=30)
+        expires_at = datetime.now(UTC).replace(tzinfo=None) + timedelta(days=30)
 
         created = await service.create_user(
             session,
@@ -330,7 +330,7 @@ class UserAuthServiceTests(unittest.IsolatedAsyncioTestCase):
             status="active",
             daily_quota=0,
             max_inflight=2,
-            expires_at=datetime.utcnow() - timedelta(hours=1),
+            expires_at=datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=1),
         )
         session = FakeSession([FakeExecResult(scalar=expired_user)])
         service = user_auth_mod.UserAuthService()
@@ -355,7 +355,7 @@ class UserAuthServiceTests(unittest.IsolatedAsyncioTestCase):
             daily_used=0,
             in_flight=0,
             max_inflight=1,
-            expires_at=datetime.utcnow() - timedelta(minutes=1),
+            expires_at=datetime.now(UTC).replace(tzinfo=None) - timedelta(minutes=1),
         )
         factory = RepeatingSessionFactory(lambda: SharedUserSession(shared_user))
 
@@ -501,7 +501,7 @@ class StackAIClientTests(unittest.IsolatedAsyncioTestCase):
 class AuthServiceTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self._env_backup = os.environ.copy()
-        os.environ["JWT_SECRET_KEY"] = "unit-test-jwt-secret"
+        os.environ["JWT_SECRET_KEY"] = "unit-test-jwt-secret-at-least-32-bytes"
         os.environ["ADMIN_PASSWORD"] = "StrongAdminPassword!234"
 
     def tearDown(self) -> None:
@@ -574,8 +574,8 @@ class AccountPoolTests(unittest.IsolatedAsyncioTestCase):
             api_key_encrypted="enc",
             status="active",
             max_inflight=10,
-            last_used_at=datetime.utcnow(),
-            created_at=datetime.utcnow(),
+            last_used_at=datetime.now(UTC).replace(tzinfo=None),
+            created_at=datetime.now(UTC).replace(tzinfo=None),
         )
         session = FakeSession([FakeExecResult(scalars=[account]), FakeExecResult()])
         pool = account_pool_mod.AccountPoolService()

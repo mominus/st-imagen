@@ -12,20 +12,7 @@
       rel="stylesheet"
     />
     <link rel="stylesheet" href="/static/style.css" />
-    <script>
-      // 防 FOUC：在样式应用前同步设定 data-theme
-      (function () {
-        try {
-          var t = localStorage.getItem("theme");
-          if (t !== "light" && t !== "dark") {
-            t = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
-          }
-          document.documentElement.setAttribute("data-theme", t);
-        } catch (_) {
-          document.documentElement.setAttribute("data-theme", "dark");
-        }
-      })();
-    </script>
+    <script src="/static/theme-init.js"></script>
   </head>
   <body>
     <header class="topbar">

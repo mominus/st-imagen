@@ -7,6 +7,8 @@
 """
 from __future__ import annotations
 
+from app.time_utils import utcnow_naive
+
 import asyncio
 import logging
 import os
@@ -90,7 +92,7 @@ class AccountPoolService:
         encrypted_private = crypto.encrypt(cleaned_private) if cleaned_private else None
         account = Account(
             id=str(uuid.uuid4()),
-            name=name.strip() or f"acct-{datetime.utcnow().strftime('%H%M%S')}",
+            name=name.strip() or f"acct-{utcnow_naive().strftime('%H%M%S')}",
             org_id=org_id.strip(),
             flow_id=flow_id.strip(),
             api_key_encrypted=encrypted,
@@ -152,7 +154,7 @@ class AccountPoolService:
             account.status = status
         if max_inflight is not None:
             account.max_inflight = max(1, int(max_inflight))
-        account.updated_at = datetime.utcnow()
+        account.updated_at = utcnow_naive()
         await session.flush()
         return account
 
@@ -175,7 +177,7 @@ class AccountPoolService:
         result = await session.execute(
             update(Account)
             .where(Account.status != status)
-            .values(status=status, updated_at=datetime.utcnow())
+            .values(status=status, updated_at=utcnow_naive())
         )
         await session.flush()
         return max(0, int(result.rowcount or 0))
@@ -259,7 +261,7 @@ class AccountPoolService:
                 health.reason = str(reason or "")[:1000]
                 health.last_failure_scope = "account" if seconds > 0 else None
                 health.retry_after_at = (
-                    datetime.utcnow() + timedelta(seconds=seconds) if seconds > 0 else None
+                    utcnow_naive() + timedelta(seconds=seconds) if seconds > 0 else None
                 )
                 await session.commit()
         except Exception as exc:
@@ -277,7 +279,7 @@ class AccountPoolService:
                 result = await health_session.execute(
                     select(AccountHealth).where(AccountHealth.state == "isolated")
                 )
-            now = datetime.utcnow()
+            now = utcnow_naive()
             for health in result.scalars().all():
                 if health.retry_after_at is None:
                     continue
@@ -436,7 +438,7 @@ class AccountPoolService:
         from app.models.database import get_session_factory
 
         async with self._usage_persist_lock:
-            now = datetime.utcnow()
+            now = utcnow_naive()
             try:
                 factory = get_session_factory()
                 async with factory() as inner:
