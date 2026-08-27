@@ -29,7 +29,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 
-# ---------- 提示词池（每次请求随机选一条 + 加 uuid 抑制 stackai 缓存）----------
+# ---------- 提示词池（每次请求随机选一条 + 加 uuid 抑制 st 缓存）----------
 TEXT2IMG_PROMPTS = [
     "a small red apple on a white marble table, soft natural light",
     "a tiny robot watering a potted plant in a sunlit kitchen",

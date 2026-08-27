@@ -1,4 +1,4 @@
-"""StackAI 上游调用客户端。
+"""ST 上游调用客户端。
 
 按用户提供的工作流模板，所有账号共用同一组输入字段：
 - in-0: prompt
@@ -30,8 +30,8 @@ from app.services.upstream_redaction import (
 logger = logging.getLogger(__name__)
 
 
-class StackAIError(Exception):
-    """StackAI 调用错误。"""
+class STError(Exception):
+    """ST 调用错误。"""
 
     def __init__(
         self,
@@ -61,31 +61,31 @@ class StackAIError(Exception):
         self.upstream_started = upstream_started
 
 
-class StackAIClient:
-    """异步 StackAI 客户端（共享 AsyncClient + per-loop 复用）。"""
+class STClient:
+    """异步 ST 客户端（共享 AsyncClient + per-loop 复用）。"""
 
     def __init__(
         self,
         base_url: Optional[str] = None,
         timeout_seconds: Optional[float] = None,
     ) -> None:
-        self.base_url = (base_url or os.getenv("STACKAI_BASE_URL", "https://api.stack-ai.com")).rstrip("/")
+        self.base_url = (base_url or os.getenv("ST_BASE_URL", "")).rstrip("/")
         # 传输层超时必须高于工作流的 230s 总预算，避免底层先断开；
         # 真正的工作流总时限由 generate.py 的 SSE 预算控制。
         self.timeout = max(
             270.0,
-            float(timeout_seconds or os.getenv("STACKAI_TIMEOUT_SECONDS", "270")),
+            float(timeout_seconds or os.getenv("ST_TIMEOUT_SECONDS", "270")),
         )
         self.stream_read_timeout = max(
             self.timeout,
-            float(os.getenv("STACKAI_STREAM_READ_TIMEOUT_SECONDS", "330")),
+            float(os.getenv("ST_STREAM_READ_TIMEOUT_SECONDS", "330")),
         )
-        self.connect_timeout = float(os.getenv("STACKAI_CONNECT_TIMEOUT_SECONDS", "10"))
+        self.connect_timeout = float(os.getenv("ST_CONNECT_TIMEOUT_SECONDS", "10"))
         self.max_connections = max(1, int(os.getenv("HTTP_MAX_CONNECTIONS", "128")))
         self.max_keepalive_connections = max(
             1, int(os.getenv("HTTP_MAX_KEEPALIVE", str(self.max_connections)))
         )
-        self.trust_env = os.getenv("STACKAI_TRUST_ENV", "true").strip().lower() in {
+        self.trust_env = os.getenv("ST_TRUST_ENV", "true").strip().lower() in {
             "1",
             "true",
             "yes",
@@ -94,6 +94,11 @@ class StackAIClient:
         self._client: Optional[httpx.AsyncClient] = None
         self._client_lock: Optional[asyncio.Lock] = None
         self._loop_id: Optional[int] = None
+
+    def _endpoint(self, path: str) -> str:
+        if not self.base_url:
+            raise STError("上游服务未配置", status_code=503)
+        return f"{self.base_url}{path}"
 
     @staticmethod
     def _is_img2img_payload(payload: Dict[str, Any]) -> bool:
@@ -165,14 +170,14 @@ class StackAIClient:
         return None
 
     @classmethod
-    def _error_from_response(cls, resp: Any, body: bytes) -> "StackAIError":
+    def _error_from_response(cls, resp: Any, body: bytes) -> "STError":
         headers = {str(k).lower(): str(v) for k, v in dict(getattr(resp, "headers", {}) or {}).items()}
         try:
             err_payload = httpx.Response(resp.status_code, content=body, headers=headers).json()
         except Exception:
             err_payload = {"raw": body.decode("utf-8", errors="replace")[:2000]}
-        return StackAIError(
-            f"StackAI HTTP {resp.status_code}",
+        return STError(
+            f"ST HTTP {resp.status_code}",
             status_code=resp.status_code,
             payload=err_payload,
             headers=headers,
@@ -187,8 +192,8 @@ class StackAIClient:
         api_key: str,
         payload: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """调用 https://api.stackai.com/inference/v0/run/{org_id}/{flow_id}."""
-        url = f"{self.base_url}/inference/v0/run/{org_id}/{flow_id}"
+        """调用 https://api.st.com/inference/v0/run/{org_id}/{flow_id}."""
+        url = self._endpoint(f"/inference/v0/run/{org_id}/{flow_id}")
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -198,9 +203,9 @@ class StackAIClient:
         try:
             resp = await client.post(url, headers=headers, json=payload)
         except httpx.TimeoutException as exc:
-            raise StackAIError(self._timeout_message(exc), status_code=504) from exc
+            raise STError(self._timeout_message(exc), status_code=504) from exc
         except httpx.HTTPError as exc:
-            raise StackAIError(f"上游连接错误: {exc}", status_code=502) from exc
+            raise STError(f"上游连接错误: {exc}", status_code=502) from exc
 
         # 不强制 raise_for_status，需要把上游错误体回传给前端
         if resp.status_code >= 400:
@@ -212,7 +217,7 @@ class StackAIClient:
         try:
             return resp.json()
         except Exception as exc:
-            raise StackAIError(
+            raise STError(
                 f"上游返回非 JSON: {exc}",
                 status_code=502,
                 payload={"raw": resp.text[:2000]},
@@ -227,12 +232,12 @@ class StackAIClient:
         api_key: str,
         payload: Dict[str, Any],
     ) -> AsyncGenerator[str, None]:
-        """流式调用 https://api.stack-ai.com/inference/v0/stream/{org_id}/{flow_id}.
+        """流式调用 https://api.st.com/inference/v0/stream/{org_id}/{flow_id}.
 
         以行（按 `\\n` 分割）为单位 yield 上游下发的事件文本。
-        失败时抛出 StackAIError（不会再吐内容）。
+        失败时抛出 STError（不会再吐内容）。
         """
-        url = f"{self.base_url}/inference/v0/stream/{org_id}/{flow_id}"
+        url = self._endpoint(f"/inference/v0/stream/{org_id}/{flow_id}")
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -245,9 +250,9 @@ class StackAIClient:
             async for line in self._stream_with_client(client, url, headers, payload):
                 yield line
         except httpx.TimeoutException as exc:
-            raise StackAIError(self._timeout_message(exc), status_code=504) from exc
+            raise STError(self._timeout_message(exc), status_code=504) from exc
         except httpx.HTTPError as exc:
-            raise StackAIError(f"上游连接错误: {exc}", status_code=502) from exc
+            raise STError(f"上游连接错误: {exc}", status_code=502) from exc
 
     async def _stream_with_client(
         self,
@@ -305,12 +310,12 @@ class StackAIClient:
         max_pages: int = 3,
         page_size: int = 200,
     ) -> Optional[Dict[str, Any]]:
-        """从 StackAI Analytics 接口拉取指定 run 的详情。
+        """从 ST Analytics 接口拉取指定 run 的详情。
 
         endpoint: GET /analytics/org/{org_id}/flows/{flow_id}?page=&page_size=
         分页查找 run_id 匹配的记录。
 
-        说明：StackAI 区分 Public / Private API Key，但相同 Bearer 通常都能访问；
+        说明：ST 区分 Public / Private API Key，但相同 Bearer 通常都能访问；
         若 4xx 直接返回 None（让上层降级到诊断 dump 路径）。
 
         Returns:
@@ -322,7 +327,7 @@ class StackAIClient:
         if not target:
             return None
 
-        url = f"{self.base_url}/analytics/org/{org_id}/flows/{flow_id}"
+        url = self._endpoint(f"/analytics/org/{org_id}/flows/{flow_id}")
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -366,29 +371,29 @@ class StackAIClient:
         return None
 
 
-_stackai_client: Optional[StackAIClient] = None
+_st_client: Optional[STClient] = None
 
 
-def get_stackai_client() -> StackAIClient:
-    global _stackai_client
-    if _stackai_client is None:
-        _stackai_client = StackAIClient()
-    return _stackai_client
+def get_st_client() -> STClient:
+    global _st_client
+    if _st_client is None:
+        _st_client = STClient()
+    return _st_client
 
 
-async def close_stackai_client() -> None:
-    global _stackai_client
-    if _stackai_client is not None:
-        await _stackai_client.close()
-        _stackai_client = None
+async def close_st_client() -> None:
+    global _st_client
+    if _st_client is not None:
+        await _st_client.close()
+        _st_client = None
 
 
 # ---------- 输出解析 ----------
 
 def extract_image_urls(response: Dict[str, Any]) -> list[str]:
-    """尽量稳健地从 StackAI 返回里抽取生成图 URL。
+    """尽量稳健地从 ST 返回里抽取生成图 URL。
 
-    已知 StackAI 工作流返回的几种形态：
+    已知 ST 工作流返回的几种形态：
     - 文生图：{"outputs": {"out-0": '{"image_url": "https://..."}'}}
     - 图生图：{"outputs": {"out-0": '{"transformed_image_url": "![alt](https://...)"}'}}
     - 直接：{"outputs": {"out-0": "https://..."}} 或 {"out-0": {"image_url": "..."}}
@@ -413,8 +418,8 @@ def extract_image_urls(response: Dict[str, Any]) -> list[str]:
             low.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif"))
             or "image" in low
             or "img" in low
-            or "stack-ai" in low
-            or "stackai" in low
+            or "st" in low
+            or "st" in low
             or "supabase" in low
             or "cloudfront" in low
             or "s3" in low

@@ -52,7 +52,7 @@ DB_POOL_TIMEOUT_SECONDS = max(1.0, float(os.getenv("DB_POOL_TIMEOUT_SECONDS", "3
 
 
 class Account(Base):
-    """StackAI 账号；同一套工作流模板下所有账号共享 in-* 输入约定。"""
+    """ST 账号；同一套工作流模板下所有账号共享 in-* 输入约定。"""
 
     __tablename__ = "accounts"
 
@@ -61,7 +61,7 @@ class Account(Base):
     org_id = Column(String(255), nullable=False)
     flow_id = Column(String(255), nullable=False)
     api_key_encrypted = Column(Text, nullable=False)
-    # Private API Key（StackAI 控制台 → API Keys 里的 Private 类型），
+    # Private API Key（ST 控制台 → API Keys 里的 Private 类型），
     # 仅用于调用 /analytics 接口拉取运行详情中的 Errors 字段。
     # 与 inference 用的 Public Key 权限隔离，缺省可空。
     private_api_key_encrypted = Column(Text, nullable=True)

@@ -1,11 +1,11 @@
-# StackAI Image Gen
+# ST Image Gen
 
-一个最小可行的 StackAI 图像生成代理：
+一个最小可行的 ST 图像生成代理：
 
 - **前端**：文生图（Nano Banana Pro、GPT Image 2）/ 图生图（Nano Banana Pro、gpt-image-1.5），SSE 流式进度。
 - **后台**：多账号管理（增删改查、启停）、生成日志（点击「查看」当前页弹出预览）。
 - **存储**：上游生成完成后，图片先流式下载到服务器临时文件并原子改名；本地文件落盘完成后才返回本站图片 URL，生成日志随后异步写入数据库。
-- **架构**：浏览器 → 本服务（FastAPI，SSE 转发）→ StackAI 工作流 API。
+- **架构**：浏览器 → 本服务（FastAPI，SSE 转发）→ ST 工作流 API。
 
 > 账号级每日额度不是当前功能。账号调度只看账号状态、进程内并发上限与故障隔离状态；用户级每日额度仍由用户权限配置控制。
 
@@ -17,15 +17,15 @@
 
 ## JS vs Python 调用方式
 
-| 维度 | 前端直接调 StackAI（纯 JS） | 后端代理（Python + 前端 JS）|
+| 维度 | 前端直接调 ST（纯 JS） | 后端代理（Python + 前端 JS）|
 |---|---|---|
 | 安全 | ❌ Token 暴露在浏览器 | ✅ Token 只在服务端 |
 | 多账号轮询 / 失败切换 | ❌ 无法在客户端做 | ✅ 后端选号 |
 | 配额、日志、审计 | ❌ 无法做 | ✅ 全部可记录 |
-| CORS | ⚠️ 受 StackAI 域策略限制 | ✅ 自有域 |
+| CORS | ⚠️ 受 ST 域策略限制 | ✅ 自有域 |
 | 隐藏 org_id / flow_id | ❌ 暴露 | ✅ 隐藏 |
 
-**结论**：本项目采用 **后端 Python（FastAPI + httpx 异步）** 调用 StackAI，前端用 JS 调本服务。
+**结论**：本项目采用 **后端 Python（FastAPI + httpx 异步）** 调用 ST，前端用 JS 调本服务。
 
 ---
 
@@ -43,7 +43,7 @@ st-imagen/
 │   ├── services/
 │   │   ├── auth.py             # JWT + bcrypt 管理员认证
 │   │   ├── crypto.py           # Fernet 加密 api_key
-│   │   ├── stackai_client.py   # StackAI 异步 HTTP 客户端
+│   │   ├── st_client.py        # ST 异步 HTTP 客户端
 │   │   ├── account_pool.py     # 账号池、并发槽位与故障隔离
 │   │   ├── guard.py            # 全局并发、限流与熔断
 │   │   ├── app_settings.py     # 管理后台运行时设置
@@ -102,6 +102,7 @@ cp .env.example .env
   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
   ```
 - `JWT_SECRET_KEY`：随机字符串即可。
+- `ST_BASE_URL`：ST API 根地址；示例值仅为占位符，部署时必须替换。
 - `ADMIN_USERNAME` / `ADMIN_PASSWORD`：首次启动会创建默认管理员，请改成你自己的。
 - `ADMIN_PATH`：管理后台路径，默认 `admin`，建议改成你自己的不公开路径，例如 `ops-2026-console`。
 
@@ -117,7 +118,7 @@ python run.py
 
 ```
 ============================================================
- StackAI Image Gen v0.1.0
+ ST Image Gen v0.1.0
  Frontend  : /
  Admin page: /admin
 ============================================================
@@ -134,21 +135,21 @@ http://localhost:8001/<你的 ADMIN_PATH>
 
 打开 `http://localhost:8001/<你的 ADMIN_PATH>`，登录后点 **+ 新增账号**：
 
-- **名称**：建议直接填 StackAI 登录邮箱，例如 `iskerguo@gmail.com`（管理后台显示完整名称，前台/日志列只显示 `@` 前的部分）。
-- **org_id**：StackAI 工作流 URL 中的第一段，例如 `3b0c67e9-89d4-42ba-bc69-544e3cf8bd41`。
+- **名称**：建议直接填 ST 登录邮箱，例如 `iskerguo@gmail.com`（管理后台显示完整名称，前台/日志列只显示 `@` 前的部分）。
+- **org_id**：ST 工作流 URL 中的第一段，例如 `3b0c67e9-89d4-42ba-bc69-544e3cf8bd41`。
 - **flow_id**：URL 中的第二段，例如 `691af0876d6b6da025de1ab2`。
-- **API Key**：StackAI 给的 Bearer Token（`sk-...`，粘贴时无需加 `Bearer `）。这是 inference 用的 Public Key。
-- **Private API Key**（可选）：StackAI 控制台 → API Keys 里另外创建一个 **Private** 类型的 Key，仅用于失败时调用 `/analytics` 拉取运行详情里的 `Errors` 字段（节点真实报错）。**不填**也能跑，失败时只看到通用兜底文案。
+- **API Key**：ST 给的 Bearer Token（`sk-...`，粘贴时无需加 `Bearer `）。这是 inference 用的 Public Key。
+- **Private API Key**（可选）：ST 控制台 → API Keys 里另外创建一个 **Private** 类型的 Key，仅用于失败时调用 `/analytics` 拉取运行详情里的 `Errors` 字段（节点真实报错）。**不填**也能跑，失败时只看到通用兜底文案。
 
 > 同一套工作流模板：所有账号共享 in-0~in-6 输入约定。账号调度不使用账号级每日额度；账号主要配置工作流、密钥、状态和并发上限。用户级每日额度由用户/邀请码配置控制。
 
 ### 5. 生图
 
-回到 `http://localhost:8001/`，输入提示词、选择模型和参数，点 **立即生成**。前端走 SSE，会实时显示工作流当前节点（prompt / model / image_size / ...）。
+回到 `http://localhost:8001/`，输入提示词、选择模型和参数，点 **立即生成**。前端走 SSE，只接收生成进度计数、结果状态和本站图片地址；上游原始事件、运行标识与账号信息不会发送到浏览器。
 
 - **登录**：已有账号可使用用户名和密码登录；持有邀请码时选择「邀请码进入」，只输入邀请码即可创建访客会话并生图，无需注册或保存用户名和密码。
 - **文生图**：默认模式，可选择 Nano Banana Pro（画幅、清晰度）或 GPT Image 2（Size、Quality）。GPT Image 2 的 Size 默认为 `1024x1024`。
-- **图生图**：切换到「图生图」Tab，模型 = Nano Banana Pro 或 `gpt-image-1.5`；可以上传本地图片，也可以添加公网图片直链，最多 5 张。服务器上传的参考图必须通过 `PUBLIC_BASE_URL` 对 StackAI 公网可达。
+- **图生图**：切换到「图生图」Tab，模型 = Nano Banana Pro 或 `gpt-image-1.5`；可以上传本地图片，也可以添加公网图片直链，最多 5 张。服务器上传的参考图必须通过 `PUBLIC_BASE_URL` 对 ST 公网可达。
 
 ## 生产部署（Docker Compose）
 
@@ -199,7 +200,7 @@ cd /path/to/st-imagen
 python3 scripts/vps_stress.py up --build
 ```
 
-它会用 [compose.vps-stress.yml](compose.vps-stress.yml) 启一个受限容器。压测前需要准备 `.env`，并确保 Docker Compose 可以访问 StackAI 上游：
+它会用 [compose.vps-stress.yml](compose.vps-stress.yml) 启一个受限容器。压测前需要准备 `.env`，并确保 Docker Compose 可以访问 ST 上游：
 
 - CPU：`2`
 - 内存：`2g`
@@ -240,7 +241,7 @@ python3 scripts/vps_stress.py run-concurrent --ensure-up --build --concurrency 2
 这个服务的主要压力不是本地 CPU 算图，而是：
 
 - SSE 长连接数量
-- 对上游 StackAI 的并发等待
+- 对上游 ST 的并发等待
 - SQLite 在高并发下的串行写入竞争
 - 生成结果下载与落盘
 
@@ -281,14 +282,14 @@ python3 scripts/vps_stress.py run-concurrent --ensure-up --build --concurrency 2
   - `upstream` —— 上游进度摘要：`{type, line}`；其中所有 HTTP(S) URL 都会被隐藏，不转发上游原文链接。
   - `complete` —— 完成：`{type, images, response_time_ms, account_id, account_name, account_short}`；`images` 只包含本站 `/uploads/generated/...` 地址，图片本地落盘完成后才发送该事件。
   - `error` —— 失败：`{type, status_code, message, upstream, elapsed_ms}`
-- `POST /api/reference-image` —— 上传参考图到本服务，返回 `/uploads/...` 公网/站内可访问地址（需登录）。上传地址最终必须能被 StackAI 访问。
+- `POST /api/reference-image` —— 上传参考图到本服务，返回 `/uploads/...` 公网/站内可访问地址（需登录）。上传地址最终必须能被 ST 访问。
 - `POST /api/reference-url/validate` —— 预检参考图直链是否可访问、是否为图片，并阻止内网/保留地址探测（需登录）。
 
 > 建议在 VPS / 反向代理环境配置 `PUBLIC_BASE_URL=https://你的域名/`，这样接口返回的图片链接会直接是公网域名，而不是内网地址。
 
 ### 并发与过载策略
 
-本服务部署在外部 StackAI 推理 API 前面，生产使用单 Uvicorn worker。生成请求不在服务端排队：
+本服务部署在外部 ST 推理 API 前面，生产使用单 Uvicorn worker。生成请求不在服务端排队：
 
 - 全局、用户和账号容量在进程内原子准入；有空闲槽位才会返回 SSE 200。
 - 满载直接返回真正的 HTTP 429，并带 `Retry-After`；不会返回 200 后再发送 SSE 429。
@@ -306,7 +307,7 @@ python3 scripts/vps_stress.py run-concurrent --ensure-up --build --concurrency 2
 
 - 所有工作流连续无进度 `200s` 后失败。
 - 工作流总耗时上限为 `230s`，在 200 秒无进度预算外保留错误收尾和资源释放余量。
-- StackAI 传输保护为 `270s`，给工作流结束和错误收尾留出余量；单次 SSE 读取保护为 `330s`。
+- ST 传输保护为 `270s`，给工作流结束和错误收尾留出余量；单次 SSE 读取保护为 `330s`。
 - 浏览器无任何 SSE 数据 `220s` 才超时；服务端会每 `15s` 发送 keepalive，因此它不会限制正常的 230 秒工作流。
 - 生成完成后的图片下载是独立阶段，仍使用下载超时和下载总预算，不占用工作流生成预算。
 
@@ -338,7 +339,7 @@ python3 scripts/vps_stress.py run-concurrent --ensure-up --build --concurrency 2
 
 ## 工作流模板约定
 
-所有账号共用一套 StackAI 工作流，输入约定（前端隐藏，后端拼接）：
+所有账号共用一套 ST 工作流，输入约定（前端隐藏，后端拼接）：
 
 | 字段 | 含义 | 示例 |
 |---|---|---|

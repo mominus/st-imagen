@@ -1,7 +1,7 @@
 """图像生成路由：文生图 / 图生图。
 
 前端只需提交 prompt / model / aspect_ratio / resolution / image_url/image_urls(可选，可由上传接口生成)，
-后端选号 + 调用 StackAI 工作流模板，并把结果回传。
+后端选号 + 调用 ST 工作流模板，并把结果回传。
 """
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ from app.services.account_pool import (
 )
 from app.services.failure_classifier import (
     UPSTREAM_ROUTE_SCOPE,
-    classify_stackai_error,
+    classify_st_error,
     route_key as build_route_key,
 )
 from app.services.outbound_url import (
@@ -55,10 +55,10 @@ from app.services.outbound_url import (
     ensure_safe_outbound_url,
     open_safe_stream,
 )
-from app.services.stackai_client import (
-    StackAIError,
+from app.services.st_client import (
+    STError,
     extract_image_urls,
-    get_stackai_client,
+    get_st_client,
 )
 from app.services.upstream_redaction import (
     redact_upstream_data,
@@ -86,7 +86,7 @@ def _beijing_now() -> datetime:
 
 
 # ---- 上游错误抽取 ---------------------------------------------------------
-# StackAI 在节点失败时会把错误文字塞到事件的某个字段（实际位置不固定，
+# ST 在节点失败时会把错误文字塞到事件的某个字段（实际位置不固定，
 # 可能是顶层 error/error_message、progress_data.error、outputs 内部，
 # 也可能是 text/delta 里以 "Error in Node X: ..." 形式出现）。
 # 我们用关键词扫描所有字符串叶子，取最长且最具体的一段作为"上游真实错误"。
@@ -463,7 +463,6 @@ def _generation_log_dimensions(req: GenerateRequest) -> tuple[str, str]:
 class GenerateResponse(BaseModel):
     success: bool
     images: List[str] = []
-    account_id: Optional[str] = None
     response_time_ms: Optional[int] = None
     message: Optional[str] = None
     retry_after: Optional[int] = None
@@ -605,7 +604,7 @@ async def _save_generated_image(
         raise GeneratedImageSaveError(f"生成成功，但保存图片失败：下载地址不安全（{exc}）") from exc
 
     deadline = time.monotonic() + GENERATED_IMAGE_SAVE_TOTAL_TIMEOUT_SECONDS
-    headers = {"User-Agent": "stackai-image-gen/1.0 (+generated-image-downloader)"}
+    headers = {"User-Agent": "st-image-gen/1.0 (+generated-image-downloader)"}
     content_type = ""
     temp_path: Optional[Path] = None
     file_handle = None
@@ -1073,14 +1072,7 @@ async def generation_capacity(
     disk = _generated_disk_snapshot()
     return {
         "available_slots": available,
-        "in_flight": int(admission["in_flight"]),
-        "max_concurrent": guard.generation_admission.max_concurrent,
-        "active_accounts": len(accounts),
-        "account_available": max(0, account_capacity),
         "user_available": user_available,
-        "disk_free_bytes": disk["free_bytes"],
-        "disk_min_free_bytes": disk["min_free_bytes"],
-        "disk_writable_bytes": disk["writable_bytes"],
         "disk_available": disk["can_write"],
     }
 
@@ -1223,7 +1215,7 @@ async def _validate_image_url(url: str) -> None:
     用 HEAD 优先；若拿不到可靠信息则回退到 GET 流式读取。
     任何明确判定不是图片的情况都抛 HTTPException(400)，给用户清晰报错。
     若图片超过 REFERENCE_UPLOAD_MAX_BYTES，也直接拦截。
-    上游不可达 / 超时也直接报 400，这样就不会浪费一次 StackAI 调用。
+    上游不可达 / 超时也直接报 400，这样就不会浪费一次 ST 调用。
     """
     if os.getenv("SKIP_IMAGE_URL_VALIDATION", "").lower() in {"1", "true", "yes"}:
         return
@@ -1234,7 +1226,7 @@ async def _validate_image_url(url: str) -> None:
         raise HTTPException(status_code=400, detail=f"参考图 URL 不安全：{exc}") from exc
 
     timeout = httpx.Timeout(8.0, connect=5.0)
-    headers = {"User-Agent": "stackai-image-gen/1.0 (+image-url-validator)"}
+    headers = {"User-Agent": "st-image-gen/1.0 (+image-url-validator)"}
     size_limit_bytes = REFERENCE_UPLOAD_MAX_BYTES
     limit_mb = max(1, size_limit_bytes // (1024 * 1024))
     try:
@@ -1368,7 +1360,7 @@ async def generate(
     current_principal: GenerationPrincipal = Depends(require_generation_principal),
 ) -> GenerateResponse:
     pool = get_account_pool_service()
-    client = get_stackai_client()
+    client = get_st_client()
     user_auth = get_user_auth_service()
     current_user_id = current_principal.user_id
     principal_log_name = _principal_log_name(current_principal)
@@ -1464,7 +1456,7 @@ async def generate(
                 raise HTTPException(status_code=429, detail={"message": str(exc), "retry_after": 5})
 
         tried_ids: List[str] = []
-        last_error: Optional[StackAIError] = None
+        last_error: Optional[STError] = None
         started = time.time()
 
         # A credential/configuration fault may use one alternate account. A
@@ -1496,8 +1488,8 @@ async def generate(
                         status_code=last_error.status_code or 502,
                         detail={
                             "message": last_error.message,
-                            "retry_after": _retry_after_for_stackai_error(last_error),
-                            "failure_scope": _failure_scope_for_stackai_error(last_error),
+                            "retry_after": _retry_after_for_st_error(last_error),
+                            "failure_scope": _failure_scope_for_st_error(last_error),
                         },
                     )
                 raise HTTPException(
@@ -1550,7 +1542,7 @@ async def generate(
                 api_key = pool.decrypt_api_key(account)
             except ValueError as exc:
                 decrypt_message = _account_decrypt_error_message()
-                last_error = StackAIError(
+                last_error = STError(
                     decrypt_message,
                     status_code=500,
                     payload={"account_id": account.id, "account_name": account.name},
@@ -1600,7 +1592,7 @@ async def generate(
                     guard.generation_admission.release(req.model)
                     generation_slot_acquired = False
                 continue
-            # Private API Key 仅用于失败后拉 analytics；stackai 对 inference key 返回 401
+            # Private API Key 仅用于失败后拉 analytics；st 对 inference key 返回 401
             private_api_key = pool.decrypt_private_api_key(account)
             try:
                 raw = await client.run_inference(
@@ -1616,7 +1608,7 @@ async def generate(
                     or upstream_event_consumes_quota(raw)
                     or bool(images)
                 )
-            # 上游 200 但没拿到图片：判定为失败（典型场景：参考图被 StackAI 节点拉取失败）
+            # 上游 200 但没拿到图片：判定为失败（典型场景：参考图被 ST 节点拉取失败）
                 if not images:
                 # 优先从上游响应体里抽出真实错误
                     upstream_err: Optional[str] = None
@@ -1626,8 +1618,8 @@ async def generate(
                             upstream_err = s
                             upstream_err_len = len(s)
 
-                # 响应体里没线索 → 用 run_id 调 stackai analytics 拉 run detail，
-                # 从中扫错误字段（即 stackai 控制台运行详情页里展示的 Errors）。
+                # 响应体里没线索 → 用 run_id 调 st analytics 拉 run detail，
+                # 从中扫错误字段（即 st 控制台运行详情页里展示的 Errors）。
                     run_id_from_raw = raw.get("run_id") if isinstance(raw, dict) else None
                     run_detail_sync: Optional[Dict[str, Any]] = None
                     if upstream_err is None and run_id_from_raw and private_api_key:
@@ -1671,7 +1663,7 @@ async def generate(
                         log_msg,
                     )
                 # 诊断：仍没扫到错误关键词时，dump run_detail 与原始响应，
-                # 方便定位 stackai 错误字段实际叫什么
+                # 方便定位 st 错误字段实际叫什么
                     if upstream_err is None:
                         if run_detail_sync is not None:
                             try:
@@ -1775,17 +1767,16 @@ async def generate(
                 return GenerateResponse(
                     success=True,
                     images=local_images,
-                    account_id=account.id,
                     response_time_ms=elapsed_ms,
                 )
-            except StackAIError as exc:
+            except STError as exc:
                 elapsed_ms = int((time.time() - request_started) * 1000)
                 last_error = exc
                 if is_free_workflow_timeout(exc.payload):
                     user_should_count_usage = False
                 elif upstream_error_consumes_quota(exc.message, exc.payload):
                     user_should_count_usage = True
-                decision = classify_stackai_error(exc)
+                decision = classify_st_error(exc)
                 if decision.count_route_failure:
                     guard.record_upstream_failure(route, retry_after=exc.retry_after)
                 if decision.isolate_account:
@@ -1824,7 +1815,7 @@ async def generate(
                         status_code=exc.status_code or 502,
                         detail={
                             "message": exc.message,
-                            "retry_after": _retry_after_for_stackai_error(exc),
+                            "retry_after": _retry_after_for_st_error(exc),
                             "failure_scope": decision.scope,
                         },
                     )
@@ -1865,8 +1856,8 @@ async def generate(
                 detail={
                     "message": last_error.message,
                     "elapsed_ms": total_ms,
-                    "retry_after": _retry_after_for_stackai_error(last_error),
-                    "failure_scope": _failure_scope_for_stackai_error(last_error),
+                    "retry_after": _retry_after_for_st_error(last_error),
+                    "failure_scope": _failure_scope_for_st_error(last_error),
                 },
             )
         raise HTTPException(status_code=500, detail="生成失败：未知错误")
@@ -1941,7 +1932,7 @@ async def _iter_upstream_line_with_keepalive(
                 - (time.monotonic() - request_started_monotonic)
             )
             if remaining_total_seconds <= 0:
-                raise StackAIError(
+                raise STError(
                     _stream_total_timeout_message(GENERATE_STREAM_TOTAL_TIMEOUT_SECONDS),
                     status_code=504,
                     payload={
@@ -1953,7 +1944,7 @@ async def _iter_upstream_line_with_keepalive(
             waited_seconds = time.monotonic() - wait_started_monotonic
             remaining_idle_seconds = idle_timeout_seconds - waited_seconds
             if remaining_idle_seconds <= 0:
-                raise StackAIError(
+                raise STError(
                     _stream_idle_timeout_message(idle_timeout_seconds),
                     status_code=504,
                     payload={
@@ -1986,11 +1977,11 @@ async def _iter_upstream_line_with_keepalive(
                 await line_task
 
 
-def _failure_scope_for_stackai_error(exc: StackAIError) -> str:
-    return classify_stackai_error(exc).scope
+def _failure_scope_for_st_error(exc: STError) -> str:
+    return classify_st_error(exc).scope
 
 
-def _retry_after_for_stackai_error(exc: StackAIError) -> Optional[int]:
+def _retry_after_for_st_error(exc: STError) -> Optional[int]:
     if exc.retry_after is None:
         return None
     return max(1, int(float(exc.retry_after) + 0.999))
@@ -2035,7 +2026,7 @@ async def generate_stream(
     - 4xx / 5xx 都以一条 `type=error` 事件结束流。
     """
     pool = get_account_pool_service()
-    client = get_stackai_client()
+    client = get_st_client()
     user_auth = get_user_auth_service()
     current_user_id = current_principal.user_id
     principal_log_name = _principal_log_name(current_principal)
@@ -2413,9 +2404,6 @@ async def generate_stream(
                             if not start_emitted:
                                 start_event = {
                                     "type": "start",
-                                    "account_id": account_id,
-                                    "account_name": account_name,
-                                    "account_short": account_short,
                                     "mode": req.mode,
                                     "model": req.model,
                                 }
@@ -2437,7 +2425,6 @@ async def generate_stream(
                                     break
                                 saw_upstream_event = True
                                 safe_line = redact_upstream_event_text(line)
-                                yield _sse({"type": "upstream", "line": safe_line})
                                 if len(recent_raw_lines) >= raw_lines_limit:
                                     recent_raw_lines.pop(0)
                                 recent_raw_lines.append(safe_line)
@@ -2471,15 +2458,31 @@ async def generate_stream(
                                             last_total_nodes = pd["total_nodes"]
                                         if isinstance(pd.get("completed_nodes"), int):
                                             last_completed_nodes = pd["completed_nodes"]
+                                        # Only counters needed by the UI cross the trust boundary.
+                                        # Raw events can contain run IDs, workflow metadata, URLs,
+                                        # account details, or provider-specific diagnostic fields.
+                                        yield _sse(
+                                            {
+                                                "type": "progress",
+                                                "total": max(0, int(pd.get("total_nodes") or 0)),
+                                                "started": max(0, int(pd.get("started_nodes") or 0)),
+                                            }
+                                        )
+                                    if (
+                                        isinstance(outputs, dict)
+                                        and outputs
+                                        and outputs.get("type") != "stream_complete"
+                                    ):
+                                        yield _sse({"type": "result_pending"})
                         finally:
                             await upstream_stream.aclose()
-                    except StackAIError as exc:
+                    except STError as exc:
                         elapsed_ms = int((time.time() - started) * 1000)
                         if is_free_workflow_timeout(exc.payload):
                             user_should_count_usage = False
                         elif upstream_error_consumes_quota(exc.message, exc.payload):
                             user_should_count_usage = True
-                        decision = classify_stackai_error(exc)
+                        decision = classify_st_error(exc)
                         if decision.count_route_failure:
                             guard.record_upstream_failure(route, retry_after=exc.retry_after)
                         if decision.isolate_account:
@@ -2533,7 +2536,7 @@ async def generate_stream(
                                 "status_code": exc.status_code,
                                 "message": exc.message,
                                 "elapsed_ms": elapsed_ms,
-                                "retry_after": _retry_after_for_stackai_error(exc),
+                                "retry_after": _retry_after_for_st_error(exc),
                                 "failure_scope": decision.scope,
                             }
                         )
@@ -2723,9 +2726,6 @@ async def generate_stream(
                     complete_event = {
                         "type": "complete",
                         "images": local_images,
-                        "account_id": completed_account_id,
-                        "account_name": account_name,
-                        "account_short": account_short,
                         "response_time_ms": elapsed_ms,
                     }
                     yield _sse(complete_event)

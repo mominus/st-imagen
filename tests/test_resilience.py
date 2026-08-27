@@ -10,32 +10,32 @@ from app.services.failure_classifier import (
     ACCOUNT_SCOPE,
     ROUTE_CONFIG_SCOPE,
     UPSTREAM_ROUTE_SCOPE,
-    classify_stackai_error,
+    classify_st_error,
 )
 from app.services.guard import (
     RouteCircuitBreaker,
     GenerationAdmission,
 )
-from app.services.stackai_client import StackAIClient, StackAIError
+from app.services.st_client import STClient, STError
 from app.services.account_pool import AccountPoolService
 from app.routers import generate as generate_mod
 
 
 class FailureClassificationTests(unittest.TestCase):
     def test_public_throttle_is_route_scoped(self) -> None:
-        decision = classify_stackai_error(StackAIError("rate limited", 429))
+        decision = classify_st_error(STError("rate limited", 429))
         self.assertEqual(decision.scope, UPSTREAM_ROUTE_SCOPE)
         self.assertFalse(decision.isolate_account)
         self.assertFalse(decision.failover)
 
     def test_explicit_key_error_is_account_scoped(self) -> None:
-        decision = classify_stackai_error(StackAIError("invalid API key", 401))
+        decision = classify_st_error(STError("invalid API key", 401))
         self.assertEqual(decision.scope, ACCOUNT_SCOPE)
         self.assertTrue(decision.isolate_account)
         self.assertTrue(decision.failover)
 
     def test_route_configuration_error_is_local_to_selected_account(self) -> None:
-        decision = classify_stackai_error(StackAIError("flow not found", 404))
+        decision = classify_st_error(STError("flow not found", 404))
         self.assertEqual(decision.scope, ROUTE_CONFIG_SCOPE)
         self.assertTrue(decision.isolate_account)
 
@@ -70,9 +70,9 @@ class SharedClientMetadataTests(unittest.IsolatedAsyncioTestCase):
                     json={"detail": "rate limited"},
                 )
 
-        client = StackAIClient(base_url="https://example.test")
+        client = STClient(base_url="https://example.test")
         with patch.object(client, "_get_client", return_value=FakeClient()):
-            with self.assertRaises(StackAIError) as caught:
+            with self.assertRaises(STError) as caught:
                 await client.run_inference("org", "flow", "key", {"in-0": "p"})
         self.assertEqual(caught.exception.status_code, 429)
         self.assertEqual(caught.exception.retry_after, 7.0)

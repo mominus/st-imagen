@@ -115,13 +115,13 @@ function renderAccountRow(account) {
         </div>
       </td>
       <td class="col-account-org-flow" data-label="工作流">
-        <div class="account-org-flow-stack">
+        <div class="account-org-flow-group">
           <code title="org_id">${escapeHtml(account.org_id)}</code>
           <code title="flow_id">${escapeHtml(account.flow_id)}</code>
         </div>
       </td>
       <td class="col-account-load" data-label="负载">
-        <div class="metric-stack">
+        <div class="metric-group">
           <div class="metric-head">
             <strong class="mono">${fmtNumber(account.in_flight || 0)} / ${fmtNumber(account.max_inflight || 0)}</strong>
             ${badgeHtml(load.label, load.variant)}
@@ -131,7 +131,7 @@ function renderAccountRow(account) {
         </div>
       </td>
       <td class="col-account-status" data-label="状态">
-        <div class="stack-cell account-status-stack">
+        <div class="group-cell account-status-group">
           ${accountStatusBadge(account.status)}
         </div>
       </td>
@@ -421,7 +421,7 @@ function renderUserExpiry(user) {
   if (!user?.expires_at) return '<span class="table-note">永久有效</span>';
   const soon = isExpiringSoon(user);
   return `
-    <div class="stack-cell">
+    <div class="group-cell">
       <span class="mono">${escapeHtml(fmtDate(user.expires_at))}</span>
       <span class="table-note ${soon ? "table-note-warning" : ""}">${escapeHtml(fmtRelativeTime(user.expires_at))}</span>
     </div>
@@ -440,13 +440,13 @@ function renderUserRow(user) {
         </div>
       </td>
       <td class="col-user-status" data-label="状态">
-        <div class="stack-cell">
+        <div class="group-cell">
           ${userStatusBadge(lifecycle)}
           <span class="table-note">${escapeHtml(user.invite_code_id ? "邀请码注册" : "手动创建")}</span>
         </div>
       </td>
       <td class="col-user-quota" data-label="额度 / 并发">
-        <div class="metric-stack">
+        <div class="metric-group">
           <div class="metric-head">
             <strong class="mono">${escapeHtml(fmtQuota(user.daily_used || 0, user.daily_quota || 0))}</strong>
             <span class="mono">并发 ${fmtNumber(user.in_flight || 0)}/${fmtNumber(user.max_inflight || 0)}</span>
@@ -663,7 +663,7 @@ function renderInviteRow(invite) {
       </td>
       <td class="col-invite-status" data-label="状态">${inviteStatusBadge(invite.status)}</td>
       <td class="col-invite-usage" data-label="使用情况">
-        <div class="metric-stack">
+        <div class="metric-group">
           <div class="metric-head">
             <strong class="mono">${fmtNumber(invite.used_count || 0)} / ${fmtNumber(invite.max_uses || 0)}</strong>
             <span class="table-note">剩余 ${fmtNumber(remaining)}</span>
@@ -672,13 +672,13 @@ function renderInviteRow(invite) {
         </div>
       </td>
       <td class="col-invite-benefit" data-label="权益">
-        <div class="stack-cell">
+        <div class="group-cell">
           <span class="mono">额度 ${fmtNumber(invite.daily_quota || 0) || "0"}</span>
           <span class="table-note">并发 ${fmtNumber(invite.max_inflight || 0)}</span>
         </div>
       </td>
       <td class="col-invite-expiry" data-label="过期时间">
-        <div class="stack-cell">
+        <div class="group-cell">
           <span class="mono">${escapeHtml(fmtDate(invite.expires_at))}</span>
           <span class="table-note">${escapeHtml(invite.expires_at ? fmtRelativeTime(invite.expires_at) : "永久")}</span>
         </div>
@@ -908,7 +908,7 @@ function renderLogRow(log) {
   return `
     <tr>
       <td class="col-log-time" data-label="时间">
-        <div class="stack-cell">
+        <div class="group-cell">
           <span class="mono">${escapeHtml(fmtDate(log.timestamp))}</span>
           <span class="table-note">${escapeHtml(fmtRelativeTime(log.timestamp))}</span>
         </div>
@@ -932,12 +932,12 @@ function renderLogRow(log) {
         </div>
       </td>
       <td class="col-log-duration" data-label="耗时">
-        <div class="stack-cell">
+        <div class="group-cell">
           <span class="mono">${escapeHtml(fmtDuration(log.response_time_ms))}</span>
         </div>
       </td>
       <td class="col-log-status" data-label="状态">
-        <div class="stack-cell log-status-cell">
+        <div class="group-cell log-status-cell">
           ${statusBadge}
           ${log.failure_category ? `<span class="entity-meta">${escapeHtml(FAILURE_CATEGORY_LABELS[log.failure_category] || log.failure_category)}</span>` : ""}
           ${errorSnippet ? `<span class="table-note table-note-danger" title="${escapeHtml(errorMessage)}">${escapeHtml(errorSnippet)}</span>` : ""}

@@ -311,12 +311,12 @@ function bindAdminThemeToggle() {
 }
 
 function showToast(message, type = "info") {
-  const stack = $("#toastStack");
-  if (!stack) return;
+  const group = $("#toastGroup");
+  if (!group) return;
   const toast = document.createElement("div");
   toast.className = `toast toast-${type}`;
   toast.textContent = message;
-  stack.appendChild(toast);
+  group.appendChild(toast);
   requestAnimationFrame(() => toast.classList.add("show"));
   window.setTimeout(() => {
     toast.classList.remove("show");

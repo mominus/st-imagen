@@ -1,4 +1,4 @@
-"""统一的 StackAI 故障范围分类。
+"""统一的 ST 故障范围分类。
 
 分类的关键原则是：一次公共路由故障不能把所有账号变成“坏账号”。
 只有错误体明确指向凭据或 org/flow 配置时，才隔离当前账号。
@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from app.services.stackai_client import StackAIError
+from app.services.st_client import STError
 
 
 ACCOUNT_SCOPE = "account"
@@ -91,12 +91,12 @@ class FailureDecision:
     retry_after: Optional[float] = None
 
 
-def _error_text(exc: StackAIError) -> str:
+def _error_text(exc: STError) -> str:
     parts = [exc.message, str(exc.payload or "")]
     return " ".join(parts)[:12000]
 
 
-def classify_stackai_error(exc: StackAIError) -> FailureDecision:
+def classify_st_error(exc: STError) -> FailureDecision:
     """Return a conservative decision for retry, failover and isolation."""
     status = exc.status_code
     text = _error_text(exc)
