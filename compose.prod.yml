@@ -11,7 +11,10 @@ services:
       dockerfile: Dockerfile
     container_name: st-imagen-app
     env_file:
-      - .env
+      # Compose validation and image builds do not require deployment secrets.
+      # At runtime the application still fails closed if required secrets are absent.
+      - path: .env
+        required: false
     environment:
       HOST: 0.0.0.0
       PORT: "8001"
