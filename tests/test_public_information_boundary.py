@@ -43,3 +43,13 @@ def test_browser_stream_uses_sanitized_progress_events_only():
     assert 'evt.type === "upstream"' not in frontend_source
     assert '"type": "progress"' in router_source
     assert 'evt.type === "progress"' in frontend_source
+
+
+def test_public_brand_uses_the_supplied_logo_and_name():
+    html = (ROOT / "app" / "static" / "index.html").read_text(encoding="utf-8")
+    logo = ROOT / "app" / "static" / "assets" / "see-you-logo.png"
+
+    assert logo.is_file()
+    assert logo.stat().st_size > 0
+    assert html.count('src="/static/assets/see-you-logo.png"') == 2
+    assert "see you · imagen" in html
