@@ -814,6 +814,13 @@
     </div>
 
     <script src="/static/common.js"></script>
-    <script src="/static/admin.js"></script>
+    <!-- Classic scripts intentionally share the admin console's global lexical scope. -->
+    <script src="/static/admin/core.js"></script>
+    <script src="/static/admin/overview.js"></script>
+    <script src="/static/admin/resources.js"></script>
+    <script src="/static/admin/preview.js"></script>
+    <script src="/static/admin/settings.js"></script>
+    <script src="/static/admin/dialogs.js"></script>
+    <script src="/static/admin/bootstrap.js"></script>
   </body>
 </html>
