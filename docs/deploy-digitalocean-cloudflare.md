@@ -131,7 +131,7 @@ lastb -ai | head -n 30
 临时救援配置：
 
 ```bash
-cat >/etc/ssh/sshd_config.d/99-temporary-recovery.conf <<'EOF'
+cat >/etc/ssh/sshd_config.d/00-emergency-recovery.conf <<'EOF'
 PermitRootLogin yes
 PasswordAuthentication yes
 PubkeyAuthentication yes
@@ -144,7 +144,7 @@ sshd -t && systemctl reload ssh
 
 这只是救援配置，不应长期保留。**保持当前窗口不关闭**，立即完成 2.3～2.4：创建 deploy
 公钥登录，在另一个窗口验证成功；之后删除
-`/etc/ssh/sshd_config.d/99-temporary-recovery.conf`，再按 2.4 的最终策略关闭 root/password。
+`/etc/ssh/sshd_config.d/00-emergency-recovery.conf`，再按 2.4 的最终策略关闭 root/password。
 
 如果日志中出现陌生成功登录、未知公钥/用户，或者密码在没有人工操作时再次变化，应把该
 Droplet 视为已失陷：先在 DigitalOcean 做磁盘快照保留证据，然后重建；同时轮换项目 `.env`
@@ -265,7 +265,7 @@ root
 然后在 **deploy 会话**创建配置：
 
 ```bash
-sudoedit /etc/ssh/sshd_config.d/99-hardening.conf
+sudoedit /etc/ssh/sshd_config.d/00-st-imagen-hardening.conf
 ```
 
 写入：
@@ -280,13 +280,19 @@ PubkeyAuthentication yes
 
 ```bash
 sudo sshd -t
+sudo sshd -T | grep -E '^(permitrootlogin|passwordauthentication|pubkeyauthentication) '
 sudo systemctl reload ssh
 ```
+
+OpenSSH 对多数选项采用“先读到的值生效”，Ubuntu 的
+`/etc/ssh/sshd_config.d/50-cloud-init.conf` 可能已经设置认证选项，因此这里使用排在它前面的
+`00-st-imagen-hardening.conf`，并且必须用 `sshd -T` 验证最终值；不要以为编号越大就一定能
+覆盖前面的文件。
 
 再开第三个终端重新测试 `ssh deploy@$VPS_IP`。确认成功后，才可以退出最初的 root 密码会话。
 
 > `reload` 不会主动踢掉已经建立的 SSH 会话，所以保留旧窗口很重要。如果新连接失败，立即在旧窗口撤销
-> `/etc/ssh/sshd_config.d/99-hardening.conf`，或使用 DigitalOcean Recovery Console 修复。
+> `/etc/ssh/sshd_config.d/00-st-imagen-hardening.conf`，或使用 DigitalOcean Recovery Console 修复。
 
 ### 2.5 如果暂时不想配置 SSH key
 
