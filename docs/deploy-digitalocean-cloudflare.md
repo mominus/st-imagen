@@ -35,10 +35,10 @@
 
 - 系统：Ubuntu 24.04 LTS x64；
 - 临时规格：4 vCPU / 8 GiB；
-- 登录：只选 SSH key，不启用密码登录；
 - 磁盘：至少 50 GiB，并预留不少于 `.env` 中 `GENERATED_IMAGE_MIN_FREE_BYTES` 的空间；
 - 区域：选择主要用户和上游网络延迟较低的区域；
-- 建议绑定 Reserved IP，避免重建 Droplet 后再次修改 DNS。
+- 建议绑定 Reserved IP，避免重建 Droplet 后再次修改 DNS；
+- 新建机器优先选择 SSH key；**如果已经选择密码登录，不必重建 VPS**，按第 2 节安全地迁移即可。
 
 记录：
 
@@ -47,33 +47,154 @@ export VPS_IP="203.0.113.10"
 export DOMAIN="img.example.com"
 ```
 
+这里的 `export` 只是在**当前终端**给 IP 和域名起一个变量名，后续命令可以写 `$VPS_IP`，不会修改
+DigitalOcean 或 Cloudflare。重新打开终端后要再次执行，或者直接把命令里的变量换成真实值。
+
+### 1.1 先理解三层防护
+
+部署中会遇到三种不同的“防护”，它们不能互相替代：
+
+1. **DigitalOcean Cloud Firewall（云防火墙）**：在流量抵达 VPS 前过滤数据包，作用对象是 Droplet；本文的防火墙规则主要指它。
+2. **VPS 系统防火墙（例如 UFW）**：在 Ubuntu 内过滤流量。Docker 发布端口会创建自己的转发规则，因此不能把 UFW 当作 Docker 端口的唯一保护。
+3. **应用登录/权限**：管理员密码、普通用户会话和随机后台路径；它们只在请求已经到达应用后生效。
+
+### 1.2 Inbound、Outbound 和端口分别是什么
+
+- **Inbound（入站）**：互联网主动连接你的 VPS；需要严格限制。
+- **Outbound（出站）**：VPS 主动访问外部，例如下载系统更新、拉取 GitHub/Docker 镜像、访问 ST 上游；通常保留默认允许。
+- **来源 `/32`**：只允许一个 IPv4 地址。例如你的公网 IP 是 `198.51.100.25`，就填 `198.51.100.25/32`。
+
 DigitalOcean Cloud Firewall 建议规则：
 
-| 方向 | 协议/端口 | 来源/目标 |
+| 方向 | 协议/端口 | 实际用途 | 来源/目标 |
+|---|---|---|---|
+| Inbound | TCP 22 | SSH 远程管理 VPS | 仅你的当前公网 IP `/32`；IP 变化后先在控制台更新 |
+| Inbound | TCP 80 | HTTP，nginx 只把它重定向到 HTTPS | 联调期可允许全部；稳定后只允许 Cloudflare IP 段 |
+| Inbound | TCP 443 | Cloudflare 到源站 nginx 的 HTTPS | 联调期可允许全部；稳定后只允许 Cloudflare IP 段 |
+| Outbound | All traffic | apt、GitHub、Docker、DNS、NTP、ST API | 全部目标（保留 DigitalOcean 默认出站规则） |
+
+不要开放这些端口：
+
+- `8001`：仅供 Compose 内部 nginx 访问 app，宿主机不需要开放；
+- `5432`、`3306`：本项目使用本地 SQLite，没有公网数据库端口；
+- Docker API `2375/2376`：不应暴露到互联网。
+
+Cloudflare 开启橙云后，普通访客先连接 Cloudflare，再由 Cloudflare 连接 VPS 的 443。稳定运行后把 80/443
+限制为 Cloudflare 官方全部 IPv4/IPv6 网段，可以阻止访客绕过 Cloudflare 直接打源站。不要漏掉部分网段，
+否则不同地区可能间歇性出现 522。SSH 的 22 端口始终只允许你自己的 IP，不要填 Cloudflare IP。
+
+> 如果你的家庭公网 IP 经常变化，先不要贸然收紧 22；可以每次变化后在 DigitalOcean 控制台更新 `/32`，
+> 或后续使用 Tailscale/WireGuard 等管理网络。无论如何，都要保留 DigitalOcean 网页 Recovery Console 作为应急入口。
+
+## 2. 首次登录与系统加固（含“已经使用密码登录”的情况）
+
+### 2.1 为什么 Git clone 之前要做这些事
+
+全新的公网 VPS 创建后几分钟内就可能收到自动扫描和 SSH 登录尝试。这里先做的事情不是项目配置，而是建立一个
+可恢复、权限较小、打过安全补丁的主机基础：
+
+| 操作 | 做了什么 | 为什么在拉代码前做 |
 |---|---|---|
-| Inbound | TCP 22 | 仅你的固定公网 IP |
-| Inbound | TCP 80 | 初次验证可临时允许全部；稳定后只允许 Cloudflare IP 段 |
-| Inbound | TCP 443 | 初次验证可临时允许全部；稳定后只允许 Cloudflare IP 段 |
-| Outbound | All traffic | 全部目标（保留 DigitalOcean 默认出站规则） |
+| `apt update` | 更新可安装软件索引 | 避免安装过期软件包 |
+| `apt full-upgrade` | 安装系统和安全更新 | 先修补基础系统，再运行公网服务 |
+| `adduser deploy` | 创建日常运维用户和独立 home | 不长期使用权限无限的 root |
+| `usermod -aG sudo deploy` | 允许 `deploy` 在输入自己的密码后临时执行管理命令 | 普通操作低权限，危险操作显式使用 `sudo` |
+| 安装 SSH 公钥 | 让服务器用密钥验证你的电脑 | 避免把可猜测/可撞库的密码作为公网 SSH 凭证 |
+| 禁止 root 直登 | 阻止使用固定用户名 `root` 从公网直接登录 | 减少自动攻击面，也降低误操作风险 |
+| 禁止密码 SSH | 只接受持有私钥的设备 | 阻止在线密码爆破；服务器不保存可用于登录的明文密码 |
+| 自动安全更新/NTP | 自动安装重要更新并校准时间 | TLS、日志、JWT 和更新都依赖正确时间 |
 
-Cloudflare 官方会维护其公网 IP 列表。锁源站前应从 Cloudflare 官方 IP 页面复制全部 IPv4/IPv6 网段到
-DigitalOcean Cloud Firewall；不要只复制其中一部分，否则部分访客会收到 522。Docker 发布端口时不要只依赖
-UFW，因为 Docker 的端口转发规则可能先于 UFW 生效；云防火墙是源站入口的第一层限制。
+禁止 root/密码 SSH **不是第一步，也不能在公钥验证前执行**。正确顺序是：保留当前 root 密码会话 → 创建
+`deploy` → 安装公钥 → 另开窗口验证公钥和 sudo → 最后才关闭 root/密码远程登录。任何验证失败都不要继续。
 
-## 2. 首次登录与系统加固
+### 2.2 你现在使用 root 密码登录：先保留原窗口
+
+在你自己的电脑上连接（把示例 IP 换成真实 IP）：
 
 ```bash
 ssh root@"$VPS_IP"
-apt update && apt full-upgrade -y
+```
+
+输入 DigitalOcean 创建 VPS 时设置/发送的 root 密码。**登录后不要关闭这个窗口**，它是迁移 SSH 配置失败时的
+回退通道。然后在 VPS 上运行：
+
+```bash
+apt update
+apt full-upgrade -y
 adduser deploy
 usermod -aG sudo deploy
+```
+
+`adduser deploy` 会要求设置一个 `deploy` 用户密码和若干资料；资料可直接回车跳过。这个密码用于 `sudo`，在
+彻底关闭 SSH 密码认证后，仍然可以在已经登录的会话里用于 `sudo`。
+
+### 2.3 在自己的电脑生成 SSH key
+
+以下命令运行在**你自己的电脑**，不是 VPS：
+
+```bash
+ssh-keygen -t ed25519 -a 64 -C "digitalocean-st-imagen"
+```
+
+一路回车会保存到默认路径；建议为私钥设置 passphrase。生成的两个文件通常是：
+
+```text
+~/.ssh/id_ed25519      # 私钥：只留在自己的电脑，绝不能上传或发给任何人
+~/.ssh/id_ed25519.pub  # 公钥：可以放到 VPS
+```
+
+macOS、Linux 或带 `ssh-copy-id` 的环境，运行：
+
+```bash
+ssh-copy-id deploy@"$VPS_IP"
+```
+
+它会暂时使用刚创建的 `deploy` 密码登录，然后把公钥追加到
+`/home/deploy/.ssh/authorized_keys`。
+
+Windows PowerShell 没有 `ssh-copy-id` 时，可运行：
+
+```powershell
+Get-Content $env:USERPROFILE\.ssh\id_ed25519.pub | ssh deploy@<VPS_IP> "umask 077; mkdir -p ~/.ssh; cat >> ~/.ssh/authorized_keys"
+```
+
+也可以在仍打开的 root 会话里手动安装：
+
+```bash
 install -d -m 700 -o deploy -g deploy /home/deploy/.ssh
-cp /root/.ssh/authorized_keys /home/deploy/.ssh/authorized_keys
+nano /home/deploy/.ssh/authorized_keys
 chown deploy:deploy /home/deploy/.ssh/authorized_keys
 chmod 600 /home/deploy/.ssh/authorized_keys
 ```
 
-新开终端验证 `ssh deploy@$VPS_IP` 和 `sudo -v` 后，再禁用 root/密码 SSH：
+`nano` 中只粘贴 `.pub` 公钥的**一整行**，不要粘贴没有 `.pub` 后缀的私钥。
+
+### 2.4 必须另开窗口验证，再关闭密码登录
+
+保留原 root 窗口，在自己电脑另开一个终端：
+
+```bash
+ssh -o PreferredAuthentications=publickey deploy@"$VPS_IP"
+sudo -v
+whoami
+sudo whoami
+```
+
+预期：
+
+```text
+deploy
+root
+```
+
+只有同时满足以下条件才继续：
+
+- `deploy` 公钥登录成功；
+- `sudo -v` 接受 `deploy` 用户密码；
+- DigitalOcean Recovery Console 可以打开；
+- 新终端保持登录，原 root 终端也暂时不要关闭。
+
+然后在 **deploy 会话**创建配置：
 
 ```bash
 sudoedit /etc/ssh/sshd_config.d/99-hardening.conf
@@ -87,14 +208,43 @@ PasswordAuthentication no
 PubkeyAuthentication yes
 ```
 
-检查并重载：
+先检查语法；只有输出为空且退出码为 0 才重载：
 
 ```bash
 sudo sshd -t
 sudo systemctl reload ssh
 ```
 
-启用自动安全更新和时钟同步：
+再开第三个终端重新测试 `ssh deploy@$VPS_IP`。确认成功后，才可以退出最初的 root 密码会话。
+
+> `reload` 不会主动踢掉已经建立的 SSH 会话，所以保留旧窗口很重要。如果新连接失败，立即在旧窗口撤销
+> `/etc/ssh/sshd_config.d/99-hardening.conf`，或使用 DigitalOcean Recovery Console 修复。
+
+### 2.5 如果暂时不想配置 SSH key
+
+可以继续部署，但风险更高。至少应做到：
+
+1. 创建 `deploy` 用户并使用密码管理器生成的长、唯一密码；
+2. 先验证 `ssh deploy@$VPS_IP` 和 `sudo -v`；
+3. 设置 `PermitRootLogin no`，只禁用 root 远程登录；
+4. 暂时保留 `PasswordAuthentication yes`；
+5. Cloud Firewall 的 TCP 22 只允许你的公网 IP `/32`；
+6. 尽快完成第 2.3～2.4 节，再把 `PasswordAuthentication` 改为 `no`。
+
+临时配置是：
+
+```text
+PermitRootLogin no
+PasswordAuthentication yes
+PubkeyAuthentication yes
+```
+
+如果你当前无法保证 22 端口来源 IP稳定，也没有确认 Recovery Console 可用，宁可先保留密码登录，也不要冒着
+把自己锁在服务器外的风险直接复制“禁用密码”命令。
+
+### 2.6 安装基础工具、自动更新并校准时间
+
+在 `deploy` 会话运行：
 
 ```bash
 sudo apt install -y unattended-upgrades ca-certificates curl git rsync
@@ -102,6 +252,16 @@ sudo dpkg-reconfigure -plow unattended-upgrades
 sudo timedatectl set-timezone UTC
 sudo timedatectl set-ntp true
 ```
+
+检查：
+
+```bash
+timedatectl status
+git --version
+curl --version
+```
+
+到这里才进入 Docker 和项目部署步骤。前两节只改主机账户、SSH、系统更新和网络入口，尚未接触项目代码。
 
 ## 3. 按 Docker 官方仓库安装 Engine 与 Compose
 

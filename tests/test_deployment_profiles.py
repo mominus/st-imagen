@@ -42,3 +42,31 @@ def test_production_image_contains_migration_and_backup_tools():
     assert "COPY alembic.ini ./alembic.ini" in dockerfile
     assert "COPY alembic ./alembic" in dockerfile
     assert "COPY scripts ./scripts" in dockerfile
+
+
+def test_runbook_explains_safe_password_to_key_migration():
+    runbook = (ROOT / "docs" / "deploy-digitalocean-cloudflare.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "已经使用密码登录" in runbook
+    assert "保留原 root 窗口" in runbook
+    assert "ssh-keygen -t ed25519" in runbook
+    assert "PreferredAuthentications=publickey" in runbook
+    assert "PermitRootLogin no" in runbook
+    assert "PasswordAuthentication yes" in runbook
+    assert "Recovery Console" in runbook
+
+
+def test_runbook_explains_firewall_layers_and_port_purposes():
+    runbook = (ROOT / "docs" / "deploy-digitalocean-cloudflare.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "DigitalOcean Cloud Firewall（云防火墙）" in runbook
+    assert "Inbound（入站）" in runbook
+    assert "Outbound（出站）" in runbook
+    assert "TCP 22" in runbook
+    assert "TCP 80" in runbook
+    assert "TCP 443" in runbook
+    assert "不要开放这些端口" in runbook
