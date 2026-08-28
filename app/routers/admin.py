@@ -40,7 +40,7 @@ from app.services.generation_stats import get_total_generated_images
 from app.services.dashboard_analytics import get_dashboard_analytics, normalize_failure_category
 from app.services.failure_classifier import dashboard_failure_code
 from app.services.guard import get_generation_guard, get_login_throttle
-from app.services.stackai_client import StackAIError, get_stackai_client
+from app.services.st_client import STError, get_st_client
 from app.services.upstream_redaction import redact_upstream_text
 from app.services.user_auth import (
     InvalidPasswordError,
@@ -131,7 +131,7 @@ class AccountCreateRequest(BaseModel):
     org_id: str = Field(min_length=1, max_length=255)
     flow_id: str = Field(min_length=1, max_length=255)
     api_key: str = Field(min_length=1)
-    # 可选：StackAI Private API Key，仅用于失败时拉取运行详情里的 Errors 字段
+    # 可选：ST Private API Key，仅用于失败时拉取运行详情里的 Errors 字段
     private_api_key: Optional[str] = None
     # 单账号并发上限，不传使用 ACCOUNT_MAX_INFLIGHT（生产默认 10）
     max_inflight: Optional[int] = Field(default=None, ge=1, le=200)
@@ -533,7 +533,7 @@ def _runtime_config_payload(guard, pool) -> dict:
     from the live services (instead of duplicating .env defaults in the UI)
     prevents the admin console from drifting away from the running process.
     """
-    client = get_stackai_client()
+    client = get_st_client()
     worker_count = max(1, _safe_env_int("UVICORN_WORKERS", 1))
     admission = guard.generation_admission
     image_persistence = generate_mod.image_persistence_snapshot()
@@ -991,7 +991,7 @@ async def test_account(
     payload=Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
-    """用最小输入触发一次 StackAI 调用，仅用于检查账号可达性 / API Key 是否有效。"""
+    """用最小输入触发一次 ST 调用，仅用于检查账号可达性 / API Key 是否有效。"""
     pool = get_account_pool_service()
     account = await pool.get_account(session, account_id)
     if account is None:
@@ -1002,7 +1002,7 @@ async def test_account(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"解密失败：{exc}")
 
-    client = get_stackai_client()
+    client = get_st_client()
     test_payload = {
         "in-0": "a small red apple on a white table",
         "in-1": "1:1",
@@ -1024,7 +1024,7 @@ async def test_account(
             "message": "上游已应答（HTTP 200）",
             "raw_keys": list(raw.keys()) if isinstance(raw, dict) else None,
         }
-    except StackAIError as exc:
+    except STError as exc:
         return {
             "ok": False,
             "status_code": exc.status_code,

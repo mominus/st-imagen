@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""StackAI Image Gen 启动脚本"""
+"""ST Image Gen 启动脚本"""
 import os
 import sys
 from pathlib import Path
@@ -19,7 +19,7 @@ def main() -> None:
     port = int(os.getenv("PORT", "8001"))
     debug = os.getenv("DEBUG", "false").lower() == "true"
 
-    print(f"Starting StackAI Image Gen on http://{host}:{port}  debug={debug}")
+    print(f"Starting ST Image Gen on http://{host}:{port}  debug={debug}")
     uvicorn.run(
         "app.main:app",
         host=host,
