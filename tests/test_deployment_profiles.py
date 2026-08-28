@@ -70,3 +70,17 @@ def test_runbook_explains_firewall_layers_and_port_purposes():
     assert "TCP 80" in runbook
     assert "TCP 443" in runbook
     assert "不要开放这些端口" in runbook
+
+
+def test_runbook_prevents_nested_clone_and_repairs_data_permissions():
+    runbook = (ROOT / "docs" / "deploy-digitalocean-cloudflare.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "git clone <你的仓库 SSH/HTTPS 地址> /opt/st-imagen" in runbook
+    assert "/opt/st-imagen/st-imagen/.git" in runbook
+    assert "fatal: not a git repository" in runbook
+    assert "find /opt/st-imagen -maxdepth 3 -type d -name .git -print" in runbook
+    assert runbook.index("chmod 750 data") < runbook.index("sudo chown -R 10001:10001 data")
+    assert "sudo chmod 750 data" in runbook
+    assert "Operation not permitted" in runbook

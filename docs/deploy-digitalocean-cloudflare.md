@@ -289,22 +289,152 @@ docker run --rm hello-world
 
 ## 4. 拉取代码并准备持久化目录
 
+### 4.1 `/opt/st-imagen` 会不会和仓库名重复？
+
+不会。`/opt/st-imagen` 是项目在服务器上的**目标目录完整路径**，正常结构应该是：
+
+```text
+/opt/st-imagen/              ← Git 仓库根目录，也是后续命令的工作目录
+├── .git/
+├── app/
+├── compose.prod.yml
+├── Dockerfile
+└── data/
+```
+
+不应该是：
+
+```text
+/opt/st-imagen/st-imagen/.git
+```
+
+旧命令中的 `git clone <地址> .` 最后的点表示“把仓库内容克隆进当前目录”，理论上不会多一层；但漏掉最后的
+`.`，运行 `git clone <地址>` 时，Git 会根据仓库名自动再创建 `st-imagen/`，于是形成嵌套目录。为了避免初学者
+漏看这个点，下面改为使用明确的绝对目标路径。
+
+### 4.2 推荐的全新拉取命令
+
+以下命令在 `deploy` 用户会话执行。把 `<你的仓库 SSH/HTTPS 地址>` 换成 GitHub 仓库的 Clone 地址：
+
 ```bash
-sudo mkdir -p /opt/st-imagen
-sudo chown deploy:deploy /opt/st-imagen
+cd /opt
+sudo install -d -m 755 -o deploy -g deploy /opt/st-imagen
+git clone <你的仓库 SSH/HTTPS 地址> /opt/st-imagen
 cd /opt/st-imagen
-git clone <你的仓库 SSH/HTTPS 地址> .
-git checkout main
-mkdir -p data/uploads/generated data/backups deploy/certs
-sudo chown -R 10001:10001 data
-chmod 750 data
 ```
 
-确认当前版本：
+马上确认当前位置确实是仓库根目录：
 
 ```bash
-git rev-parse --short HEAD
+pwd
+test -d .git || { echo "错误：当前目录不是 Git 仓库根目录"; exit 1; }
+git status --short --branch
+git checkout main
+git pull --ff-only
 ```
+
+`pwd` 必须输出 `/opt/st-imagen`，并且 `test -d .git` 必须成功。以后执行 `git status`、`git pull`、
+`docker compose` 前，都应先 `cd /opt/st-imagen`。
+
+### 4.3 `fatal: not a git repository` 是什么意思？
+
+它表示**当前目录以及所有父目录都找不到 `.git/`**，不是文件权限错误。最常见的原因是：
+
+1. 你在 `/opt/st-imagen`，但实际仓库被克隆到了 `/opt/st-imagen/st-imagen`；
+2. `git clone` 因认证或网络错误失败，但后续命令仍继续执行；
+3. 重新登录 VPS 后回到了 `/home/deploy`，忘记先 `cd /opt/st-imagen`。
+
+先查找仓库实际位置：
+
+```bash
+pwd
+find /opt/st-imagen -maxdepth 3 -type d -name .git -print
+```
+
+如果输出：
+
+```text
+/opt/st-imagen/st-imagen/.git
+```
+
+说明确实多嵌套了一层。你有两种处理方式。
+
+**方式 A：刚开始部署、没有 `.env`、证书或业务数据时，推荐清理后重拉：**
+
+```bash
+cd /opt
+sudo rm -rf /opt/st-imagen
+sudo install -d -m 755 -o deploy -g deploy /opt/st-imagen
+git clone <你的仓库 SSH/HTTPS 地址> /opt/st-imagen
+cd /opt/st-imagen
+test -d .git && git status --short --branch
+```
+
+执行 `rm -rf` 前必须确认这还是全新部署，里面没有需要保留的 `.env`、`deploy/certs` 或 `data`。如果已有
+任何业务数据，不要删除，先备份。
+
+**方式 B：不清理，继续使用嵌套目录：**
+
+```bash
+cd /opt/st-imagen/st-imagen
+test -d .git && git status --short --branch
+```
+
+这种方式功能上也能运行，但本手册后面所有 `/opt/st-imagen` 都要替换成
+`/opt/st-imagen/st-imagen`，更容易继续混淆，所以新部署优先使用方式 A。
+
+如果 `find` 完全没有输出，应向上查看原始 `git clone` 错误并重新克隆；常见原因是私有仓库未配置 GitHub SSH
+key，或 HTTPS 地址需要 Personal Access Token。不要在 GitHub 密码提示中输入账号登录密码。
+
+### 4.4 创建 `data/` 并解释权限错误
+
+进入已经验证过的仓库根目录：
+
+```bash
+cd /opt/st-imagen
+mkdir -p data/uploads/generated data/backups deploy/certs
+chmod 750 data
+sudo chown -R 10001:10001 data
+```
+
+顺序很重要：
+
+1. `mkdir` 时目录属于 `deploy`，所以 `deploy` 可以执行 `chmod 750 data`；
+2. 最后把 `data/` 所有权交给 UID/GID `10001`，这是 app 容器里的非 root 用户；
+3. 所有权交出后，宿主机的 `deploy` 用户不能再直接 chmod 或写 `data/`，这是预期的最小权限结果。
+
+你遇到：
+
+```text
+chmod: changing permissions of 'data': Operation not permitted
+```
+
+是因为旧手册先执行了 `sudo chown -R 10001:10001 data`，随后又让已经不是所有者的 `deploy` 执行普通
+`chmod`。这是手册命令顺序的问题。已经执行到这里时不用重建，直接修复：
+
+```bash
+cd <实际的仓库根目录>
+sudo chmod 750 data
+sudo chown -R 10001:10001 data
+ls -ldn data data/uploads data/uploads/generated
+```
+
+`ls -ldn` 中 `data` 的 owner/group 预期为数值 `10001 10001`。今后需要从宿主机调整 `data/` 权限时使用
+`sudo`；容器会以 10001 身份正常读写它。
+
+### 4.5 最终检查
+
+```bash
+cd /opt/st-imagen
+pwd
+test -d .git
+test -f compose.prod.yml
+test -d data/uploads/generated
+git rev-parse --short HEAD
+ls -ldn data
+```
+
+以上命令全部成功后，再进入 `.env` 配置。如果你选择保留嵌套目录，应把第一行改成真实仓库根目录。
 
 ## 5. 配置 `.env`
 
