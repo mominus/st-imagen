@@ -51,5 +51,7 @@ def test_public_brand_uses_the_supplied_logo_and_name():
 
     assert logo.is_file()
     assert logo.stat().st_size > 0
+    assert logo.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
     assert html.count('src="/static/assets/see-you-logo.png"') == 2
+    assert "<title>see you · imagen — 让想象，显影</title>" in html
     assert "see you · imagen" in html
