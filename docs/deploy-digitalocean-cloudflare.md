@@ -604,6 +604,43 @@ docker compose $COMPOSE_FILES logs --tail=100 nginx
 `root:root 600 ...origin.key`，`nginx -t` 显示配置语法检查成功。只重建 nginx 即可，
 无需删除数据库、重新克隆仓库或重建 app 镜像。
 
+### 7.2 nginx 报 `chown("/var/cache/nginx/client_temp", 101) failed`
+
+如果证书权限修好后紧接着出现：
+
+```text
+chown("/var/cache/nginx/client_temp", 101) failed (1: Operation not permitted)
+```
+
+说明旧版 `compose.prod.yml` 在 `cap_drop: ALL` 后只恢复了绑定 80/443 端口所需的
+`NET_BIND_SERVICE`，却没有保留官方 nginx 镜像在启动时准备临时目录、再把 worker
+降权到 UID 101 所需的 `CHOWN`、`SETGID`、`SETUID`。这不是证书的新问题，也不要
+对 `/var/cache/nginx` 执行宿主机 `chmod 777`。
+
+先确认当前仓库已经包含四项最小 capability：
+
+```bash
+cd /opt/st-imagen
+git pull --ff-only
+sed -n '/cap_add:/,/logging:/p' compose.prod.yml
+```
+
+应该看到 `CHOWN`、`NET_BIND_SERVICE`、`SETGID`、`SETUID`。然后校验合并配置并重建
+nginx：
+
+```bash
+export COMPOSE_FILES='-f compose.prod.yml -f compose.cloudflare.yml -f compose.4c8g.yml'
+docker compose $COMPOSE_FILES config --quiet
+docker compose $COMPOSE_FILES config | sed -n '/cap_add:/,/cap_drop:/p'
+docker compose $COMPOSE_FILES up -d --force-recreate nginx
+docker compose $COMPOSE_FILES ps
+docker compose $COMPOSE_FILES logs --tail=100 nginx
+```
+
+这些 capability 仅用于 nginx root master 完成目录所有权调整、监听低端口并把 worker
+降权；`cap_drop: ALL`、`no-new-privileges:true` 以及只读证书挂载仍然保留。无需添加
+`privileged: true`，也无需修改证书权限或删除 `/var/cache/nginx`。
+
 新数据库会由应用初始化。已有数据库升级时执行：
 
 ```bash

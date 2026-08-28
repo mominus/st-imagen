@@ -25,6 +25,7 @@ def test_4c8g_profile_relaxes_resources_without_adding_workers():
 
 
 def test_cloudflare_profile_mounts_origin_certificate_and_https_proxy():
+    production_nginx = _yaml("compose.prod.yml")["services"]["nginx"]
     nginx = _yaml("compose.cloudflare.yml")["services"]["nginx"]
     config = (ROOT / "deploy" / "nginx.cloudflare.conf").read_text(encoding="utf-8")
 
@@ -34,6 +35,14 @@ def test_cloudflare_profile_mounts_origin_certificate_and_https_proxy():
     assert "listen 443 ssl;" in config
     assert "ssl_protocols TLSv1.2 TLSv1.3;" in config
     assert "proxy_buffering off;" in config
+    assert production_nginx["cap_drop"] == ["ALL"]
+    assert set(production_nginx["cap_add"]) == {
+        "CHOWN",
+        "NET_BIND_SERVICE",
+        "SETGID",
+        "SETUID",
+    }
+    assert production_nginx["security_opt"] == ["no-new-privileges:true"]
 
 
 def test_production_image_contains_migration_and_backup_tools():
@@ -103,3 +112,16 @@ def test_runbook_secures_and_repairs_cloudflare_certificate_permissions():
     assert "root:root" in cert_readme
     assert "0644" in cert_readme
     assert "0600" in cert_readme
+
+
+def test_runbook_repairs_nginx_temp_directory_capability_failure():
+    runbook = (ROOT / "docs" / "deploy-digitalocean-cloudflare.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'chown("/var/cache/nginx/client_temp", 101) failed' in runbook
+    assert "CHOWN" in runbook
+    assert "SETGID" in runbook
+    assert "SETUID" in runbook
+    assert "chmod 777" in runbook
+    assert "docker compose $COMPOSE_FILES up -d --force-recreate nginx" in runbook
