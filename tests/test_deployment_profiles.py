@@ -53,35 +53,36 @@ def test_production_image_contains_migration_and_backup_tools():
     assert "COPY scripts ./scripts" in dockerfile
 
 
-def test_runbook_explains_safe_password_to_key_migration():
+def test_runbook_uses_ssh_key_as_the_only_normal_deployment_path():
     runbook = (ROOT / "docs" / "deploy-digitalocean-cloudflare.md").read_text(
         encoding="utf-8"
     )
 
-    assert "已经使用密码登录" in runbook
-    assert "保留原 root 窗口" in runbook
-    assert "ssh-keygen -t ed25519" in runbook
-    assert "PreferredAuthentications=publickey" in runbook
-    assert "PermitRootLogin no" in runbook
-    assert "PasswordAuthentication yes" in runbook
-    assert "Recovery Console" in runbook
+    normal_path = runbook[: runbook.index("## 12. 集中故障排查")]
+    assert "创建 DigitalOcean Droplet（使用 SSH key）" in normal_path
+    assert "Authentication Method" in normal_path
+    assert "不选择 Password" in normal_path
+    assert "PreferredAuthentications=publickey" in normal_path
+    assert "00-st-imagen-hardening.conf" in normal_path
+    assert "PermitRootLogin no" in normal_path
+    assert "PasswordAuthentication no" in normal_path
+    assert normal_path.index("独立窗口验证 deploy key") < normal_path.index(
+        "最后才关闭 root/password SSH"
+    )
 
 
-def test_runbook_keeps_password_only_root_access_until_key_is_verified():
+def test_runbook_moves_password_recovery_out_of_the_normal_path():
     runbook = (ROOT / "docs" / "deploy-digitalocean-cloudflare.md").read_text(
         encoding="utf-8"
     )
 
-    assert "只有 root 密码时的红线与失联恢复" in runbook
-    assert "Access → Reset Root Password" in runbook
-    assert "sshd -T -C user=root" in runbook
-    assert "00-emergency-recovery.conf" in runbook
-    assert "PermitRootLogin yes" in runbook
-    assert "passwd -S root" in runbook
-    assert "跳过 2.3 和 2.4" in runbook
-    assert "Droplet 视为已失陷" in runbook
-    assert "00-st-imagen-hardening.conf" in runbook
-    assert "先读到的值生效" in runbook
+    troubleshooting = runbook[runbook.index("## 12. 集中故障排查") :]
+    assert "Access → Reset Root Password" in troubleshooting
+    assert "sshd -T -C user=root" in troubleshooting
+    assert "00-emergency-recovery.conf" in troubleshooting
+    assert "PermitRootLogin yes" in troubleshooting
+    assert "passwd -S root" in troubleshooting
+    assert "Droplet 视为已失陷" in troubleshooting
 
 
 def test_runbook_explains_firewall_layers_and_port_purposes():
@@ -169,3 +170,20 @@ def test_runbook_repairs_public_upload_permissions_without_exposing_database():
     assert "sudo find data/uploads -type f -exec chmod 644 {} +" in runbook
     assert "exec --user 101 nginx" in runbook
     assert "不要对整个 `data` 执行 `chmod -R 755`" in runbook
+
+
+def test_runbook_keeps_known_failures_in_one_troubleshooting_section():
+    runbook = (ROOT / "docs" / "deploy-digitalocean-cloudflare.md").read_text(
+        encoding="utf-8"
+    )
+
+    troubleshooting_at = runbook.index("## 12. 集中故障排查")
+    for marker in (
+        "fatal: not a git repository",
+        "Operation not permitted",
+        "登录正常但生图 502",
+        "cannot load certificate",
+        'chown(\"/var/cache/nginx/client_temp\", 101) failed',
+    ):
+        assert runbook.index(marker) > troubleshooting_at
+    assert "正常部署只按 1～11 节顺序执行" in runbook
