@@ -1,0 +1,10 @@
+# Cloudflare Origin CA HTTPS 覆盖层。
+# 证书只保存在服务器 deploy/certs/，不得提交到 Git。
+services:
+  nginx:
+    volumes:
+      - ./deploy/nginx.cloudflare.conf:/etc/nginx/nginx.conf:ro
+      - ./deploy/certs/origin.pem:/etc/nginx/certs/origin.pem:ro
+      - ./deploy/certs/origin.key:/etc/nginx/certs/origin.key:ro
+    ports:
+      - "443:443"

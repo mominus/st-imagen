@@ -15,3 +15,7 @@ data/uploads/
 *.log
 .pytest_cache/
 .DS_Store
+
+# Server-only TLS private material
+deploy/certs/*.pem
+deploy/certs/*.key
