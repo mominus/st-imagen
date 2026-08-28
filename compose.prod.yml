@@ -89,7 +89,12 @@ services:
     cap_drop:
       - ALL
     cap_add:
+      # 官方 nginx 镜像以 root master 启动，再准备临时目录并降权到 nginx 用户。
+      # 只恢复完成该启动流程所需的最小 capability 集合。
+      - CHOWN
       - NET_BIND_SERVICE
+      - SETGID
+      - SETUID
     logging:
       options:
         max-size: "10m"

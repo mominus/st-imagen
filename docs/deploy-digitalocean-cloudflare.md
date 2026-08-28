@@ -512,17 +512,23 @@ Cloudflare → **SSL/TLS → Origin Server → Create certificate**：
 
 ```bash
 cd /opt/st-imagen
-install -m 600 /dev/null deploy/certs/origin.pem
-install -m 600 /dev/null deploy/certs/origin.key
-nano deploy/certs/origin.pem
-nano deploy/certs/origin.key
+sudo install -o root -g root -m 644 /dev/null deploy/certs/origin.pem
+sudo install -o root -g root -m 600 /dev/null deploy/certs/origin.key
+sudoedit deploy/certs/origin.pem
+sudoedit deploy/certs/origin.key
+sudo chown root:root deploy/certs/origin.pem deploy/certs/origin.key
+sudo chmod 644 deploy/certs/origin.pem
+sudo chmod 600 deploy/certs/origin.key
 ```
 
-粘贴时保留完整的 `BEGIN/END` 行。检查证书：
+粘贴时保留完整的 `BEGIN/END` 行。证书本身不含私钥，可以是 `644`；私钥必须保持
+`600`。这里特意让两者归 `root:root`：生产 Compose 删除了 nginx 的文件权限绕过
+能力，若文件归普通 `deploy` 用户且为 `600`，容器内 nginx 主进程即使是 UID 0 也可能
+收到 `Permission denied`。检查证书：
 
 ```bash
-openssl x509 -in deploy/certs/origin.pem -noout -subject -issuer -dates
-openssl pkey -in deploy/certs/origin.key -check -noout
+sudo openssl x509 -in deploy/certs/origin.pem -noout -subject -issuer -dates
+sudo openssl pkey -in deploy/certs/origin.key -check -noout
 ```
 
 Cloudflare → **SSL/TLS → Overview** 设置为 **Full (strict)**，不要使用 Flexible。随后可开启：
@@ -548,12 +554,12 @@ docker compose $COMPOSE_FILES config --quiet
 docker compose $COMPOSE_FILES config > /tmp/st-imagen.compose.yml
 ```
 
-确认密钥文件存在且不可被其他用户读取：
+确认文件存在，且所有者/权限分别为 `root:root 644` 和 `root:root 600`：
 
 ```bash
 test -s deploy/certs/origin.pem
-test -s deploy/certs/origin.key
-stat -c '%a %n' .env deploy/certs/origin.*
+sudo test -s deploy/certs/origin.key
+sudo stat -c '%U:%G %a %n' deploy/certs/origin.pem deploy/certs/origin.key
 ```
 
 启动：
@@ -563,6 +569,77 @@ docker compose $COMPOSE_FILES up -d --build
 docker compose $COMPOSE_FILES ps
 docker compose $COMPOSE_FILES logs --tail=200 app nginx
 ```
+
+### 7.1 nginx 报 `cannot load certificate ... Permission denied`
+
+日志里的 `/docker-entrypoint.d/ is not empty`、`Launching ...` 和
+`Configuration complete` 都是官方 nginx 镜像的正常启动信息。真正导致退出的是带
+`[emerg]` 的这一行：
+
+```text
+cannot load certificate "/etc/nginx/certs/origin.pem": ... Permission denied
+```
+
+这通常表示证书是由 `deploy` 用户以 `600` 创建的。宿主机 bind mount 会保留数值所有者
+和权限，而本项目又通过 `cap_drop: ALL` 收紧了 nginx；不要通过给私钥 `644`、恢复全部
+capability 或使用 `privileged` 来绕过。直接在宿主机修复所有权和最小权限：
+
+```bash
+cd /opt/st-imagen
+sudo chown root:root deploy/certs/origin.pem deploy/certs/origin.key
+sudo chmod 644 deploy/certs/origin.pem
+sudo chmod 600 deploy/certs/origin.key
+sudo stat -c '%U:%G %a %n' deploy/certs/origin.pem deploy/certs/origin.key
+sudo openssl x509 -in deploy/certs/origin.pem -noout -subject -issuer -dates
+sudo openssl pkey -in deploy/certs/origin.key -check -noout
+
+export COMPOSE_FILES='-f compose.prod.yml -f compose.cloudflare.yml -f compose.4c8g.yml'
+docker compose $COMPOSE_FILES run --rm --no-deps nginx nginx -t
+docker compose $COMPOSE_FILES up -d --force-recreate nginx
+docker compose $COMPOSE_FILES ps
+docker compose $COMPOSE_FILES logs --tail=100 nginx
+```
+
+预期 `stat` 显示 `root:root 644 ...origin.pem` 和
+`root:root 600 ...origin.key`，`nginx -t` 显示配置语法检查成功。只重建 nginx 即可，
+无需删除数据库、重新克隆仓库或重建 app 镜像。
+
+### 7.2 nginx 报 `chown("/var/cache/nginx/client_temp", 101) failed`
+
+如果证书权限修好后紧接着出现：
+
+```text
+chown("/var/cache/nginx/client_temp", 101) failed (1: Operation not permitted)
+```
+
+说明旧版 `compose.prod.yml` 在 `cap_drop: ALL` 后只恢复了绑定 80/443 端口所需的
+`NET_BIND_SERVICE`，却没有保留官方 nginx 镜像在启动时准备临时目录、再把 worker
+降权到 UID 101 所需的 `CHOWN`、`SETGID`、`SETUID`。这不是证书的新问题，也不要
+对 `/var/cache/nginx` 执行宿主机 `chmod 777`。
+
+先确认当前仓库已经包含四项最小 capability：
+
+```bash
+cd /opt/st-imagen
+git pull --ff-only
+sed -n '/cap_add:/,/logging:/p' compose.prod.yml
+```
+
+应该看到 `CHOWN`、`NET_BIND_SERVICE`、`SETGID`、`SETUID`。然后校验合并配置并重建
+nginx：
+
+```bash
+export COMPOSE_FILES='-f compose.prod.yml -f compose.cloudflare.yml -f compose.4c8g.yml'
+docker compose $COMPOSE_FILES config --quiet
+docker compose $COMPOSE_FILES config | sed -n '/cap_add:/,/cap_drop:/p'
+docker compose $COMPOSE_FILES up -d --force-recreate nginx
+docker compose $COMPOSE_FILES ps
+docker compose $COMPOSE_FILES logs --tail=100 nginx
+```
+
+这些 capability 仅用于 nginx root master 完成目录所有权调整、监听低端口并把 worker
+降权；`cap_drop: ALL`、`no-new-privileges:true` 以及只读证书挂载仍然保留。无需添加
+`privileged: true`，也无需修改证书权限或删除 `/var/cache/nginx`。
 
 新数据库会由应用初始化。已有数据库升级时执行：
 
@@ -693,7 +770,11 @@ cd /opt/st-imagen
 sha256sum -c /home/deploy/st-imagen-final.tgz.sha256
 sudo tar --acls --xattrs -xzf /home/deploy/st-imagen-final.tgz -C /opt/st-imagen
 sudo chown -R 10001:10001 data
-chmod 600 .env deploy/certs/origin.key deploy/certs/origin.pem
+sudo chown deploy:deploy .env
+sudo chmod 600 .env
+sudo chown root:root deploy/certs/origin.pem deploy/certs/origin.key
+sudo chmod 644 deploy/certs/origin.pem
+sudo chmod 600 deploy/certs/origin.key
 ```
 
 **2C2G 启动时不要再包含 `compose.4c8g.yml`：**
