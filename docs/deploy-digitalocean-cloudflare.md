@@ -76,7 +76,10 @@ Console/Recovery 页面可用；22 端口不要填 Cloudflare IP。
 
 ### 2.1 首次登录并创建运维用户
 
-在本机连接：
+在**自己的电脑/Termius**连接。看到 `root@ubuntu...#` 就说明你仍在 VPS 内，不能在那里
+运行这条登录测试。
+
+**本机执行：**
 
 ```bash
 ssh -o PreferredAuthentications=publickey root@"$VPS_IP"
@@ -91,17 +94,28 @@ apt full-upgrade -y
 adduser deploy
 usermod -aG sudo deploy
 install -d -m 700 -o deploy -g deploy /home/deploy/.ssh
-cp /root/.ssh/authorized_keys /home/deploy/.ssh/authorized_keys
-chown deploy:deploy /home/deploy/.ssh/authorized_keys
-chmod 600 /home/deploy/.ssh/authorized_keys
+install -m 600 -o deploy -g deploy \
+  /root/.ssh/authorized_keys /home/deploy/.ssh/authorized_keys
 ```
 
 ### 2.2 独立窗口验证 deploy key 和 sudo
 
-另开 Termius/终端窗口：
+此时**不要在 `root@ubuntu...#` 后运行 ssh**。服务器只有公钥，没有你电脑上的私钥；从
+VPS 连接它自己必然会得到 `Permission denied (publickey)`，也绝不能为了测试把私钥上传
+到 VPS。
+
+在自己的电脑另开一个 Termius 标签页/本地终端，并选择创建 Droplet 时使用的**同一把
+私钥**。Termius 中应为这个 Host 的 Identity/Key 指定对应 Keychain 私钥，然后运行：
 
 ```bash
-ssh -o PreferredAuthentications=publickey deploy@"$VPS_IP"
+ssh -o IdentitiesOnly=yes -o PreferredAuthentications=publickey \
+  -i ~/.ssh/id_ed25519 deploy@"$VPS_IP"
+```
+
+如果 Termius 已经通过界面选好了私钥，直接新建 `deploy` 连接即可，不需要在 Termius
+终端中输入 `-i`。成功进入后，提示符应从本机变为 `deploy@ubuntu...$`，再运行：
+
+```bash
 sudo -v
 whoami
 sudo whoami
@@ -254,7 +268,7 @@ ST_TRUST_ENV=false
 - `GENERATION_GLOBAL_MAX_CONCURRENT` 和各账号 `max_inflight` 仍应按上游承载能力压测后设置，CPU 变多不代表上游额度变多。
 
 `ST_BASE_URL` 必须是上游 API 根地址，不是本站域名、网页首页、示例占位符或具体
-`/inference/...` 路径。保存配置后继续第 6 节；如果后台测试返回 502，再查第 12.4 节，
+`/inference/...` 路径。保存配置后继续第 6 节；如果后台测试返回 502，再查第 12.5 节，
 不要在正常部署流程中提前启动半配置状态的容器。
 
 ## 6. 在 Cloudflare 创建 DNS 与 Origin CA 证书
@@ -527,7 +541,38 @@ sshd -T -C user=root,host="$(hostname)",addr="你的当前公网IP" \
 验证 deploy key 后必须删除。若存在陌生登录/公钥或密码自行变化，把 Droplet 视为已失陷并
 重建、轮换所有密钥。不要长期退回密码部署。
 
-### 12.2 仓库目录错误
+### 12.2 deploy 报 `Permission denied (publickey)`
+
+先确认测试发起位置：如果命令前的提示符是 `root@ubuntu...#`，你是在 VPS 上错误地连接
+VPS 自己；退出这个测试，在本机 Termius 新标签页选择原私钥后连接。首次出现主机指纹询问
+并不代表公钥认证成功，它只是在确认服务器身份。
+
+若测试确实来自自己的电脑，保留 VPS root 窗口，在 VPS 修复公钥文件：
+
+```bash
+install -d -m 700 -o deploy -g deploy /home/deploy/.ssh
+install -m 600 -o deploy -g deploy \
+  /root/.ssh/authorized_keys /home/deploy/.ssh/authorized_keys
+chown deploy:deploy /home/deploy /home/deploy/.ssh /home/deploy/.ssh/authorized_keys
+chmod 755 /home/deploy
+chmod 700 /home/deploy/.ssh
+chmod 600 /home/deploy/.ssh/authorized_keys
+namei -l /home/deploy/.ssh/authorized_keys
+sshd -T -C user=deploy,host="$(hostname)",addr="你的当前公网IP" \
+  | grep -E '^(pubkeyauthentication|authorizedkeysfile) '
+journalctl -u ssh --since "10 minutes ago" --no-pager | tail -n 100
+```
+
+随后在**本机**使用详细日志和明确私钥重试：
+
+```bash
+ssh -vvv -o IdentitiesOnly=yes -i ~/.ssh/id_ed25519 deploy@"$VPS_IP"
+```
+
+不要把 `id_ed25519` 私钥复制到服务器。仍失败时检查 Termius 选择的 Keychain 条目是否就是
+创建 Droplet 时绑定公钥所对应的私钥，而不是另一个同名或旧密钥。
+
+### 12.3 仓库目录错误
 
 `fatal: not a git repository` 时：
 
@@ -538,7 +583,7 @@ find /opt/st-imagen -maxdepth 3 -type d -name .git -print
 若看到 `/opt/st-imagen/st-imagen/.git`，说明旧命令克隆了嵌套目录；全新且无数据时删除后按
 第 4 节重新克隆。已有 `.env`、证书或数据时先备份，不能直接 `rm -rf`。
 
-### 12.3 `data` 权限或图片 `Permission denied`
+### 12.4 `data` 权限或图片 `Permission denied`
 
 `chmod: ... Operation not permitted` 是宿主机 deploy 已不再拥有 UID 10001 文件。
 存储计数增加但 nginx 日志出现
@@ -557,7 +602,7 @@ docker compose $COMPOSE_FILES exec --user 101 nginx test -r "/srv/uploads/genera
 
 不要对整个 `data` 执行 `chmod -R 755`；数据库仍需保护。权限立即生效，无需重启容器。
 
-### 12.4 登录正常但生图 502 非 JSON
+### 12.5 登录正常但生图 502 非 JSON
 
 确认 `.env` 的 `ST_BASE_URL` 是真实上游 API 根地址，不是本站域名、
 `https://upstream.example.com` 或具体 inference 路径。修改后必须 `--force-recreate app`。
@@ -575,7 +620,7 @@ UPSTREAMPY
 
 错误中的 HTTP 状态、Content-Type 和大小可区分 HTML 拦截页与空响应，不要公开响应正文。
 
-### 12.5 nginx 证书不可读
+### 12.6 nginx 证书不可读
 
 `cannot load certificate ... Permission denied`：
 
@@ -586,7 +631,7 @@ sudo chmod 600 deploy/certs/origin.key
 docker compose $COMPOSE_FILES run --rm --no-deps nginx nginx -t
 ```
 
-### 12.6 nginx 临时目录不能 chown
+### 12.7 nginx 临时目录不能 chown
 
 `chown("/var/cache/nginx/client_temp", 101) failed` 表示旧版 Compose 缺 capability。更新代码，
 确认 `compose.prod.yml` 的 `cap_add` 包含 `CHOWN`、`NET_BIND_SERVICE`、`SETGID`、`SETUID`，然后：
