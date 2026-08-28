@@ -394,14 +394,17 @@ key，或 HTTPS 地址需要 Personal Access Token。不要在 GitHub 密码提�
 cd /opt/st-imagen
 mkdir -p data/uploads/generated data/backups deploy/certs
 chmod 750 data
+chmod 755 data/uploads data/uploads/generated
 sudo chown -R 10001:10001 data
 ```
 
 顺序很重要：
 
 1. `mkdir` 时目录属于 `deploy`，所以 `deploy` 可以执行 `chmod 750 data`；
-2. 最后把 `data/` 所有权交给 UID/GID `10001`，这是 app 容器里的非 root 用户；
-3. 所有权交出后，宿主机的 `deploy` 用户不能再直接 chmod 或写 `data/`，这是预期的最小权限结果。
+2. `data` 本身保持 `750` 保护数据库，而公开提供的 `data/uploads` 目录必须是 `755`，
+   让 nginx 的 UID 101 可以遍历和读取；
+3. 最后把 `data/` 所有权交给 UID/GID `10001`，这是 app 容器里的非 root 用户；
+4. 所有权交出后，宿主机的 `deploy` 用户不能再直接 chmod 或写 `data/`，这是预期的最小权限结果。
 
 你遇到：
 
@@ -416,13 +419,46 @@ chmod: changing permissions of 'data': Operation not permitted
 cd <实际的仓库根目录>
 sudo chmod 750 data
 sudo chown -R 10001:10001 data
+sudo find data/uploads -type d -exec chmod 755 {} +
+sudo find data/uploads -type f -exec chmod 644 {} +
 ls -ldn data data/uploads data/uploads/generated
 ```
 
 `ls -ldn` 中 `data` 的 owner/group 预期为数值 `10001 10001`。今后需要从宿主机调整 `data/` 权限时使用
 `sudo`；容器会以 10001 身份正常读写它。
 
-### 4.5 最终检查
+### 4.5 图片已生成但 nginx 报 `/srv/uploads/... Permission denied`
+
+存储概览数量增加、但首页和后台图片刚生成就显示“已被清理或丢失”，同时 nginx 日志出现：
+
+```text
+open() "/srv/uploads/generated/gen-....jpg" failed (13: Permission denied)
+```
+
+表示文件没有丢失，数据库记录和图片文件都已写入，只是 nginx worker（UID 101）不能
+遍历 UID 10001 创建的目录，或不能读取由 `mkstemp` 以 `600` 创建的文件。立即修复已有
+文件：
+
+```bash
+cd /opt/st-imagen
+sudo chown -R 10001:10001 data
+sudo chmod 750 data
+sudo find data/uploads -type d -exec chmod 755 {} +
+sudo find data/uploads -type f -exec chmod 644 {} +
+
+export COMPOSE_FILES='-f compose.prod.yml -f compose.cloudflare.yml -f compose.4c8g.yml'
+IMAGE=$(find data/uploads/generated -maxdepth 1 -type f -printf '%f\n' | head -n 1)
+test -n "$IMAGE"
+docker compose $COMPOSE_FILES exec --user 101 nginx \
+  test -r "/srv/uploads/generated/$IMAGE" && echo "nginx can read: $IMAGE"
+```
+
+文件权限立即生效，无需 reload、restart 或重建任何容器，刷新浏览器即可。
+不要对整个 `data` 执行 `chmod -R 755`：其中还包含数据库和备份；只将本来就通过 `/uploads/`
+公开的目录设为 `755`、文件设为 `644`。新版应用也会在发布新图片前主动设置这些权限，
+避免新文件再次变成 `600`。
+
+### 4.6 最终检查
 
 ```bash
 cd /opt/st-imagen
@@ -479,6 +515,53 @@ ST_TRUST_ENV=false
 - 同源部署可把 `CORS_ORIGINS` 留空；若填写，必须是精确 HTTPS Origin，末尾不加 `/`；
 - 4C8G 覆盖层已经把连接池和下载并发放宽，不要为了利用 4 核把 worker 改成 4；
 - `GENERATION_GLOBAL_MAX_CONCURRENT` 和各账号 `max_inflight` 仍应按上游承载能力压测后设置，CPU 变多不代表上游额度变多。
+
+### 5.1 校验上游地址（避免登录正常但生图 502）
+
+`ST_BASE_URL` 是应用服务器访问的**上游 API 根地址**，不是本站域名、Cloudflare 域名、
+上游网页首页，也不能保留 `.env.example` 中的 `https://upstream.example.com`。同样不要
+在末尾填写 `/inference/v0/run/...` 或 `/inference/v0/stream/...`，这些路径由应用自动拼接。
+登录、用户和账号管理只访问本地数据库，因此它们正常并不能证明该地址正确。
+
+保存 `.env` 后，先检查容器最终拿到的值。以下命令不会输出 API key：
+
+```bash
+cd /opt/st-imagen
+export COMPOSE_FILES='-f compose.prod.yml -f compose.cloudflare.yml -f compose.4c8g.yml'
+docker compose $COMPOSE_FILES up -d --force-recreate app
+docker compose $COMPOSE_FILES exec app python - <<'PY'
+import os
+from urllib.parse import urlsplit
+
+value = os.environ.get("ST_BASE_URL", "")
+parsed = urlsplit(value)
+print("ST_BASE_URL =", value)
+print("scheme      =", parsed.scheme)
+print("host        =", parsed.hostname)
+print("path        =", parsed.path or "/")
+print("ST_TRUST_ENV=", os.environ.get("ST_TRUST_ENV"))
+PY
+```
+
+正确结果应使用上游服务商提供的 API 主机，`path` 通常为 `/`。修改 `.env` 后必须
+`--force-recreate app`；单纯 `docker compose restart app` 不会把新环境变量写进旧容器。
+
+若后台账号测试显示 `502 上游返回非 JSON`，代表请求确实收到 HTTP 响应，但响应体是
+HTML、空内容或其他非 JSON 数据。最常见原因是 `ST_BASE_URL` 指向网站首页、反向代理
+错误页或被上游/CDN 拦截。新版错误会同时显示 HTTP 状态、`Content-Type` 和响应字节数，
+但不会把可能包含敏感信息的响应正文发送到浏览器。依次检查：
+
+1. `ST_BASE_URL` 是否为真实 API 根地址，而不是本站 `PUBLIC_BASE_URL`；
+2. 是否仍为 `upstream.example.com` 或带有尖括号的说明文字；
+3. 是否误带具体 `inference` 路径；
+4. VPS 是否必须使用代理；不需要代理时保持 `ST_TRUST_ENV=false`；
+5. 修改后是否重建了 app 容器，再重新执行后台“测试账号”。
+
+进一步查看服务端日志（不要把 `.env`、API key 或完整响应正文贴到公开工单）：
+
+```bash
+docker compose $COMPOSE_FILES logs --since=10m --tail=300 app
+```
 
 ## 6. 在 Cloudflare 创建 DNS 与 Origin CA 证书
 
@@ -646,6 +729,9 @@ docker compose $COMPOSE_FILES logs --tail=100 nginx
 ```bash
 docker compose $COMPOSE_FILES run --rm app alembic upgrade head
 sudo chown -R 10001:10001 data
+sudo chmod 750 data
+sudo find data/uploads -type d -exec chmod 755 {} +
+sudo find data/uploads -type f -exec chmod 644 {} +
 ```
 
 如果是迁移前就存在、但从未接入 Alembic 的旧数据库，请先备份，再按项目 README 的基线版本执行
@@ -770,6 +856,9 @@ cd /opt/st-imagen
 sha256sum -c /home/deploy/st-imagen-final.tgz.sha256
 sudo tar --acls --xattrs -xzf /home/deploy/st-imagen-final.tgz -C /opt/st-imagen
 sudo chown -R 10001:10001 data
+sudo chmod 750 data
+sudo find data/uploads -type d -exec chmod 755 {} +
+sudo find data/uploads -type f -exec chmod 644 {} +
 sudo chown deploy:deploy .env
 sudo chmod 600 .env
 sudo chown root:root deploy/certs/origin.pem deploy/certs/origin.key

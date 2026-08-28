@@ -201,6 +201,8 @@ REFERENCE_UPLOAD_DIR = Path(
     os.getenv("UPLOADS_DIR") or (Path(__file__).resolve().parents[2] / "data" / "uploads")
 ).resolve()
 GENERATED_IMAGE_DIR = (REFERENCE_UPLOAD_DIR / "generated").resolve()
+PUBLIC_UPLOAD_DIR_MODE = 0o755
+PUBLIC_UPLOAD_FILE_MODE = 0o644
 GENERATED_IMAGE_MAX_BYTES = int(os.getenv("GENERATED_IMAGE_MAX_BYTES", str(50 * 1024 * 1024)))
 GENERATED_IMAGE_MIN_FREE_BYTES = max(
     0,
@@ -542,6 +544,7 @@ def _generated_disk_snapshot() -> Dict[str, Any]:
     """Return a cheap local-disk admission snapshot for generated images."""
     try:
         GENERATED_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+        GENERATED_IMAGE_DIR.chmod(PUBLIC_UPLOAD_DIR_MODE)
         usage = shutil.disk_usage(GENERATED_IMAGE_DIR)
         writable_bytes = max(0, int(usage.free) - GENERATED_IMAGE_MIN_FREE_BYTES)
         return {
@@ -769,6 +772,9 @@ async def _save_generated_image(
     filename = f"gen-{_beijing_now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex}{suffix}"
     target = GENERATED_IMAGE_DIR / filename
     try:
+        # mkstemp intentionally creates mode 0600. Make the completed image
+        # readable by the separate nginx worker before atomically publishing it.
+        temp_path.chmod(PUBLIC_UPLOAD_FILE_MODE)
         os.replace(temp_path, target)
         temp_path = None
     finally:
@@ -1149,6 +1155,7 @@ async def upload_reference_image(
         raise HTTPException(status_code=400, detail="只支持上传图片文件")
 
     REFERENCE_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    REFERENCE_UPLOAD_DIR.chmod(PUBLIC_UPLOAD_DIR_MODE)
     # 流式分块落盘：内存占用恒定（一个 chunk），不再整文件读入。
     # 先写 .tmp，魔数校验通过后改名为最终文件；失败则清理半成品。
     token = uuid.uuid4().hex
@@ -1185,6 +1192,7 @@ async def upload_reference_image(
 
     filename = f"ref-{token}{suffix}"
     target = REFERENCE_UPLOAD_DIR / filename
+    await asyncio.to_thread(tmp_target.chmod, PUBLIC_UPLOAD_FILE_MODE)
     await asyncio.to_thread(tmp_target.rename, target)
     await _maybe_cleanup_uploads()
 

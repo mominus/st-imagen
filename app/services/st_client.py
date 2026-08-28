@@ -17,6 +17,7 @@ import logging
 import os
 import time
 from typing import Any, AsyncGenerator, Dict, Optional
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -98,6 +99,25 @@ class STClient:
     def _endpoint(self, path: str) -> str:
         if not self.base_url:
             raise STError("上游服务未配置", status_code=503)
+        parsed = urlsplit(self.base_url)
+        hostname = (parsed.hostname or "").lower()
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not hostname
+            or hostname == "upstream.example.com"
+            or hostname.endswith(".example.com")
+            or "<" in self.base_url
+            or ">" in self.base_url
+        ):
+            raise STError(
+                "ST_BASE_URL 不是有效的上游 API 根地址，请检查服务器 .env",
+                status_code=503,
+            )
+        if "/inference/" in f"{parsed.path.rstrip('/')}/":
+            raise STError(
+                "ST_BASE_URL 应填写上游 API 根地址，不能包含 inference 接口路径",
+                status_code=503,
+            )
         return f"{self.base_url}{path}"
 
     @staticmethod
@@ -217,8 +237,12 @@ class STClient:
         try:
             return resp.json()
         except Exception as exc:
+            content = getattr(resp, "content", b"") or b""
+            content_type = str(resp.headers.get("content-type") or "未提供").split(";", 1)[0]
+            response_kind = "空响应" if not content else f"{len(content)} 字节响应"
             raise STError(
-                f"上游返回非 JSON: {exc}",
+                "上游返回非 JSON"
+                f"（HTTP {resp.status_code}，Content-Type {content_type}，{response_kind}）: {exc}",
                 status_code=502,
                 payload={"raw": resp.text[:2000]},
                 headers={str(k).lower(): str(v) for k, v in dict(resp.headers).items()},
