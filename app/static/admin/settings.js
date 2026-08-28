@@ -139,6 +139,8 @@ function renderRuntimeConfig(config) {
   const formatSeconds = (value) => {
     const number = Number(value);
     if (!Number.isFinite(number)) return "—";
+    if (number >= 3600 && number % 3600 === 0) return `${number / 3600}小时`;
+    if (number >= 60 && number % 60 === 0) return `${number / 60}分钟`;
     return `${Number.isInteger(number) ? number : number.toFixed(1)}s`;
   };
   const workerLabel = process.single_worker_ok === false
@@ -270,4 +272,3 @@ function bindSettingsPage() {
     if (resetBtn) resetBtn.addEventListener("click", () => resetRetentionField(field));
   });
 }
-

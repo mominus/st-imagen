@@ -606,6 +606,7 @@ button {
 .admin-welcome-meta { margin: 8px 0 0; color: var(--admin-ink-soft); font-size: 13px; }
 .admin-welcome-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
 .admin-ui .overview-uptime { padding: 7px 10px; border: 1px solid var(--admin-success); border-radius: 7px; color: var(--admin-success); background: var(--admin-success-soft); font-size: 11px; }
+.admin-ui .overview-sync-blocks { color: var(--admin-ink-soft); font-size: 11px; white-space: nowrap; }
 .admin-ui .overview-uptime.hero-pill-danger { border-color: var(--admin-danger); color: var(--admin-danger); background: var(--admin-danger-soft); }
 
 .admin-ui .stat-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
@@ -3745,13 +3746,21 @@ td strong {
 
 .login-card-mark {
   display: flex;
+  align-items: center;
   justify-content: center;
+  gap: 10px;
 }
 
 .login-brand-mark {
   width: 42px;
   height: 42px;
-  font-size: 16px;
+}
+
+.login-brand-name {
+  font-family: var(--font-display);
+  color: var(--paper);
+  font-size: 20px;
+  font-style: italic;
 }
 
 .login-eyebrow {
