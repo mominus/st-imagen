@@ -480,6 +480,53 @@ ST_TRUST_ENV=false
 - 4C8G 覆盖层已经把连接池和下载并发放宽，不要为了利用 4 核把 worker 改成 4；
 - `GENERATION_GLOBAL_MAX_CONCURRENT` 和各账号 `max_inflight` 仍应按上游承载能力压测后设置，CPU 变多不代表上游额度变多。
 
+### 5.1 校验上游地址（避免登录正常但生图 502）
+
+`ST_BASE_URL` 是应用服务器访问的**上游 API 根地址**，不是本站域名、Cloudflare 域名、
+上游网页首页，也不能保留 `.env.example` 中的 `https://upstream.example.com`。同样不要
+在末尾填写 `/inference/v0/run/...` 或 `/inference/v0/stream/...`，这些路径由应用自动拼接。
+登录、用户和账号管理只访问本地数据库，因此它们正常并不能证明该地址正确。
+
+保存 `.env` 后，先检查容器最终拿到的值。以下命令不会输出 API key：
+
+```bash
+cd /opt/st-imagen
+export COMPOSE_FILES='-f compose.prod.yml -f compose.cloudflare.yml -f compose.4c8g.yml'
+docker compose $COMPOSE_FILES up -d --force-recreate app
+docker compose $COMPOSE_FILES exec app python - <<'PY'
+import os
+from urllib.parse import urlsplit
+
+value = os.environ.get("ST_BASE_URL", "")
+parsed = urlsplit(value)
+print("ST_BASE_URL =", value)
+print("scheme      =", parsed.scheme)
+print("host        =", parsed.hostname)
+print("path        =", parsed.path or "/")
+print("ST_TRUST_ENV=", os.environ.get("ST_TRUST_ENV"))
+PY
+```
+
+正确结果应使用上游服务商提供的 API 主机，`path` 通常为 `/`。修改 `.env` 后必须
+`--force-recreate app`；单纯 `docker compose restart app` 不会把新环境变量写进旧容器。
+
+若后台账号测试显示 `502 上游返回非 JSON`，代表请求确实收到 HTTP 响应，但响应体是
+HTML、空内容或其他非 JSON 数据。最常见原因是 `ST_BASE_URL` 指向网站首页、反向代理
+错误页或被上游/CDN 拦截。新版错误会同时显示 HTTP 状态、`Content-Type` 和响应字节数，
+但不会把可能包含敏感信息的响应正文发送到浏览器。依次检查：
+
+1. `ST_BASE_URL` 是否为真实 API 根地址，而不是本站 `PUBLIC_BASE_URL`；
+2. 是否仍为 `upstream.example.com` 或带有尖括号的说明文字；
+3. 是否误带具体 `inference` 路径；
+4. VPS 是否必须使用代理；不需要代理时保持 `ST_TRUST_ENV=false`；
+5. 修改后是否重建了 app 容器，再重新执行后台“测试账号”。
+
+进一步查看服务端日志（不要把 `.env`、API key 或完整响应正文贴到公开工单）：
+
+```bash
+docker compose $COMPOSE_FILES logs --since=10m --tail=300 app
+```
+
 ## 6. 在 Cloudflare 创建 DNS 与 Origin CA 证书
 
 ### 6.1 DNS

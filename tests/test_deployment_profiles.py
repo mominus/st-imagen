@@ -125,3 +125,17 @@ def test_runbook_repairs_nginx_temp_directory_capability_failure():
     assert "SETUID" in runbook
     assert "chmod 777" in runbook
     assert "docker compose $COMPOSE_FILES up -d --force-recreate nginx" in runbook
+
+
+def test_runbook_diagnoses_non_json_upstream_responses_without_printing_keys():
+    runbook = (ROOT / "docs" / "deploy-digitalocean-cloudflare.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "登录正常但生图 502" in runbook
+    assert "https://upstream.example.com" in runbook
+    assert "不是本站域名" in runbook
+    assert "--force-recreate app" in runbook
+    assert 'os.environ.get("ST_BASE_URL", "")' in runbook
+    assert "不会输出 API key" in runbook
+    assert "Content-Type" in runbook

@@ -79,6 +79,46 @@ class SharedClientMetadataTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(caught.exception.request_id, "req-123")
         self.assertEqual(caught.exception.payload["detail"], "rate limited")
 
+    async def test_placeholder_base_url_is_rejected_before_request(self) -> None:
+        client = STClient(base_url="https://upstream.example.com")
+
+        with self.assertRaises(STError) as caught:
+            await client.run_inference("org", "flow", "key", {"in-0": "p"})
+
+        self.assertEqual(caught.exception.status_code, 503)
+        self.assertIn("ST_BASE_URL", caught.exception.message)
+
+    async def test_specific_inference_path_is_rejected(self) -> None:
+        client = STClient(base_url="https://api.example.test/inference/v0/run/org/flow")
+
+        with self.assertRaises(STError) as caught:
+            await client.run_inference("org", "flow", "key", {"in-0": "p"})
+
+        self.assertEqual(caught.exception.status_code, 503)
+        self.assertIn("根地址", caught.exception.message)
+
+    async def test_non_json_response_reports_safe_metadata(self) -> None:
+        class FakeClient:
+            async def post(self, *args, **kwargs):
+                import httpx
+
+                return httpx.Response(
+                    200,
+                    headers={"Content-Type": "text/html; charset=utf-8"},
+                    content=b"<html>gateway page</html>",
+                )
+
+        client = STClient(base_url="https://api.example.test")
+        with patch.object(client, "_get_client", return_value=FakeClient()):
+            with self.assertRaises(STError) as caught:
+                await client.run_inference("org", "flow", "key", {"in-0": "p"})
+
+        self.assertEqual(caught.exception.status_code, 502)
+        self.assertIn("HTTP 200", caught.exception.message)
+        self.assertIn("Content-Type text/html", caught.exception.message)
+        self.assertIn("25 字节响应", caught.exception.message)
+        self.assertNotIn("gateway page", caught.exception.message)
+
 
 class GenerationAdmissionTests(unittest.IsolatedAsyncioTestCase):
     async def test_sixty_slots_admit_and_sixty_first_is_rejected_immediately(self) -> None:
