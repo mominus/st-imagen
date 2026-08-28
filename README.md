@@ -153,6 +153,8 @@ http://localhost:8001/<你的 ADMIN_PATH>
 
 ## 生产部署（Docker Compose）
 
+> DigitalOcean 4C8G 临时部署、Cloudflare Origin CA、完整安全加固、验收、备份以及之后迁移到阿里云 2C2G 的逐步操作，见 [DigitalOcean + Cloudflare 部署手册](docs/deploy-digitalocean-cloudflare.md)。
+
 生产编排按单机 `2c2g` 设计：FastAPI 固定单 worker，由 nginx 提供静态文件和 SSE 反向代理。首次部署准备干净的数据目录即可，SQLite 数据库和图片会在容器启动后自动创建。
 
 ```bash

@@ -11,6 +11,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
 COPY run.py ./run.py
+COPY alembic.ini ./alembic.ini
+COPY alembic ./alembic
+COPY scripts ./scripts
 COPY README.md ./README.md
 
 RUN addgroup --system --gid 10001 app && \
