@@ -90,29 +90,6 @@ function getShanghaiDateParts(value) {
   }
 }
 
-// 工作流节点名 → 人话阶段文案（实测从 StackAI 流式协议中收集到的节点名）
-const NODE_LABELS = {
-  prompt: "读取提示词",
-  model: "选择模型",
-  aspect_ratio: "设置画面比例",
-  resolution: "设置分辨率",
-  image_size: "计算图像尺寸",
-  image: "读取参考图",
-  image_url: "读取参考图",
-  "Has Image?": "判断生成模式",
-  "Text to Image 1": "文生图渲染中",
-  "Image-to-Image Transform": "图生图渲染中",
-  "Generated Image URL": "整理结果",
-};
-
-function nodeLabel(name) {
-  if (!name) return "准备中";
-  if (NODE_LABELS[name]) return NODE_LABELS[name];
-  // 兼容带连字符 / 连字符变形
-  const norm = String(name).replace(/-/g, "_");
-  return NODE_LABELS[norm] || name;
-}
-
 function setLoading(loading) {
   const btn = $("#generateBtn");
   const label = $("#genLabel");
@@ -1440,38 +1417,19 @@ async function generate() {
       }
       if (evt.type === "start") {
         pushStage("已连接上游，准备调度工作流…", 10);
-      } else if (evt.type === "upstream") {
-        // 从原文中提取 progress_data，转换为阶段文案
-        let parsed = null;
-        try {
-          parsed = JSON.parse(evt.line);
-        } catch (_) {
-          parsed = null;
+      } else if (evt.type === "progress") {
+        const total = Math.max(0, Number(evt.total) || 0);
+        const started = Math.max(0, Number(evt.started) || 0);
+        if (total > 0) {
+          const fillPct = Math.min(94, Math.round(10 + (started / total) * 80));
+          pushStage(
+            `[${Math.min(started, total)}/${total}] 生成处理中…`,
+            Math.max(stage.fill, fillPct),
+          );
+          stage.enteredUpstream = true;
         }
-        if (parsed && typeof parsed === "object") {
-          const pd = parsed.progress_data;
-          if (pd && typeof pd.total_nodes === "number" && pd.total_nodes > 0) {
-            const total = pd.total_nodes;
-            const started = Math.max(0, Number(pd.started_nodes) || 0);
-            const cur = pd.current_node;
-            const fillPct = Math.min(94, Math.round(10 + (started / total) * 80));
-            const prefix = `[${Math.min(started, total)}/${total}]`;
-            pushStage(
-              cur ? `${prefix} ${nodeLabel(cur)}…` : `${prefix} 准备中…`,
-              Math.max(stage.fill, fillPct),
-            );
-            stage.enteredUpstream = true;
-          }
-          const outputs = parsed.outputs;
-          if (
-            outputs &&
-            typeof outputs === "object" &&
-            Object.keys(outputs).length > 0 &&
-            outputs.type !== "stream_complete"
-          ) {
-            pushStage("获取生成结果…", 96);
-          }
-        }
+      } else if (evt.type === "result_pending") {
+        pushStage("获取生成结果…", 96);
       } else if (evt.type === "complete") {
         completed = true;
         metaParts.upstream_ms = evt.response_time_ms;

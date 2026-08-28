@@ -10,7 +10,7 @@ from app.models.database import Account, Admin, InviteCode, User
 from app.services import account_pool as account_pool_mod
 from app.services import auth as auth_mod
 from app.services import outbound_url as outbound_url_mod
-from app.services import stackai_client as stackai_client_mod
+from app.services import st_client as st_client_mod
 from app.services import user_auth as user_auth_mod
 from app.services.crypto import CryptoService
 
@@ -444,14 +444,14 @@ class UserAuthServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
-class StackAIClientTests(unittest.IsolatedAsyncioTestCase):
+class STClientTests(unittest.IsolatedAsyncioTestCase):
     async def test_stream_inference_text2img_reuses_shared_client(self) -> None:
         FakeAsyncClient.instances = []
-        client = stackai_client_mod.StackAIClient(base_url="https://stackai.example")
+        client = st_client_mod.STClient(base_url="https://st.example")
         shared_client = FakeAsyncClient()
 
         with patch.object(client, "_get_client", return_value=shared_client):
-            with patch("app.services.stackai_client.httpx.AsyncClient", FakeAsyncClient):
+            with patch("app.services.st_client.httpx.AsyncClient", FakeAsyncClient):
                 agen = client.stream_inference(
                     "org-1",
                     "flow-1",
@@ -468,16 +468,16 @@ class StackAIClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(shared_client.calls[0]["method"], "POST")
         self.assertEqual(
             shared_client.calls[0]["url"],
-            "https://stackai.example/inference/v0/stream/org-1/flow-1",
+            "https://st.example/inference/v0/stream/org-1/flow-1",
         )
 
     async def test_stream_inference_img2img_reuses_shared_client(self) -> None:
         FakeAsyncClient.instances = []
-        client = stackai_client_mod.StackAIClient(base_url="https://stackai.example")
+        client = st_client_mod.STClient(base_url="https://st.example")
         shared_client = FakeAsyncClient()
 
         with patch.object(client, "_get_client", return_value=shared_client):
-            with patch("app.services.stackai_client.httpx.AsyncClient", FakeAsyncClient):
+            with patch("app.services.st_client.httpx.AsyncClient", FakeAsyncClient):
                 agen = client.stream_inference(
                     "org-1",
                     "flow-1",
@@ -494,7 +494,7 @@ class StackAIClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(shared_client.calls[0]["method"], "POST")
         self.assertEqual(
             shared_client.calls[0]["url"],
-            "https://stackai.example/inference/v0/stream/org-1/flow-1",
+            "https://st.example/inference/v0/stream/org-1/flow-1",
         )
 
 

@@ -274,7 +274,7 @@ class RuntimeConfigPayloadTests(unittest.TestCase):
             stream_read_timeout=330.0,
         )
 
-        with patch("app.routers.admin.get_stackai_client", return_value=client):
+        with patch("app.routers.admin.get_st_client", return_value=client):
             payload = _runtime_config_payload(guard, pool)
 
         self.assertEqual(payload["generation"]["admission_mode"], "reject_when_full")

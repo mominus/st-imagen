@@ -39,7 +39,7 @@ from app.routers.generate import close_downloads_client
 from app.services.account_pool import get_account_pool_service
 from app.services.auth import get_auth_service
 from app.services.database_maintenance import remove_expired_sessions, remove_old_generation_logs
-from app.services.stackai_client import close_stackai_client
+from app.services.st_client import close_st_client
 from app.services.user_auth import get_user_auth_service
 
 logging.basicConfig(level=logging.INFO)
@@ -59,11 +59,11 @@ logger.info(
     env_fingerprint("ENCRYPTION_KEY"),
 )
 logger.info(
-    "runtime config: DEBUG=%s STACKAI_TIMEOUT_SECONDS=%s STACKAI_CONNECT_TIMEOUT_SECONDS=%s STACKAI_STREAM_READ_TIMEOUT_SECONDS=%s",
+    "runtime config: DEBUG=%s ST_TIMEOUT_SECONDS=%s ST_CONNECT_TIMEOUT_SECONDS=%s ST_STREAM_READ_TIMEOUT_SECONDS=%s",
     (os.getenv("DEBUG") or "false").strip().lower(),
-    os.getenv("STACKAI_TIMEOUT_SECONDS", "270"),
-    os.getenv("STACKAI_CONNECT_TIMEOUT_SECONDS", "10"),
-    os.getenv("STACKAI_STREAM_READ_TIMEOUT_SECONDS", "330"),
+    os.getenv("ST_TIMEOUT_SECONDS", "270"),
+    os.getenv("ST_CONNECT_TIMEOUT_SECONDS", "10"),
+    os.getenv("ST_STREAM_READ_TIMEOUT_SECONDS", "330"),
 )
 raw_encryption_key = (os.getenv("ENCRYPTION_KEY") or "").strip()
 if not raw_encryption_key:
@@ -130,15 +130,15 @@ async def lifespan(_app: FastAPI):
     await get_auth_service().ensure_default_admin()
 
     print("=" * 60)
-    print(f" StackAI Image Gen v{APP_VERSION}")
+    print(f" ST Image Gen v{APP_VERSION}")
     print(" Frontend  : /")
     print(f" Admin page: /{ADMIN_PATH}")
     print("=" * 60)
     yield
     try:
-        await close_stackai_client()
+        await close_st_client()
     except Exception:
-        logger.exception("Failed to close stackai client")
+        logger.exception("Failed to close st client")
     try:
         await close_downloads_client()
     except Exception:
@@ -152,8 +152,8 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(
-    title="StackAI Image Gen",
-    description="多账号 StackAI 图像生成代理",
+    title="ST Image Gen",
+    description="多账号 ST 图像生成代理",
     version=APP_VERSION,
     docs_url=None,
     redoc_url=None,
@@ -213,6 +213,8 @@ async def cache_control_middleware(request: Request, call_next):
         if path.startswith(prefix):
             response.headers.setdefault("Cache-Control", value)
             break
+    if path.startswith("/api/") and "Cache-Control" not in response.headers:
+        response.headers["Cache-Control"] = "no-store"
     response.headers["X-Request-ID"] = request_id
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
     response.headers.setdefault("Referrer-Policy", "same-origin")
@@ -242,12 +244,12 @@ upload_path.mkdir(parents=True, exist_ok=True)
 
 @app.get("/health")
 async def health() -> dict:
-    return {"status": "ok", "version": APP_VERSION}
+    return {"status": "ok"}
 
 
 @app.get("/health/live")
 async def health_live() -> dict:
-    return {"status": "ok", "version": APP_VERSION}
+    return {"status": "ok"}
 
 
 @app.get("/health/ready")
@@ -266,7 +268,6 @@ async def health_ready() -> JSONResponse:
     try:
         free_bytes = shutil.disk_usage(upload_path).free
         minimum = max(0, int(os.getenv("GENERATED_IMAGE_MIN_FREE_BYTES", "0")))
-        checks["disk_free_bytes"] = free_bytes
         checks["disk"] = "ok" if free_bytes >= minimum else "insufficient"
         if free_bytes < minimum:
             status_code = 503
