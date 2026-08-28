@@ -53,18 +53,39 @@ def test_production_image_contains_migration_and_backup_tools():
     assert "COPY scripts ./scripts" in dockerfile
 
 
-def test_runbook_explains_safe_password_to_key_migration():
+def test_runbook_uses_ssh_key_as_the_only_normal_deployment_path():
     runbook = (ROOT / "docs" / "deploy-digitalocean-cloudflare.md").read_text(
         encoding="utf-8"
     )
 
-    assert "已经使用密码登录" in runbook
-    assert "保留原 root 窗口" in runbook
-    assert "ssh-keygen -t ed25519" in runbook
-    assert "PreferredAuthentications=publickey" in runbook
-    assert "PermitRootLogin no" in runbook
-    assert "PasswordAuthentication yes" in runbook
-    assert "Recovery Console" in runbook
+    normal_path = runbook[: runbook.index("## 12. 集中故障排查")]
+    assert "创建 DigitalOcean Droplet（使用 SSH key）" in normal_path
+    assert "Authentication Method" in normal_path
+    assert "不选择 Password" in normal_path
+    assert "PreferredAuthentications=publickey" in normal_path
+    assert "00-st-imagen-hardening.conf" in normal_path
+    assert "PermitRootLogin no" in normal_path
+    assert "PasswordAuthentication no" in normal_path
+    assert "不要在 `root@ubuntu...#` 后运行 ssh" in normal_path
+    assert "IdentitiesOnly=yes" in normal_path
+    assert "绝不能为了测试把私钥上传" in normal_path
+    assert normal_path.index("独立窗口验证 deploy key") < normal_path.index(
+        "最后才关闭 root/password SSH"
+    )
+
+
+def test_runbook_moves_password_recovery_out_of_the_normal_path():
+    runbook = (ROOT / "docs" / "deploy-digitalocean-cloudflare.md").read_text(
+        encoding="utf-8"
+    )
+
+    troubleshooting = runbook[runbook.index("## 12. 集中故障排查") :]
+    assert "Access → Reset Root Password" in troubleshooting
+    assert "sshd -T -C user=root" in troubleshooting
+    assert "00-emergency-recovery.conf" in troubleshooting
+    assert "PermitRootLogin yes" in troubleshooting
+    assert "passwd -S root" in troubleshooting
+    assert "Droplet 视为已失陷" in troubleshooting
 
 
 def test_runbook_explains_firewall_layers_and_port_purposes():
@@ -152,3 +173,33 @@ def test_runbook_repairs_public_upload_permissions_without_exposing_database():
     assert "sudo find data/uploads -type f -exec chmod 644 {} +" in runbook
     assert "exec --user 101 nginx" in runbook
     assert "不要对整个 `data` 执行 `chmod -R 755`" in runbook
+
+
+def test_runbook_keeps_known_failures_in_one_troubleshooting_section():
+    runbook = (ROOT / "docs" / "deploy-digitalocean-cloudflare.md").read_text(
+        encoding="utf-8"
+    )
+
+    troubleshooting_at = runbook.index("## 12. 集中故障排查")
+    for marker in (
+        "fatal: not a git repository",
+        "Operation not permitted",
+        "登录正常但生图 502",
+        "cannot load certificate",
+        'chown(\"/var/cache/nginx/client_temp\", 101) failed',
+    ):
+        assert runbook.index(marker) > troubleshooting_at
+    assert "正常部署只按 1～11 节顺序执行" in runbook
+
+
+def test_runbook_diagnoses_deploy_public_key_from_the_local_machine():
+    runbook = (ROOT / "docs" / "deploy-digitalocean-cloudflare.md").read_text(
+        encoding="utf-8"
+    )
+    troubleshooting = runbook[runbook.index("## 12. 集中故障排查") :]
+
+    assert "deploy 报 `Permission denied (publickey)`" in troubleshooting
+    assert "VPS 上错误地连接" in troubleshooting
+    assert "namei -l /home/deploy/.ssh/authorized_keys" in troubleshooting
+    assert "ssh -vvv -o IdentitiesOnly=yes" in troubleshooting
+    assert "不要把 `id_ed25519` 私钥复制到服务器" in troubleshooting
