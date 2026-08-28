@@ -214,14 +214,21 @@ sudo chown -R 10001:10001 data
 
 ```bash
 pwd
-test -d .git
-test -f compose.prod.yml
-test -d data/uploads/generated
+test -d .git || { echo "错误：当前目录不是 Git 仓库"; exit 1; }
+test -f compose.prod.yml || { echo "错误：缺少 compose.prod.yml"; exit 1; }
+sudo test -d data/uploads/generated || { echo "错误：缺少 uploads/generated"; exit 1; }
 git rev-parse --short HEAD
-ls -ldn data data/uploads data/uploads/generated
+sudo ls -ldn data data/uploads data/uploads/generated
+sudo setpriv --reuid=10001 --regid=10001 --clear-groups \
+  test -w data/uploads/generated \
+  && echo "app UID 10001 can write generated uploads"
 ```
 
-`pwd` 必须是 `/opt/st-imagen`，而不是 `/opt/st-imagen/st-imagen`。
+`pwd` 必须是 `/opt/st-imagen`，而不是 `/opt/st-imagen/st-imagen`。这里对子目录使用
+`sudo` 是有意的：上一段已将 `data` 设为 UID 10001 所有、mode `750`，普通 deploy 用户
+不能穿过它查看数据库或 uploads；这不影响 app 写入和 nginx 的独立只读挂载。这里用
+`setpriv` 模拟容器的数值 UID/GID，因为宿主机 `/etc/passwd` 没有名为 `10001` 的用户，
+部分 sudo 配置会拒绝 `sudo -u '#10001'` 并报告 `unknown user #10001`。
 
 ## 5. 配置 `.env`
 
@@ -305,11 +312,34 @@ Cloudflare → **SSL/TLS → Origin Server → Create certificate**：
 cd /opt/st-imagen
 sudo install -o root -g root -m 644 /dev/null deploy/certs/origin.pem
 sudo install -o root -g root -m 600 /dev/null deploy/certs/origin.key
-sudoedit deploy/certs/origin.pem
-sudoedit deploy/certs/origin.key
+```
+
+`install` 成功时不会输出任何内容；它只是创建两个 root 所有的空文件。不要在 Git 仓库内
+对这些文件使用 `sudoedit`：其安全检查会因为父目录可由 deploy 写入而拒绝，并显示
+`editing files in a writable directory is not permitted`。
+
+先执行下面一条命令，终端会等待输入。粘贴 Cloudflare 的完整 **Origin Certificate**
+（包括 `BEGIN CERTIFICATE` / `END CERTIFICATE`），然后单独按一次 `Ctrl+D` 保存：
+
+```bash
+sudo tee deploy/certs/origin.pem >/dev/null
+```
+
+再执行下面一条，粘贴完整 **Private Key**（包括私钥的 `BEGIN` / `END` 行），按
+`Ctrl+D` 保存：
+
+```bash
+sudo tee deploy/certs/origin.key >/dev/null
+```
+
+最后统一确认所有权和权限：
+
+```bash
 sudo chown root:root deploy/certs/origin.pem deploy/certs/origin.key
 sudo chmod 644 deploy/certs/origin.pem
 sudo chmod 600 deploy/certs/origin.key
+sudo test -s deploy/certs/origin.pem || { echo "错误：origin.pem 为空"; exit 1; }
+sudo test -s deploy/certs/origin.key || { echo "错误：origin.key 为空"; exit 1; }
 ```
 
 粘贴时保留完整的 `BEGIN/END` 行。证书本身不含私钥，可以是 `644`；私钥必须保持
@@ -320,6 +350,7 @@ sudo chmod 600 deploy/certs/origin.key
 ```bash
 sudo openssl x509 -in deploy/certs/origin.pem -noout -subject -issuer -dates
 sudo openssl pkey -in deploy/certs/origin.key -check -noout
+sudo stat -c '%U:%G %a %s bytes %n' deploy/certs/origin.pem deploy/certs/origin.key
 ```
 
 Cloudflare → **SSL/TLS → Overview** 设置为 **Full (strict)**，不要使用 Flexible。随后可开启：
@@ -585,6 +616,19 @@ find /opt/st-imagen -maxdepth 3 -type d -name .git -print
 
 ### 12.4 `data` 权限或图片 `Permission denied`
 
+如果仅在 deploy Shell 执行普通
+`ls -ldn data data/uploads data/uploads/generated` 时看到
+`ls: cannot access 'data/uploads': Permission denied`，而 `sudo ls` 正常，这是第 4 节
+`data=750` 最小权限的预期结果，不需要修改权限。使用：
+
+```bash
+sudo ls -ldn data data/uploads data/uploads/generated
+sudo setpriv --reuid=10001 --regid=10001 --clear-groups \
+  test -w data/uploads/generated && echo writable
+```
+
+只有 nginx 日志或 app 写入也出现拒绝时，才执行下面的修复。
+
 `chmod: ... Operation not permitted` 是宿主机 deploy 已不再拥有 UID 10001 文件。
 存储计数增加但 nginx 日志出现
 `open() "/srv/uploads/generated/gen-....jpg" failed (13: Permission denied)` 时执行：
@@ -596,7 +640,7 @@ sudo chmod 750 data
 sudo find data/uploads -type d -exec chmod 755 {} +
 sudo find data/uploads -type f -exec chmod 644 {} +
 export COMPOSE_FILES='-f compose.prod.yml -f compose.cloudflare.yml -f compose.4c8g.yml'
-IMAGE=$(find data/uploads/generated -maxdepth 1 -type f -printf '%f\n' | head -n 1)
+IMAGE=$(sudo find data/uploads/generated -maxdepth 1 -type f -printf '%f\n' | head -n 1)
 docker compose $COMPOSE_FILES exec --user 101 nginx test -r "/srv/uploads/generated/$IMAGE"
 ```
 
