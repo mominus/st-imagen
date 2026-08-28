@@ -451,13 +451,12 @@ IMAGE=$(find data/uploads/generated -maxdepth 1 -type f -printf '%f\n' | head -n
 test -n "$IMAGE"
 docker compose $COMPOSE_FILES exec --user 101 nginx \
   test -r "/srv/uploads/generated/$IMAGE" && echo "nginx can read: $IMAGE"
-docker compose $COMPOSE_FILES exec nginx nginx -s reload
 ```
 
-若 nginx reload 失败，无需重建 app，可执行
-`docker compose $COMPOSE_FILES restart nginx`。不要对整个 `data` 执行 `chmod -R 755`：
-其中还包含数据库和备份；只将本来就通过 `/uploads/` 公开的目录设为 `755`、文件设为
-`644`。新版应用也会在发布新图片前主动设置这些权限，避免新文件再次变成 `600`。
+文件权限立即生效，无需 reload、restart 或重建任何容器，刷新浏览器即可。
+不要对整个 `data` 执行 `chmod -R 755`：其中还包含数据库和备份；只将本来就通过 `/uploads/`
+公开的目录设为 `755`、文件设为 `644`。新版应用也会在发布新图片前主动设置这些权限，
+避免新文件再次变成 `600`。
 
 ### 4.6 最终检查
 
