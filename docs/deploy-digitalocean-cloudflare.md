@@ -612,7 +612,7 @@ sudo chmod 750 data
 sudo find data/uploads -type d -exec chmod 755 {} +
 sudo find data/uploads -type f -exec chmod 644 {} +
 export COMPOSE_FILES='-f compose.prod.yml -f compose.cloudflare.yml -f compose.4c8g.yml'
-IMAGE=$(find data/uploads/generated -maxdepth 1 -type f -printf '%f\n' | head -n 1)
+IMAGE=$(sudo find data/uploads/generated -maxdepth 1 -type f -printf '%f\n' | head -n 1)
 docker compose $COMPOSE_FILES exec --user 101 nginx test -r "/srv/uploads/generated/$IMAGE"
 ```
 
