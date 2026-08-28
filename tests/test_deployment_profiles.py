@@ -84,3 +84,22 @@ def test_runbook_prevents_nested_clone_and_repairs_data_permissions():
     assert runbook.index("chmod 750 data") < runbook.index("sudo chown -R 10001:10001 data")
     assert "sudo chmod 750 data" in runbook
     assert "Operation not permitted" in runbook
+
+
+def test_runbook_secures_and_repairs_cloudflare_certificate_permissions():
+    runbook = (ROOT / "docs" / "deploy-digitalocean-cloudflare.md").read_text(
+        encoding="utf-8"
+    )
+    cert_readme = (ROOT / "deploy" / "certs" / "README.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "sudo chown root:root deploy/certs/origin.pem deploy/certs/origin.key" in runbook
+    assert "sudo chmod 644 deploy/certs/origin.pem" in runbook
+    assert "sudo chmod 600 deploy/certs/origin.key" in runbook
+    assert "cannot load certificate" in runbook
+    assert "Permission denied" in runbook
+    assert "docker compose $COMPOSE_FILES run --rm --no-deps nginx nginx -t" in runbook
+    assert "root:root" in cert_readme
+    assert "0644" in cert_readme
+    assert "0600" in cert_readme
