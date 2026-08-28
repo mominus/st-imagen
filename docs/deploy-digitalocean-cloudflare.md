@@ -214,16 +214,18 @@ sudo chown -R 10001:10001 data
 
 ```bash
 pwd
-test -d .git
-test -f compose.prod.yml
-sudo test -d data/uploads/generated
+test -d .git || { echo "错误：当前目录不是 Git 仓库"; exit 1; }
+test -f compose.prod.yml || { echo "错误：缺少 compose.prod.yml"; exit 1; }
+sudo test -d data/uploads/generated || { echo "错误：缺少 uploads/generated"; exit 1; }
 git rev-parse --short HEAD
 sudo ls -ldn data data/uploads data/uploads/generated
+sudo -u '#10001' test -w data/uploads/generated \
+  && echo "app UID 10001 can write generated uploads"
 ```
 
-`pwd` 必须是 `/opt/st-imagen`，而不是 `/opt/st-imagen/st-imagen`。前一步已把 `data` 交给
-容器 UID 10001 且设为 `750`，所以 deploy 用户直接执行 `test`/`ls` 访问其子目录会得到
-`Permission denied`，这是预期的保护效果；最终检查必须使用上述 `sudo test` 和 `sudo ls`。
+`pwd` 必须是 `/opt/st-imagen`，而不是 `/opt/st-imagen/st-imagen`。这里对子目录使用
+`sudo` 是有意的：上一段已将 `data` 设为 UID 10001 所有、mode `750`，普通 deploy 用户
+不能穿过它查看数据库或 uploads；这不影响 app 写入和 nginx 的独立只读挂载。
 
 ## 5. 配置 `.env`
 
@@ -587,6 +589,18 @@ find /opt/st-imagen -maxdepth 3 -type d -name .git -print
 
 ### 12.4 `data` 权限或图片 `Permission denied`
 
+如果仅在 deploy Shell 执行普通
+`ls -ldn data data/uploads data/uploads/generated` 时看到
+`ls: cannot access 'data/uploads': Permission denied`，而 `sudo ls` 正常，这是第 4 节
+`data=750` 最小权限的预期结果，不需要修改权限。使用：
+
+```bash
+sudo ls -ldn data data/uploads data/uploads/generated
+sudo -u '#10001' test -w data/uploads/generated && echo writable
+```
+
+只有 nginx 日志或 app 写入也出现拒绝时，才执行下面的修复。
+
 `chmod: ... Operation not permitted` 是宿主机 deploy 已不再拥有 UID 10001 文件。
 存储计数增加但 nginx 日志出现
 `open() "/srv/uploads/generated/gen-....jpg" failed (13: Permission denied)` 时执行：
@@ -603,8 +617,6 @@ docker compose $COMPOSE_FILES exec --user 101 nginx test -r "/srv/uploads/genera
 ```
 
 不要对整个 `data` 执行 `chmod -R 755`；数据库仍需保护。权限立即生效，无需重启容器。
-如果只是部署第 4 步最后的普通 `ls data/uploads` 报错，而 nginx 没有图片读取错误，不要
-修改权限；改用 `sudo ls -ldn data data/uploads data/uploads/generated` 完成检查即可。
 
 ### 12.5 登录正常但生图 502 非 JSON
 
