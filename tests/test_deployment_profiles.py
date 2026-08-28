@@ -67,6 +67,21 @@ def test_runbook_explains_safe_password_to_key_migration():
     assert "Recovery Console" in runbook
 
 
+def test_runbook_keeps_password_only_root_access_until_key_is_verified():
+    runbook = (ROOT / "docs" / "deploy-digitalocean-cloudflare.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "只有 root 密码时的红线与失联恢复" in runbook
+    assert "Access → Reset Root Password" in runbook
+    assert "sshd -T -C user=root" in runbook
+    assert "99-temporary-recovery.conf" in runbook
+    assert "PermitRootLogin yes" in runbook
+    assert "passwd -S root" in runbook
+    assert "跳过 2.3 和 2.4" in runbook
+    assert "Droplet 视为已失陷" in runbook
+
+
 def test_runbook_explains_firewall_layers_and_port_purposes():
     runbook = (ROOT / "docs" / "deploy-digitalocean-cloudflare.md").read_text(
         encoding="utf-8"

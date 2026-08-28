@@ -88,6 +88,70 @@ Cloudflare 开启橙云后，普通访客先连接 Cloudflare，再由 Cloudflar
 
 ## 2. 首次登录与系统加固（含“已经使用密码登录”的情况）
 
+### 2.0 只有 root 密码时的红线与失联恢复
+
+如果 Termius 已完成 SSH 握手、服务器明确提供 `password` 方法，但随后显示
+`Authentication failed (password)`，说明 **22 端口和 sshd 都正常**；这不是 nginx、
+Docker、Cloudflare 或项目防火墙造成的网络故障。此时只可能是服务器不再接受这组 root
+凭据，例如：密码输入错误、root 被锁定/过期、`PermitRootLogin` 的最终生效值禁止 root，
+或机器遭到入侵后密码被更改。OpenSSH 为避免泄露策略，可能仍展示 password 方法，所以
+仅凭客户端列出 `password` 不能证明 root 密码登录已被允许。
+
+**只有 root 密码、尚未验证第二个可登录账号时，绝对不要：**
+
+- 设置 `PermitRootLogin no` 或 `PasswordAuthentication no`；
+- 执行 `passwd -l root`、`usermod -L root` 或让 root 账号过期；
+- 把 Cloud Firewall 的 TCP 22 收紧到一个尚未确认稳定的来源 IP；
+- 关闭唯一已登录的 SSH 窗口；
+- 假设 DigitalOcean 网页 Console 可以替代密码——它最终也可能需要有效的系统凭据。
+
+一旦已经失联，反复重装应用、重启容器或重新输入同一密码都没有作用。按以下顺序恢复：
+
+1. 在 DigitalOcean 控制台选择该 Droplet 的 **Access → Reset Root Password**，使用平台发送的
+   临时密码登录；首次登录若要求立即改密，设置一个密码管理器生成的长且唯一的新密码。
+2. 如果普通 Droplet Console 仍要求旧密码，使用控制台的恢复/救援能力（Recovery Console
+   或 Recovery ISO）进入系统；必要时先关机、挂载系统盘、`chroot` 后执行 `passwd root`。
+   控制台名称会随 DigitalOcean UI 调整，以 Droplet 的 Access/Recovery 页面为准。
+3. 如果平台重置和救援模式都不可用，联系 DigitalOcean Support；不要继续在可能已被接管的
+   系统上部署密钥。
+
+恢复登录后先保留当前窗口，检查**最终生效配置**，而不是只查看某一行配置文件：
+
+```bash
+passwd -S root
+chage -l root
+sshd -T -C user=root,host="$(hostname)",addr="你的当前公网IP" \
+  | grep -E '^(permitrootlogin|passwordauthentication|kbdinteractiveauthentication) '
+journalctl -u ssh --since "2 hours ago" --no-pager | tail -n 200
+last -ai | head -n 30
+lastb -ai | head -n 30
+```
+
+在尚未配置公钥的临时恢复阶段，最终值应至少允许 root/password。可以创建一个优先级更高的
+临时救援配置：
+
+```bash
+cat >/etc/ssh/sshd_config.d/99-temporary-recovery.conf <<'EOF'
+PermitRootLogin yes
+PasswordAuthentication yes
+PubkeyAuthentication yes
+EOF
+passwd -u root
+chage -E -1 -I -1 root
+passwd root
+sshd -t && systemctl reload ssh
+```
+
+这只是救援配置，不应长期保留。**保持当前窗口不关闭**，立即完成 2.3～2.4：创建 deploy
+公钥登录，在另一个窗口验证成功；之后删除
+`/etc/ssh/sshd_config.d/99-temporary-recovery.conf`，再按 2.4 的最终策略关闭 root/password。
+
+如果日志中出现陌生成功登录、未知公钥/用户，或者密码在没有人工操作时再次变化，应把该
+Droplet 视为已失陷：先在 DigitalOcean 做磁盘快照保留证据，然后重建；同时轮换项目 `.env`
+中的管理员密码、JWT/Fernet 密钥、所有上游 API key、GitHub 凭据和 Cloudflare Origin 私钥。
+不要把旧机的 `.env` 原样复制到新机。连续两台密码机都出现相同现象时，还要检查 Termius
+是否保存了旧密码、输入法/键盘布局，以及 Cloud Firewall 是否把 TCP 22 暴露给了全网。
+
 ### 2.1 为什么 Git clone 之前要做这些事
 
 全新的公网 VPS 创建后几分钟内就可能收到自动扫描和 SSH 登录尝试。这里先做的事情不是项目配置，而是建立一个
@@ -127,6 +191,10 @@ usermod -aG sudo deploy
 
 `adduser deploy` 会要求设置一个 `deploy` 用户密码和若干资料；资料可直接回车跳过。这个密码用于 `sudo`，在
 彻底关闭 SSH 密码认证后，仍然可以在已经登录的会话里用于 `sudo`。
+
+> 如果你决定跳过 2.3 和 2.4，就必须同时跳过所有“禁用 root、禁用密码、锁定 root”的
+> 操作，并始终保留至少一个已验证的备用登录方式。跳过公钥迁移不等于后续可以安全执行
+> 2.4 的任何一部分。
 
 ### 2.3 在自己的电脑生成 SSH key
 
@@ -226,15 +294,15 @@ sudo systemctl reload ssh
 
 1. 创建 `deploy` 用户并使用密码管理器生成的长、唯一密码；
 2. 先验证 `ssh deploy@$VPS_IP` 和 `sudo -v`；
-3. 设置 `PermitRootLogin no`，只禁用 root 远程登录；
-4. 暂时保留 `PasswordAuthentication yes`；
-5. Cloud Firewall 的 TCP 22 只允许你的公网 IP `/32`；
-6. 尽快完成第 2.3～2.4 节，再把 `PasswordAuthentication` 改为 `no`。
+3. 暂时保留 `PermitRootLogin yes` 和 `PasswordAuthentication yes`；
+4. Cloud Firewall 的 TCP 22 只允许你的公网 IP `/32`，并确认公网 IP变化时如何更新；
+5. 验证 DigitalOcean 的 Reset Root Password/Recovery 入口确实可用；
+6. 尽快完成第 2.3～2.4 节；只有 deploy 公钥在新窗口验证成功后，才同时禁用 root/password。
 
 临时配置是：
 
 ```text
-PermitRootLogin no
+PermitRootLogin yes
 PasswordAuthentication yes
 PubkeyAuthentication yes
 ```
