@@ -312,11 +312,34 @@ Cloudflare → **SSL/TLS → Origin Server → Create certificate**：
 cd /opt/st-imagen
 sudo install -o root -g root -m 644 /dev/null deploy/certs/origin.pem
 sudo install -o root -g root -m 600 /dev/null deploy/certs/origin.key
-sudoedit deploy/certs/origin.pem
-sudoedit deploy/certs/origin.key
+```
+
+`install` 成功时不会输出任何内容；它只是创建两个 root 所有的空文件。不要在 Git 仓库内
+对这些文件使用 `sudoedit`：其安全检查会因为父目录可由 deploy 写入而拒绝，并显示
+`editing files in a writable directory is not permitted`。
+
+先执行下面一条命令，终端会等待输入。粘贴 Cloudflare 的完整 **Origin Certificate**
+（包括 `BEGIN CERTIFICATE` / `END CERTIFICATE`），然后单独按一次 `Ctrl+D` 保存：
+
+```bash
+sudo tee deploy/certs/origin.pem >/dev/null
+```
+
+再执行下面一条，粘贴完整 **Private Key**（包括私钥的 `BEGIN` / `END` 行），按
+`Ctrl+D` 保存：
+
+```bash
+sudo tee deploy/certs/origin.key >/dev/null
+```
+
+最后统一确认所有权和权限：
+
+```bash
 sudo chown root:root deploy/certs/origin.pem deploy/certs/origin.key
 sudo chmod 644 deploy/certs/origin.pem
 sudo chmod 600 deploy/certs/origin.key
+sudo test -s deploy/certs/origin.pem || { echo "错误：origin.pem 为空"; exit 1; }
+sudo test -s deploy/certs/origin.key || { echo "错误：origin.key 为空"; exit 1; }
 ```
 
 粘贴时保留完整的 `BEGIN/END` 行。证书本身不含私钥，可以是 `644`；私钥必须保持
@@ -327,6 +350,7 @@ sudo chmod 600 deploy/certs/origin.key
 ```bash
 sudo openssl x509 -in deploy/certs/origin.pem -noout -subject -issuer -dates
 sudo openssl pkey -in deploy/certs/origin.key -check -noout
+sudo stat -c '%U:%G %a %s bytes %n' deploy/certs/origin.pem deploy/certs/origin.key
 ```
 
 Cloudflare → **SSL/TLS → Overview** 设置为 **Full (strict)**，不要使用 Flexible。随后可开启：

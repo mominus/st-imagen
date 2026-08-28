@@ -133,6 +133,13 @@ def test_runbook_secures_and_repairs_cloudflare_certificate_permissions():
     assert "sudo chown root:root deploy/certs/origin.pem deploy/certs/origin.key" in runbook
     assert "sudo chmod 644 deploy/certs/origin.pem" in runbook
     assert "sudo chmod 600 deploy/certs/origin.key" in runbook
+    assert "sudo tee deploy/certs/origin.pem >/dev/null" in runbook
+    assert "sudo tee deploy/certs/origin.key >/dev/null" in runbook
+    assert "editing files in a writable directory is not permitted" in runbook
+    assert "sudoedit deploy/certs/origin.pem" not in runbook
+    assert "sudoedit deploy/certs/origin.key" not in runbook
+    assert "sudo test -s deploy/certs/origin.pem" in runbook
+    assert "sudo test -s deploy/certs/origin.key" in runbook
     assert "cannot load certificate" in runbook
     assert "Permission denied" in runbook
     assert "docker compose $COMPOSE_FILES run --rm --no-deps nginx nginx -t" in runbook
