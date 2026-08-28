@@ -260,6 +260,9 @@ class GenerationCounterTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RuntimeConfigPayloadTests(unittest.TestCase):
+    def test_default_image_cleanup_check_interval_is_six_hours(self) -> None:
+        self.assertEqual(generate_mod.UPLOAD_CLEANUP_INTERVAL_SECONDS, 6 * 60 * 60)
+
     def test_reports_live_capacity_policy_as_read_only_direct_rejection(self) -> None:
         guard = SimpleNamespace(
             generation_admission=SimpleNamespace(max_concurrent=32),

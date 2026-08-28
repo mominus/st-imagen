@@ -24,3 +24,12 @@ def test_admin_feature_scripts_exist_and_load_in_dependency_order():
     assert "/static/admin.js" not in script_sources
     for source in admin_sources:
         assert (STATIC_ROOT / source.removeprefix("/static/")).is_file()
+
+
+def test_admin_uses_public_brand_logo_and_name():
+    html = ADMIN_HTML.read_text(encoding="utf-8")
+
+    assert html.count('src="/static/assets/see-you-logo.png"') == 2
+    assert "后台 · see you · imagen" in html
+    assert "see you <b>·</b> imagen" in html
+    assert "see you · imagen" in html

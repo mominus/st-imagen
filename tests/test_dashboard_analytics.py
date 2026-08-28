@@ -92,8 +92,8 @@ def test_aggregate_keeps_img2img_out_of_model_cards_and_counts_all_rows():
     assert models["nano_banana_pro"]["failure"] == 1
     assert models["gpt_image_2"]["requests"] == 2
     assert models["gpt_image_2"]["failure"] == 1
-    assert models["other"]["requests"] == 1
-    assert sum(item["requests"] for item in models.values()) == 5
+    assert "other" not in models
+    assert sum(item["requests"] for item in models.values()) == 4
     nano_specs = {item["key"]: item for item in models["nano_banana_pro"]["specs"][0]["items"]}
     assert nano_specs["1k"]["requests"] == 1
     assert nano_specs["4k"]["failure"] == 1
@@ -101,6 +101,20 @@ def test_aggregate_keeps_img2img_out_of_model_cards_and_counts_all_rows():
     gpt_sizes = {item["key"]: item for item in gpt_specs["size"]["items"]}
     assert gpt_sizes["2k"]["requests"] == 1
     assert gpt_sizes["1k"]["failure"] == 1
+
+
+def test_model_analytics_omits_unknown_specs():
+    now = datetime(2026, 8, 26, 12, tzinfo=UTC)
+    rows = [
+        log_row(now, model="Nano Banana Pro", resolution="8K"),
+        log_row(now, model="GPT Image 2", resolution="Custom", aspect_ratio="123x456"),
+    ]
+
+    models = {item["key"]: item for item in aggregate_dashboard_rows(rows, "24h", now=now)["models"]}
+    for model in models.values():
+        for group in model["specs"]:
+            assert all(item["key"] != "unknown" for item in group["items"])
+            assert all("未知" not in item["label"] for item in group["items"])
 
 
 def test_aggregate_is_not_limited_to_recent_log_page_size():

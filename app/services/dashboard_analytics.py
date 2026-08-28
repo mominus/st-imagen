@@ -132,19 +132,19 @@ def _model_template(key: str) -> dict[str, Any]:
         specs = [{
             "key": "resolution",
             "label": "分辨率",
-            "items": _spec_items((("1k", "1K"), ("2k", "2K"), ("4k", "4K"), ("unknown", "未知规格"))),
+            "items": _spec_items((("1k", "1K"), ("2k", "2K"), ("4k", "4K"))),
         }]
     elif key == "gpt_image_2":
         specs = [
             {
                 "key": "quality",
                 "label": "Quality",
-                "items": _spec_items((("auto", "Auto"), ("low", "Low"), ("medium", "Medium"), ("high", "High"), ("unknown", "未知"))),
+                "items": _spec_items((("auto", "Auto"), ("low", "Low"), ("medium", "Medium"), ("high", "High"))),
             },
             {
                 "key": "size",
                 "label": "Size",
-                "items": _spec_items((("1k", "1K"), ("2k", "2K"), ("4k", "4K"), ("auto", "Auto"), ("unknown", "未知尺寸"))),
+                "items": _spec_items((("1k", "1K"), ("2k", "2K"), ("4k", "4K"), ("auto", "Auto"))),
             },
         ]
     else:
@@ -199,7 +199,7 @@ def aggregate_dashboard_rows(
     summary = {"requests": 0, "success": 0, "failure": 0}
     failure_counts = defaultdict(int)
     model_rows: dict[str, dict[str, Any]] = {
-        key: _model_template(key) for key in (*KNOWN_MODEL_KEYS, "other")
+        key: _model_template(key) for key in KNOWN_MODEL_KEYS
     }
     text2img_requests = 0
 
@@ -234,8 +234,10 @@ def aggregate_dashboard_rows(
         mode = _text(_row_value(row, "mode", 4)).lower()
         if mode != "text2img":
             continue
-        text2img_requests += 1
         model_key = normalize_model_key(_row_value(row, "model", 5))
+        if model_key not in KNOWN_MODEL_KEYS:
+            continue
+        text2img_requests += 1
         model = model_rows[model_key]
         model["requests"] += 1
         model["success" if success else "failure"] += 1
@@ -248,19 +250,21 @@ def aggregate_dashboard_rows(
 
         if model_key == "nano_banana_pro":
             resolution_key = normalize_nano_resolution(_row_value(row, "resolution", 7)).lower()
-            spec = _spec_item(model["specs"][0]["items"], resolution_key)
-            spec["requests"] += 1
-            spec["failure"] += int(not success)
+            if resolution_key != "unknown":
+                spec = _spec_item(model["specs"][0]["items"], resolution_key)
+                spec["requests"] += 1
+                spec["failure"] += int(not success)
         elif model_key == "gpt_image_2":
             quality_key = _text(_row_value(row, "resolution", 7)).lower()
-            if quality_key not in {"auto", "low", "medium", "high"}:
-                quality_key = "unknown"
-            quality_spec = _spec_item(model["specs"][0]["items"], quality_key)
-            quality_spec["requests"] += 1
-            quality_spec["failure"] += int(not success)
-            size_spec = _spec_item(model["specs"][1]["items"], normalize_gpt_size(_row_value(row, "aspect_ratio", 6)))
-            size_spec["requests"] += 1
-            size_spec["failure"] += int(not success)
+            if quality_key in {"auto", "low", "medium", "high"}:
+                quality_spec = _spec_item(model["specs"][0]["items"], quality_key)
+                quality_spec["requests"] += 1
+                quality_spec["failure"] += int(not success)
+            size_key = normalize_gpt_size(_row_value(row, "aspect_ratio", 6))
+            if size_key != "unknown":
+                size_spec = _spec_item(model["specs"][1]["items"], size_key)
+                size_spec["requests"] += 1
+                size_spec["failure"] += int(not success)
 
     summary["avg_response_ms"] = round(sum(durations) / len(durations), 1) if durations else 0.0
     failures = [
@@ -274,14 +278,12 @@ def aggregate_dashboard_rows(
     ]
 
     model_result = []
-    for key in (*KNOWN_MODEL_KEYS, "other"):
+    for key in KNOWN_MODEL_KEYS:
         model = model_rows[key]
         durations_for_model = model.pop("_durations", [])
         model["request_share"] = round((model["requests"] / text2img_requests * 100), 1) if text2img_requests else 0.0
         model["success_rate"] = round((model["success"] / model["requests"] * 100), 1) if model["requests"] else 0.0
         model["avg_response_ms"] = round(sum(durations_for_model) / len(durations_for_model), 1) if durations_for_model else 0.0
-        if key == "other" and not model["requests"]:
-            continue
         model_result.append(model)
 
     return {

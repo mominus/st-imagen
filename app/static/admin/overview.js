@@ -312,16 +312,20 @@ function renderModelAnalytics(analytics) {
   const el = $("#modelAnalytics");
   if (!el) return;
   el.setAttribute("aria-busy", state.dashboardAnalyticsLoading ? "true" : "false");
-  const models = Array.isArray(analytics?.models) ? analytics.models : [];
+  const models = (Array.isArray(analytics?.models) ? analytics.models : [])
+    .filter((item) => item.key !== "other");
   const known = ["gpt_image_2", "nano_banana_pro"];
-  const ordered = [...known.map((key) => models.find((item) => item.key === key) || { key, label: key === "gpt_image_2" ? "GPT Image 2" : "Nano Banana Pro", requests: 0, request_share: 0, success: 0, failure: 0, success_rate: 0, avg_response_ms: 0, specs: key === "gpt_image_2" ? [{ label: "Quality", items: [] }, { label: "Size", items: [] }] : [{ label: "分辨率", items: [] }] }), ...models.filter((item) => item.key === "other")];
+  const ordered = known.map((key) => models.find((item) => item.key === key) || { key, label: key === "gpt_image_2" ? "GPT Image 2" : "Nano Banana Pro", requests: 0, request_share: 0, success: 0, failure: 0, success_rate: 0, avg_response_ms: 0, specs: key === "gpt_image_2" ? [{ label: "Quality", items: [] }, { label: "Size", items: [] }] : [{ label: "分辨率", items: [] }] });
   if (!analytics) {
     el.innerHTML = '<div class="admin-empty-state"><span>模型分析加载中…</span></div>';
     return;
   }
   el.innerHTML = ordered.map((model) => {
     const requestCount = Number(model.requests || 0);
-    const specs = Array.isArray(model.specs) ? model.specs : [];
+    const specs = (Array.isArray(model.specs) ? model.specs : []).map((group) => ({
+      ...group,
+      items: (group.items || []).filter((item) => item.key !== "unknown" && !String(item.label || "").includes("未知")),
+    }));
     const maxSpecCount = Math.max(1, ...specs.flatMap((group) => (group.items || []).map((item) => Number(item.requests || 0))));
     return `<article class="model-card"><div class="model-card-head"><div><h3>${escapeHtml(model.label)}</h3><p class="model-card-caption">${model.key === "other" ? "未识别模型" : "文生图"}</p></div><span class="model-card-share">${Number(model.request_share || 0).toFixed(1)}%</span></div><div class="model-metrics"><div class="model-metric"><span>请求数</span><strong>${fmtNumber(requestCount)}</strong></div><div class="model-metric"><span>成功数</span><strong>${fmtNumber(model.success)}</strong></div><div class="model-metric failure"><span>失败数</span><strong>${fmtNumber(model.failure)}</strong></div><div class="model-metric"><span>成功率</span><strong>${Number(model.success_rate || 0).toFixed(1)}%</strong></div></div><div class="model-card-foot"><span>平均处理时长</span><strong>${requestCount ? fmtDuration(model.avg_response_ms) : "—"}</strong></div>${specs.length ? `<div class="model-spec-groups">${specs.map((group) => `<div class="model-spec-group"><strong>${escapeHtml(group.label)}</strong>${(group.items || []).map((item) => `<div class="model-spec-row"><span>${escapeHtml(item.label)}</span><div class="model-spec-track"><span style="width:${requestCount ? Math.min(100, (Number(item.requests || 0) / maxSpecCount) * 100) : 0}%"></span></div><strong>${fmtNumber(item.requests)}</strong><span class="model-spec-failure">失败 ${fmtNumber(item.failure)}</span></div>`).join("")}</div>`).join("")}</div>` : ""}</article>`;
   }).join("");
@@ -375,14 +379,6 @@ function renderDashboardPanels(metrics) {
   const modelMeta = $("#modelAnalyticsMeta");
   if (modelMeta) modelMeta.textContent = state.dashboardAnalyticsLoading ? `正在加载${dashboardPeriodLabel(state.dashboardPeriod)}…` : analytics ? `${dashboardPeriodLabel(analytics.period)} · 仅文生图` : "正在加载…";
   renderModelAnalytics(analytics);
-  const overviewMeta = $("#overviewMeta");
-  if (overviewMeta) {
-    overviewMeta.textContent = state.lastUpdatedAt
-      ? `最近同步 ${fmtTime(state.lastUpdatedAt)} · ${state.sync.successCount || 0}/${state.sync.totalCount || 0} 数据块成功`
-      : state.refreshing
-        ? "正在同步账号、用户与后台聚合数据…"
-        : "尚未完成首次同步";
-  }
 }
 
 function renderSyncState() {
@@ -702,7 +698,11 @@ function formatRuntimeSeconds(seconds) {
 
 function renderOverviewUptime() {
   const el = $("#overviewUptime");
+  const blocks = $("#overviewSyncBlocks");
   if (!el) return;
+  if (blocks) {
+    blocks.textContent = `${state.sync.successCount || 0}/${state.sync.totalCount || 5} 数据块成功`;
+  }
   el.classList.remove("hero-pill-success", "hero-pill-danger");
   if (state.refreshing) {
     el.textContent = "同步中";
@@ -813,4 +813,3 @@ function renderInsightPanels() {
   renderNavBadges(metrics);
   renderProtectionStatus();
 }
-
