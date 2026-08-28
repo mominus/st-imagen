@@ -277,4 +277,6 @@ class StreamingImageSaveTests(unittest.IsolatedAsyncioTestCase):
             files = list(generated.iterdir())
             self.assertEqual(len(files), 1)
             self.assertEqual(files[0].read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+            self.assertEqual(files[0].stat().st_mode & 0o777, 0o644)
+            self.assertEqual(generated.stat().st_mode & 0o777, 0o755)
             self.assertFalse(any(path.name.startswith(".gen-") for path in files))

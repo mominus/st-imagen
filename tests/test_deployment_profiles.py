@@ -139,3 +139,16 @@ def test_runbook_diagnoses_non_json_upstream_responses_without_printing_keys():
     assert 'os.environ.get("ST_BASE_URL", "")' in runbook
     assert "不会输出 API key" in runbook
     assert "Content-Type" in runbook
+
+
+def test_runbook_repairs_public_upload_permissions_without_exposing_database():
+    runbook = (ROOT / "docs" / "deploy-digitalocean-cloudflare.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'open() "/srv/uploads/generated/gen-....jpg" failed' in runbook
+    assert "sudo chmod 750 data" in runbook
+    assert "sudo find data/uploads -type d -exec chmod 755 {} +" in runbook
+    assert "sudo find data/uploads -type f -exec chmod 644 {} +" in runbook
+    assert "exec --user 101 nginx" in runbook
+    assert "不要对整个 `data` 执行 `chmod -R 755`" in runbook

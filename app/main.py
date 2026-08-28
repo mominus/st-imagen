@@ -240,6 +240,9 @@ upload_path = Path(
     os.getenv("UPLOADS_DIR") or (Path(__file__).resolve().parents[1] / "data" / "uploads")
 ).resolve()
 upload_path.mkdir(parents=True, exist_ok=True)
+# nginx reads this bind mount as UID 101 while app writes as UID 10001. Only
+# public upload content is exposed here; the database remains under data/.
+upload_path.chmod(0o755)
 
 
 @app.get("/health")

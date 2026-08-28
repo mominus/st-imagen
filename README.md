@@ -163,6 +163,9 @@ cp .env.example .env
 # 修改 .env 中的 ENCRYPTION_KEY、JWT_SECRET_KEY、ADMIN_PASSWORD、PUBLIC_BASE_URL 等生产配置
 mkdir -p data/uploads/generated
 sudo chown -R 10001:10001 data
+sudo chmod 750 data
+sudo find data/uploads -type d -exec chmod 755 {} +
+sudo find data/uploads -type f -exec chmod 644 {} +
 docker compose -f compose.prod.yml config --quiet
 docker compose -f compose.prod.yml up -d --build
 docker compose -f compose.prod.yml ps
