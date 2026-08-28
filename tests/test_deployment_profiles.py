@@ -116,7 +116,8 @@ def test_runbook_prevents_nested_clone_and_repairs_data_permissions():
     assert "Operation not permitted" in runbook
     assert "sudo test -d data/uploads/generated" in runbook
     assert "sudo ls -ldn data data/uploads data/uploads/generated" in runbook
-    assert "sudo -u '#10001' test -w data/uploads/generated" in runbook
+    assert "sudo setpriv --reuid=10001 --regid=10001 --clear-groups" in runbook
+    assert "unknown user #10001" in runbook
     assert "IMAGE=$(sudo find data/uploads/generated" in runbook
     assert "普通 deploy 用户" in runbook
 

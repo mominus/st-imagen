@@ -219,13 +219,16 @@ test -f compose.prod.yml || { echo "错误：缺少 compose.prod.yml"; exit 1; }
 sudo test -d data/uploads/generated || { echo "错误：缺少 uploads/generated"; exit 1; }
 git rev-parse --short HEAD
 sudo ls -ldn data data/uploads data/uploads/generated
-sudo -u '#10001' test -w data/uploads/generated \
+sudo setpriv --reuid=10001 --regid=10001 --clear-groups \
+  test -w data/uploads/generated \
   && echo "app UID 10001 can write generated uploads"
 ```
 
 `pwd` 必须是 `/opt/st-imagen`，而不是 `/opt/st-imagen/st-imagen`。这里对子目录使用
 `sudo` 是有意的：上一段已将 `data` 设为 UID 10001 所有、mode `750`，普通 deploy 用户
-不能穿过它查看数据库或 uploads；这不影响 app 写入和 nginx 的独立只读挂载。
+不能穿过它查看数据库或 uploads；这不影响 app 写入和 nginx 的独立只读挂载。这里用
+`setpriv` 模拟容器的数值 UID/GID，因为宿主机 `/etc/passwd` 没有名为 `10001` 的用户，
+部分 sudo 配置会拒绝 `sudo -u '#10001'` 并报告 `unknown user #10001`。
 
 ## 5. 配置 `.env`
 
@@ -596,7 +599,8 @@ find /opt/st-imagen -maxdepth 3 -type d -name .git -print
 
 ```bash
 sudo ls -ldn data data/uploads data/uploads/generated
-sudo -u '#10001' test -w data/uploads/generated && echo writable
+sudo setpriv --reuid=10001 --regid=10001 --clear-groups \
+  test -w data/uploads/generated && echo writable
 ```
 
 只有 nginx 日志或 app 写入也出现拒绝时，才执行下面的修复。
