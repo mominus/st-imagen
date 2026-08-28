@@ -114,6 +114,9 @@ def test_runbook_prevents_nested_clone_and_repairs_data_permissions():
     assert runbook.index("chmod 750 data") < runbook.index("sudo chown -R 10001:10001 data")
     assert "sudo chmod 750 data" in runbook
     assert "Operation not permitted" in runbook
+    assert "sudo test -d data/uploads/generated" in runbook
+    assert "sudo ls -ldn data data/uploads data/uploads/generated" in runbook
+    assert "这是预期的保护效果" in runbook
 
 
 def test_runbook_secures_and_repairs_cloudflare_certificate_permissions():

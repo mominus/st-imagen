@@ -216,12 +216,14 @@ sudo chown -R 10001:10001 data
 pwd
 test -d .git
 test -f compose.prod.yml
-test -d data/uploads/generated
+sudo test -d data/uploads/generated
 git rev-parse --short HEAD
-ls -ldn data data/uploads data/uploads/generated
+sudo ls -ldn data data/uploads data/uploads/generated
 ```
 
-`pwd` 必须是 `/opt/st-imagen`，而不是 `/opt/st-imagen/st-imagen`。
+`pwd` 必须是 `/opt/st-imagen`，而不是 `/opt/st-imagen/st-imagen`。前一步已把 `data` 交给
+容器 UID 10001 且设为 `750`，所以 deploy 用户直接执行 `test`/`ls` 访问其子目录会得到
+`Permission denied`，这是预期的保护效果；最终检查必须使用上述 `sudo test` 和 `sudo ls`。
 
 ## 5. 配置 `.env`
 
@@ -601,6 +603,8 @@ docker compose $COMPOSE_FILES exec --user 101 nginx test -r "/srv/uploads/genera
 ```
 
 不要对整个 `data` 执行 `chmod -R 755`；数据库仍需保护。权限立即生效，无需重启容器。
+如果只是部署第 4 步最后的普通 `ls data/uploads` 报错，而 nginx 没有图片读取错误，不要
+修改权限；改用 `sudo ls -ldn data data/uploads data/uploads/generated` 完成检查即可。
 
 ### 12.5 登录正常但生图 502 非 JSON
 
