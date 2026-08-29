@@ -455,6 +455,10 @@ function renderUserRow(user) {
         </div>
       </td>
       <td class="col-user-expiry" data-label="期限">${renderUserExpiry(user)}</td>
+      <td class="col-user-failures" data-label="失败次数">
+        <div class="stack-cell"><strong class="mono">${fmtNumber(user.failure_count || 0)}</strong>
+        ${user.disabled_until ? `<span class="table-note table-note-warning">禁用至 ${escapeHtml(fmtDate(user.disabled_until))}</span>` : ""}</div>
+      </td>
       <td class="col-user-total" data-label="累计 / 最近登录">
         <div class="entity-cell">
           <strong class="mono">${fmtNumber(user.total_requests || 0)}</strong>
@@ -544,11 +548,11 @@ function renderUsersTable() {
   }
 
   if (!state.users.length) {
-    tbody.innerHTML = renderEmptyRow(6, "暂无用户。", "可手动创建用户，或先发放邀请码。");
+    tbody.innerHTML = renderEmptyRow(7, "暂无用户。", "可手动创建用户，或先发放邀请码。");
     return;
   }
   if (!items.length) {
-    tbody.innerHTML = renderEmptyRow(6, "没有匹配结果。", "尝试放宽筛选条件。");
+    tbody.innerHTML = renderEmptyRow(7, "没有匹配结果。", "尝试放宽筛选条件。");
     return;
   }
   tbody.innerHTML = items.map(renderUserRow).join("");
@@ -558,7 +562,7 @@ function renderUsersTable() {
 
 async function refreshUsers() {
   const tbody = $("#usersTable tbody");
-  tbody.innerHTML = renderEmptyRow(6, "用户列表加载中…", "正在同步用户数据。");
+  tbody.innerHTML = renderEmptyRow(7, "用户列表加载中…", "正在同步用户数据。");
   try {
     const data = await api("/api/admin/users");
     state.users = Array.isArray(data.items) ? data.items : [];
@@ -576,7 +580,7 @@ async function refreshUsers() {
       "users",
       "支持搜索与筛选。",
     );
-    tbody.innerHTML = renderErrorRow(6, err.message);
+    tbody.innerHTML = renderErrorRow(7, err.message);
     const summary = $("#usersSummary");
     if (summary) summary.textContent = `用户列表加载失败：${err.message}`;
     renderInsightPanels();
@@ -1015,4 +1019,3 @@ async function refreshLogs() {
     return false;
   }
 }
-

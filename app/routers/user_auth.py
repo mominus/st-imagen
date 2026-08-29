@@ -26,6 +26,7 @@ from app.services.user_auth import (
     get_effective_user_status,
     get_user_auth_service,
     is_user_expired,
+    is_temporary_user,
 )
 
 
@@ -67,6 +68,7 @@ def _user_to_dict(user: User) -> dict:
         "username": None if is_invite_guest else user.username,
         "display_name": "邀请码访客" if is_invite_guest else f"@{user.username}",
         "auth_kind": auth_kind,
+        "quota_type": "one_time" if is_temporary_user(user) else "daily",
         "status": user.status,
         "effective_status": get_effective_user_status(user, now=current),
         "is_expired": is_user_expired(user, now=current),

@@ -24,13 +24,18 @@ async def remove_expired_sessions() -> int:
 
 
 async def remove_old_generation_logs(retention_days: int) -> int:
-    """Delete raw generation logs older than the configured retention window."""
+    """Delete old successful logs; failure evidence is retained for investigation."""
     days = max(0, int(retention_days))
     if days == 0:
         return 0
     cutoff = utcnow_naive() - timedelta(days=days)
     factory = get_session_factory()
     async with factory() as session:
-        result = await session.execute(delete(GenerationLog).where(GenerationLog.timestamp < cutoff))
+        result = await session.execute(
+            delete(GenerationLog).where(
+                GenerationLog.timestamp < cutoff,
+                GenerationLog.status == "success",
+            )
+        )
         await session.commit()
         return max(0, int(result.rowcount or 0))

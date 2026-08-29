@@ -398,7 +398,7 @@ async function saveInviteBatch() {
     count: Number($("#i_count").value || 1),
     max_uses: Number($("#i_max_uses").value || 1),
     expires_in_days: Number($("#i_expires_in_days").value || 30),
-    daily_quota: Number($("#i_daily_quota").value || 10),
+    one_time_quota: Number($("#i_daily_quota").value || 10),
     max_inflight: Number($("#i_max_inflight").value || 2),
     note: $("#i_note").value.trim(),
   };
@@ -487,4 +487,3 @@ function bindFilters() {
     renderLogsTable();
   });
 }
-

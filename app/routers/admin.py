@@ -50,6 +50,7 @@ from app.services.user_auth import (
     get_effective_user_status,
     get_user_auth_service,
     is_user_expired,
+    is_temporary_user,
 )
 
 
@@ -164,6 +165,7 @@ class InviteCodeCreateRequest(BaseModel):
     expires_in_days: Optional[int] = Field(default=30, ge=1, le=3650)
     note: Optional[str] = Field(default=None, max_length=255)
     daily_quota: Optional[int] = Field(default=10, ge=0, le=1_000_000)
+    one_time_quota: Optional[int] = Field(default=None, ge=0, le=1_000_000)
     max_inflight: Optional[int] = Field(default=None, ge=1, le=100)
 
 
@@ -299,6 +301,8 @@ def _user_to_dict(user: User) -> dict:
         "effective_status": effective_status,
         "is_expired": is_user_expired(user, now=current),
         "invite_code_id": user.invite_code_id,
+        "auth_kind": getattr(user, "auth_kind", "password"),
+        "quota_type": "one_time" if is_temporary_user(user) else "daily",
         "daily_quota": user.daily_quota,
         "daily_used": usage["daily_used"],
         "total_requests": user.total_requests,
@@ -310,6 +314,8 @@ def _user_to_dict(user: User) -> dict:
         "expires_at": user.expires_at.isoformat() if user.expires_at else None,
         "created_at": user.created_at.isoformat() if user.created_at else None,
         "updated_at": user.updated_at.isoformat() if user.updated_at else None,
+        "failure_count": int(getattr(user, "abnormal_failure_count", 0) or 0),
+        "disabled_until": user.disabled_until.isoformat() if getattr(user, "disabled_until", None) else None,
     }
 
 
@@ -1091,7 +1097,7 @@ async def create_invite_codes(
         max_uses=req.max_uses,
         note=req.note,
         expires_at=expires_at,
-        daily_quota=req.daily_quota,
+        daily_quota=req.one_time_quota if req.one_time_quota is not None else req.daily_quota,
         max_inflight=req.max_inflight,
     )
     await session.commit()
@@ -1253,6 +1259,9 @@ async def update_user(
     )
     if user is None:
         raise HTTPException(status_code=404, detail="用户不存在")
+    if req.status == "active":
+        user.disabled_until = None
+        user.abnormal_failure_count = 0
     await session.commit()
     return _user_to_dict(user)
 
@@ -1393,14 +1402,21 @@ async def dashboard_snapshot(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-async def _recent_logs_payload(session: AsyncSession, limit: int = 50) -> dict:
-    limit = max(1, min(200, int(limit)))
+async def _recent_logs_payload(
+    session: AsyncSession, limit: int = 50, *, offset: int = 0, status: Optional[str] = None
+) -> dict:
+    limit = max(1, min(500, int(limit)))
+    offset = max(0, int(offset))
+    conditions = [GenerationLog.status == status] if status in {"success", "error"} else []
+    total = (await session.execute(select(func.count(GenerationLog.id)).where(*conditions))).scalar() or 0
     # 左连接 Account 表以拿到账号名
     rows = await session.execute(
         select(GenerationLog, Account.name, User.username)
         .outerjoin(Account, Account.id == GenerationLog.account_id)
         .outerjoin(User, User.id == GenerationLog.user_id)
+        .where(*conditions)
         .order_by(GenerationLog.timestamp.desc())
+        .offset(offset)
         .limit(limit)
     )
     items = []
@@ -1433,7 +1449,7 @@ async def _recent_logs_payload(session: AsyncSession, limit: int = 50) -> dict:
                 "is_stream": getattr(r, "is_stream", False),
             }
         )
-    return {"items": items, "total": len(items)}
+    return {"items": items, "total": int(total), "offset": offset, "limit": limit}
 
 
 @router.get("/logs")
@@ -1441,6 +1457,8 @@ async def recent_logs(
     payload=Depends(require_admin),
     session: AsyncSession = Depends(get_session),
     limit: int = 50,
+    offset: int = Query(default=0, ge=0),
+    status: Optional[str] = Query(default=None, pattern="^(success|error)$"),
 ):
     del payload
-    return await _recent_logs_payload(session, limit)
+    return await _recent_logs_payload(session, limit, offset=offset, status=status)

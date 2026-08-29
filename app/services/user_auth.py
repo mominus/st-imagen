@@ -9,7 +9,7 @@ import os
 import re
 import secrets
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional, Tuple
 
 from fastapi import Response
@@ -23,6 +23,10 @@ from app.services.crypto import CryptoService
 
 _USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{2,31}$")
 logger = logging.getLogger(__name__)
+
+
+def is_temporary_user(user: User) -> bool:
+    return getattr(user, "auth_kind", "password") in {"invite_guest", "invite_temporary"}
 
 
 class UserAuthError(Exception):
@@ -75,7 +79,8 @@ class InvalidPasswordError(UserAuthError):
 
 def build_user_usage_snapshot(user: User, *, now: Optional[datetime] = None) -> dict:
     current = now or utcnow_naive()
-    same_day = bool(user.last_used_at and user.last_used_at.date() == current.date())
+    temporary = is_temporary_user(user)
+    same_day = temporary or bool(user.last_used_at and user.last_used_at.date() == current.date())
     daily_used = max(0, int(user.daily_used or 0)) if same_day else 0
     runtime_in_flight = 0
     runtime_daily_used = 0
@@ -108,6 +113,8 @@ def is_user_expired(user: Optional[User], *, now: Optional[datetime] = None) -> 
 def get_effective_user_status(user: User, *, now: Optional[datetime] = None) -> str:
     if user.status != "active":
         return "disabled"
+    if getattr(user, "disabled_until", None) and user.disabled_until > (now or utcnow_naive()):
+        return "temporarily_disabled"
     if is_user_expired(user, now=now):
         return "expired"
     return "active"
@@ -230,10 +237,18 @@ class UserAuthService:
         return "disabled" if status == "disabled" else "active"
 
     @staticmethod
+    def _normalize_expiry(value: Optional[datetime]) -> Optional[datetime]:
+        if value is not None and value.tzinfo is not None:
+            return value.astimezone(timezone.utc).replace(tzinfo=None)
+        return value
+
+    @staticmethod
     def _ensure_user_can_access(user: User, *, now: Optional[datetime] = None) -> None:
         current = now or utcnow_naive()
         if user.status != "active":
             raise UserDisabledError("账号已停用")
+        if getattr(user, "disabled_until", None) and user.disabled_until > current:
+            raise UserDisabledError(f"账号因异常请求已临时禁用至 {user.disabled_until.isoformat()}")
         if is_user_expired(user, now=current):
             raise UserExpiredError("账号已过期")
 
@@ -277,7 +292,7 @@ class UserAuthService:
             total_requests=0,
             last_used_at=None,
             last_login_at=None,
-            expires_at=expires_at,
+            expires_at=self._normalize_expiry(expires_at),
             in_flight=0,
             max_inflight=inflight,
         )
@@ -303,9 +318,14 @@ class UserAuthService:
 
             res = await session.execute(text("PRAGMA table_info(users)"))
             cols = {row[1] for row in res.fetchall()}
-            if "expires_at" not in cols:
-                await session.execute(text("ALTER TABLE users ADD COLUMN expires_at DATETIME"))
-                logger.warning("schema auto-migrated on demand: users.expires_at added")
+            # Full startup migration lives in database._ensure_columns.  This
+            # on-demand compatibility path only covers legacy deployments that
+            # serve auth before completing a restart.
+            additions = {"expires_at": "DATETIME"}
+            for column, definition in additions.items():
+                if column not in cols:
+                    await session.execute(text(f"ALTER TABLE users ADD COLUMN {column} {definition}"))
+                    logger.warning("schema auto-migrated on demand: users.%s added", column)
 
             self._user_schema_checked = True
 
@@ -520,8 +540,9 @@ class UserAuthService:
         if max_inflight is not None:
             user.max_inflight = max(1, int(max_inflight))
         if expires_at_provided:
-            user.expires_at = expires_at
-            if expires_at is not None and expires_at <= now:
+            normalized_expiry = self._normalize_expiry(expires_at)
+            user.expires_at = normalized_expiry
+            if normalized_expiry is not None and normalized_expiry <= now:
                 should_revoke_sessions = True
         if new_password is not None:
             self._require_valid_password(new_password)
@@ -591,7 +612,7 @@ class UserAuthService:
                 username=normalized_username,
                 password_hash=CryptoService.hash_password(password),
                 status="active",
-                auth_kind="password",
+                auth_kind="invite_temporary",
                 invite_code_id=invite.id,
                 daily_quota=max(0, int(invite.daily_quota or 0)),
                 daily_used=0,
@@ -819,7 +840,8 @@ class UserAuthService:
 
         now = utcnow_naive()
         self._ensure_user_can_access(user, now=now)
-        same_day = bool(user.last_used_at and user.last_used_at.date() == now.date())
+        temporary = is_temporary_user(user)
+        same_day = temporary or bool(user.last_used_at and user.last_used_at.date() == now.date())
         current_daily_used = max(0, int(user.daily_used or 0)) if same_day else 0
         async with self._runtime_lock:
             current_in_flight = self.runtime_in_flight(user.id)
@@ -830,7 +852,7 @@ class UserAuthService:
             if current_in_flight >= max(1, int(user.max_inflight or 1)):
                 raise UserConcurrencyExceededError("当前账号并发已达上限，请稍后重试")
             if user.daily_quota > 0 and current_daily_used + current_in_flight >= user.daily_quota:
-                raise UserQuotaExceededError("今日生成额度已用尽")
+                raise UserQuotaExceededError("一次性生成额度已用尽" if temporary else "今日生成额度已用尽")
             self._runtime_in_flight[user.id] = current_in_flight + 1
             # Keep the loaded ORM object coherent for callers/admin responses;
             # this volatile field is intentionally not committed here.
@@ -874,7 +896,7 @@ class UserAuthService:
                     user = await self.get_user(inner, user_id)
                     if user is None:
                         return
-                    if not user.last_used_at or user.last_used_at.date() != now.date():
+                    if not is_temporary_user(user) and (not user.last_used_at or user.last_used_at.date() != now.date()):
                         user.daily_used = 0
                     user.daily_used += 1
                     user.total_requests += 1

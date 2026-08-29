@@ -304,7 +304,7 @@ function formatQuotaTitle(user) {
   if (!quota) {
     return `今日已用${used},每日额度不限`;
   }
-  return `今日已用${used},每日额度${quota}`;
+  return user.quota_type === "one_time" ? `已用${used},一次性额度${quota}` : `今日已用${used},每日额度${quota}`;
 }
 
 function getStoredAdminToken() {
@@ -392,7 +392,7 @@ function applyAuthState(auth) {
   const badgeText = authKind === "admin"
     ? `管理员 @${admin?.username || "admin"}`
     : user?.display_name || (user?.username ? `@${user.username}` : "");
-  const quotaText = authKind === "user" ? formatQuotaText(user) : "";
+  const quotaText = authKind === "user" && user.quota_type !== "one_time" ? formatQuotaText(user) : "";
   const hintText = state.authenticated ? "" : "点击右上角登录后，才能调用生图服务。";
 
   if (state.authenticated) {
