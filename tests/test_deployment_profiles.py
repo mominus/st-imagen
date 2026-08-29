@@ -11,6 +11,7 @@ def _yaml(name: str) -> dict:
 
 
 def test_4c8g_profile_relaxes_resources_without_adding_workers():
+    production_app = _yaml("compose.prod.yml")["services"]["app"]
     services = _yaml("compose.4c8g.yml")["services"]
     app = services["app"]
     nginx = services["nginx"]
@@ -22,6 +23,7 @@ def test_4c8g_profile_relaxes_resources_without_adding_workers():
     assert app["environment"]["GENERATED_IMAGE_DOWNLOAD_CONCURRENCY"] == "64"
     assert nginx["cpus"] == 0.6
     assert nginx["mem_limit"] == "512m"
+    assert production_app["environment"]["ACCOUNT_MAX_INFLIGHT"] == "${ACCOUNT_MAX_INFLIGHT:-10}"
 
 
 def test_cloudflare_profile_mounts_origin_certificate_and_https_proxy():
@@ -173,6 +175,18 @@ def test_runbook_diagnoses_non_json_upstream_responses_without_printing_keys():
     assert 'os.environ.get("ST_BASE_URL", "")' in runbook
     assert "不会输出 API key" in runbook
     assert "Content-Type" in runbook
+
+
+def test_runbook_recreates_app_after_env_changes():
+    runbook = (ROOT / "docs" / "deploy-digitalocean-cloudflare.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "后续修改 `.env` 后应用新参数" in runbook
+    assert "docker compose restart" in runbook
+    assert "docker compose $COMPOSE_FILES up -d --force-recreate app" in runbook
+    assert "ACCOUNT_MAX_INFLIGHT=10" in runbook
+    assert "已经存在且并发为 2 的账号不会" in runbook
 
 
 def test_runbook_repairs_public_upload_permissions_without_exposing_database():

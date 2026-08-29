@@ -150,6 +150,8 @@ class AccountUpdateRequest(BaseModel):
 
 class AccountImportRequest(BaseModel):
     raw_json: str = Field(min_length=1, max_length=5_000_000)
+    # 批量导入使用稳定的产品默认值，不受旧部署环境中遗留的 2 并发覆盖影响。
+    max_inflight: int = Field(default=10, ge=1, le=200)
 
 
 class AccountBulkStatusRequest(BaseModel):
@@ -920,6 +922,7 @@ async def import_accounts(
                 flow_id=flow_id,
                 api_key=normalized_public_key,
                 private_api_key=private_api_key or None,
+                max_inflight=req.max_inflight,
             )
         except Exception as exc:
             invalid.append(

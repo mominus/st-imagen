@@ -260,6 +260,13 @@ class GenerationCounterTests(unittest.IsolatedAsyncioTestCase):
 
 
 class RuntimeConfigPayloadTests(unittest.TestCase):
+    def test_account_import_defaults_to_ten_concurrent_requests(self) -> None:
+        from app.routers.admin import AccountImportRequest
+
+        request = AccountImportRequest(raw_json="[]")
+
+        self.assertEqual(request.max_inflight, 10)
+
     def test_default_image_cleanup_check_interval_is_six_hours(self) -> None:
         self.assertEqual(generate_mod.UPLOAD_CLEANUP_INTERVAL_SECONDS, 6 * 60 * 60)
 
