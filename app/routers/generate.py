@@ -192,7 +192,7 @@ GPT_IMAGE_2_QUALITIES = ["auto", "low", "medium", "high"]
 # 图生图下 UI 不让用户选比例/分辨率了，但 Nano Banana Pro 工作流字段仍需字符串占位，
 # 这里给个最安全的默认值。
 IMG2IMG_DEFAULT_ASPECT_RATIO = "1:1"
-IMG2IMG_DEFAULT_RESOLUTION = "2K"
+IMG2IMG_DEFAULT_RESOLUTION = "1K"
 REFERENCE_UPLOAD_MAX_BYTES = int(os.getenv("REFERENCE_UPLOAD_MAX_BYTES", str(20 * 1024 * 1024)))
 # 参考图上传流式落盘的分块大小：内存占用与文件大小解耦
 UPLOAD_STREAM_CHUNK_BYTES = 1024 * 1024
@@ -457,6 +457,10 @@ def _generation_log_dimensions(req: GenerateRequest) -> tuple[str, str]:
     Nano Banana Pro uses aspect ratio/resolution, while GPT Image 2 uses
     size/quality in those same positions.
     """
+    if req.mode == "img2img":
+        # The workflow still receives its required aspect-ratio placeholder,
+        # but image-to-image has no user-selected size to show in history.
+        return "", IMG2IMG_DEFAULT_RESOLUTION
     if req.mode == "text2img" and req.model == GPT_IMAGE_2_MODEL:
         return req.size.strip(), (req.quality or "auto").strip().lower()
     return req.aspect_ratio.strip(), req.resolution.strip()
@@ -1338,8 +1342,8 @@ def _build_payload(req: GenerateRequest) -> Dict[str, str]:
 
     if req.mode == "img2img":
         # 图生图模式：比例/分辨率 UI 不暴露，但 Nano Banana Pro 工作流字段仍需占位。
-        aspect = (req.aspect_ratio or IMG2IMG_DEFAULT_ASPECT_RATIO).strip() or IMG2IMG_DEFAULT_ASPECT_RATIO
-        resolution = (req.resolution or IMG2IMG_DEFAULT_RESOLUTION).strip() or IMG2IMG_DEFAULT_RESOLUTION
+        aspect = IMG2IMG_DEFAULT_ASPECT_RATIO
+        resolution = IMG2IMG_DEFAULT_RESOLUTION
     elif is_gpt_image_2:
         aspect = ""
         resolution = ""

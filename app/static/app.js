@@ -37,8 +37,8 @@ const REFERENCE_UPLOAD_DEFAULT_TEXT = "";
 const RECENT_IMAGES_LIMIT = 24;
 // 服务端工作流允许 200s 无进度；浏览器再留 20s 保护余量。
 const GENERATE_STREAM_IDLE_TIMEOUT_MS = 220 * 1000;
-const IMG2IMG_PREVIEW_DEFAULT_ASPECT_RATIO = "1:1";
-const IMG2IMG_PREVIEW_DEFAULT_RESOLUTION = "2K";
+const IMG2IMG_PREVIEW_DEFAULT_ASPECT_RATIO = "";
+const IMG2IMG_PREVIEW_DEFAULT_RESOLUTION = "1K";
 const GPT_IMAGE_2_MODEL = "GPT Image 2";
 function parseApiDate(value) {
   if (window.STImagen?.parseApiDate) {
@@ -1141,6 +1141,7 @@ function renderPreviewModal() {
   $("#previewModeChip").textContent = modeText;
   $("#previewModelChip").textContent = modelText;
   $("#previewAspectChip").textContent = aspectRatioText;
+  $("#previewAspectChip").classList.toggle("is-hidden", entry.mode === "img2img");
   $("#previewResolutionChip").textContent = resolutionText;
   $("#previewResponseTime").textContent = responseTimeText;
   $("#previewTimestamp").textContent = timestampText;
