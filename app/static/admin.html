@@ -317,6 +317,7 @@
                         <th class="col-user-status">状态</th>
                         <th class="col-user-quota">额度 / 并发</th>
                         <th class="col-user-expiry">期限</th>
+                        <th class="col-user-failures">失败次数</th>
                         <th class="col-user-total">累计 / 最近登录</th>
                         <th class="col-user-actions">操作</th>
                       </tr>
@@ -790,9 +791,9 @@
         </div>
 
         <div class="modal-field">
-          <label>每日额度</label>
+          <label>一次性额度</label>
           <input id="i_daily_quota" type="number" min="0" max="1000000" value="10" />
-          <p class="muted" style="margin-top: 8px">0 表示不限制。</p>
+          <p class="muted" style="margin-top: 8px">邀请码用户不享受每日重置，额度用完即止；0 表示不限制。</p>
         </div>
 
         <div class="modal-field">

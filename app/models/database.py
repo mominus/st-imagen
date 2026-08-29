@@ -9,7 +9,7 @@ from app.time_utils import utcnow_naive
 import os
 import logging
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import AsyncGenerator, Optional
 
 from sqlalchemy import (
@@ -20,6 +20,7 @@ from sqlalchemy import (
     Index,
     String,
     Text,
+    case,
     event,
     text,
 )
@@ -173,6 +174,8 @@ class User(Base):
     expires_at = Column(DateTime, nullable=True, index=True)
     in_flight = Column(Integer, default=0, nullable=False)
     max_inflight = Column(Integer, default=2, nullable=False)
+    abnormal_failure_count = Column(Integer, default=0, nullable=False)
+    disabled_until = Column(DateTime, nullable=True, index=True)
     created_at = Column(DateTime, default=_utcnow, nullable=False)
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow, nullable=False)
 
@@ -242,6 +245,38 @@ def _populate_generation_failure_fields(_mapper, _connection, target: Generation
     category = target.failure_category or classify_dashboard_failure(target.error_message)
     target.failure_category = category
     target.error_code = target.error_code or dashboard_failure_code(category)
+
+
+def is_abnormal_generation_failure(message: object) -> bool:
+    """Failures caused by rejected/invalid generation requests, not infrastructure."""
+    value = str(message or "").lower()
+    if not value:
+        return False
+    infrastructure = ("timeout", "timed out", "connection", "network", "502", "503", "504", "gateway")
+    rejected = (
+        "error in node", "safety system", "safety", "色情", "违规", "not allowed",
+        "invalid configuration", "no image data found", "failed to generate image", "error code: 400",
+    )
+    return not any(item in value for item in infrastructure) and any(item in value for item in rejected)
+
+
+@event.listens_for(GenerationLog, "after_insert")
+def _track_abnormal_user_failure(_mapper, connection, target: GenerationLog) -> None:
+    """Atomically count abusive failures and impose a three-hour temporary ban."""
+    if not target.user_id or target.status == "success" or not is_abnormal_generation_failure(target.error_message):
+        return
+    now = _utcnow()
+    connection.execute(
+        User.__table__.update()
+        .where(User.id == target.user_id)
+        .values(
+            abnormal_failure_count=User.abnormal_failure_count + 1,
+            disabled_until=case(
+                (User.abnormal_failure_count + 1 > 3, now + timedelta(hours=3)),
+                else_=User.disabled_until,
+            ),
+        )
+    )
 
 
 class GenerationCounter(Base):
@@ -328,6 +363,8 @@ async def _ensure_columns(conn) -> None:
         ("invite_codes", "code_suffix", "VARCHAR(16)"),
         ("users", "expires_at", "DATETIME"),
         ("users", "auth_kind", "VARCHAR(24) NOT NULL DEFAULT 'password'"),
+        ("users", "abnormal_failure_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("users", "disabled_until", "DATETIME"),
         ("generation_logs", "user_id", "VARCHAR(36)"),
         ("generation_logs", "output_images", "TEXT"),
         ("generation_logs", "error_code", "VARCHAR(64)"),

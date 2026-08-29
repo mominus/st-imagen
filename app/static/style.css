@@ -5521,7 +5521,9 @@ td strong {
    Admin Layout
    ========================================================== */
 .admin-shell {
-  max-width: 1460px;
+  max-width: none;
+  margin-left: 0;
+  margin-right: 0;
 }
 
 .admin-layout {
@@ -5544,6 +5546,10 @@ td strong {
     var(--ink-2);
   box-shadow: var(--shadow-card);
 }
+
+/* Keep row action popovers above the table viewport, including the last row. */
+#usersTable .table-more-menu { top: auto; bottom: calc(100% + 6px); z-index: 30; }
+#usersTable tbody tr:first-child .table-more-menu { top: calc(100% + 6px); bottom: auto; }
 
 .admin-sidebar-head h2 {
   margin: 0;

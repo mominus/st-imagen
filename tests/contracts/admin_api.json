@@ -40,6 +40,6 @@
   "resource_fields": {
     "account": ["id", "name", "org_id", "flow_id", "api_key_masked", "private_api_key_set", "status", "total_requests", "in_flight", "max_inflight", "last_used_at", "created_at", "updated_at"],
     "invite": ["id", "code_prefix", "code_suffix", "raw_code", "note", "max_uses", "used_count", "remaining_uses", "daily_quota", "max_inflight", "status", "expires_at", "revoked_at", "created_at", "updated_at"],
-    "user": ["id", "username", "status", "effective_status", "is_expired", "invite_code_id", "daily_quota", "daily_used", "total_requests", "in_flight", "quota_remaining", "max_inflight", "last_used_at", "last_login_at", "expires_at", "created_at", "updated_at"]
+    "user": ["id", "username", "status", "effective_status", "is_expired", "invite_code_id", "auth_kind", "quota_type", "daily_quota", "daily_used", "total_requests", "in_flight", "quota_remaining", "max_inflight", "last_used_at", "last_login_at", "expires_at", "created_at", "updated_at", "failure_count", "disabled_until"]
   }
 }

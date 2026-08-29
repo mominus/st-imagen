@@ -37,8 +37,8 @@ const REFERENCE_UPLOAD_DEFAULT_TEXT = "";
 const RECENT_IMAGES_LIMIT = 24;
 // 服务端工作流允许 200s 无进度；浏览器再留 20s 保护余量。
 const GENERATE_STREAM_IDLE_TIMEOUT_MS = 220 * 1000;
-const IMG2IMG_PREVIEW_DEFAULT_ASPECT_RATIO = "1:1";
-const IMG2IMG_PREVIEW_DEFAULT_RESOLUTION = "2K";
+const IMG2IMG_PREVIEW_DEFAULT_ASPECT_RATIO = "";
+const IMG2IMG_PREVIEW_DEFAULT_RESOLUTION = "1K";
 const GPT_IMAGE_2_MODEL = "GPT Image 2";
 function parseApiDate(value) {
   if (window.STImagen?.parseApiDate) {
@@ -304,7 +304,7 @@ function formatQuotaTitle(user) {
   if (!quota) {
     return `今日已用${used},每日额度不限`;
   }
-  return `今日已用${used},每日额度${quota}`;
+  return user.quota_type === "one_time" ? `已用${used},一次性额度${quota}` : `今日已用${used},每日额度${quota}`;
 }
 
 function getStoredAdminToken() {
@@ -392,7 +392,7 @@ function applyAuthState(auth) {
   const badgeText = authKind === "admin"
     ? `管理员 @${admin?.username || "admin"}`
     : user?.display_name || (user?.username ? `@${user.username}` : "");
-  const quotaText = authKind === "user" ? formatQuotaText(user) : "";
+  const quotaText = authKind === "user" && user.quota_type !== "one_time" ? formatQuotaText(user) : "";
   const hintText = state.authenticated ? "" : "点击右上角登录后，才能调用生图服务。";
 
   if (state.authenticated) {
@@ -1141,6 +1141,7 @@ function renderPreviewModal() {
   $("#previewModeChip").textContent = modeText;
   $("#previewModelChip").textContent = modelText;
   $("#previewAspectChip").textContent = aspectRatioText;
+  $("#previewAspectChip").classList.toggle("is-hidden", entry.mode === "img2img");
   $("#previewResolutionChip").textContent = resolutionText;
   $("#previewResponseTime").textContent = responseTimeText;
   $("#previewTimestamp").textContent = timestampText;

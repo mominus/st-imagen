@@ -69,6 +69,9 @@ class GeneratePayloadTests(unittest.TestCase):
             },
         )
 
+        self.assertEqual(generate_mod.IMG2IMG_DEFAULT_RESOLUTION, "1K")
+        self.assertEqual(generate_mod._generation_log_dimensions(req), ("", "1K"))
+
     def test_default_model_and_parameter_options_match_supported_models(self) -> None:
         self.assertIn(generate_mod.GPT_IMAGE_2_MODEL, generate_mod.TEXT2IMG_MODELS)
         # sizes 的 value 是提交/in-4 传参用的标准参数；label 只用于前端展示
