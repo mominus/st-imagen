@@ -278,6 +278,32 @@ ST_TRUST_ENV=false
 `/inference/...` 路径。保存配置后继续第 6 节；如果后台测试返回 502，再查第 12.5 节，
 不要在正常部署流程中提前启动半配置状态的容器。
 
+### 5.1 后续修改 `.env` 后应用新参数
+
+首次部署继续执行第 6～7 节即可。站点已经运行后，如果再次修改 `.env`，单纯执行
+`docker compose restart` **不会更新旧容器的环境变量**；必须让 Compose 重新创建 app
+容器：
+
+```bash
+cd /opt/st-imagen
+export COMPOSE_FILES='-f compose.prod.yml -f compose.cloudflare.yml -f compose.4c8g.yml'
+docker compose $COMPOSE_FILES config --quiet
+docker compose $COMPOSE_FILES up -d --force-recreate app
+docker compose $COMPOSE_FILES ps
+docker compose $COMPOSE_FILES logs --tail=100 app
+```
+
+例如修改 `ACCOUNT_MAX_INFLIGHT=10` 后，验证容器实际获得的新值：
+
+```bash
+docker compose $COMPOSE_FILES exec app sh -c \
+  'printf "ACCOUNT_MAX_INFLIGHT=%s\\n" "$ACCOUNT_MAX_INFLIGHT"'
+```
+
+预期输出 `ACCOUNT_MAX_INFLIGHT=10`。该默认值只影响之后新增或批量导入的账号；数据库中
+已经存在且并发为 2 的账号不会被环境变量自动改写，需在后台编辑账号。批量导入接口本身
+现在也固定以 10 作为未显式指定时的默认并发。
+
 ## 6. 在 Cloudflare 创建 DNS 与 Origin CA 证书
 
 ### 6.1 DNS
