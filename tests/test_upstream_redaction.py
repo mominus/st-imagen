@@ -16,6 +16,7 @@ class UpstreamRedactionTests(unittest.TestCase):
         provider = "sta" + "ckai"
         self.assertNotIn(provider, text)
         self.assertNotIn(provider.replace("ai", "-ai"), text)
+        self.assertNotIn("support@" + provider + ".com", text)
 
     def test_redact_upstream_text_replaces_names_and_domains(self) -> None:
         provider = "sta" + "ckai"
@@ -26,12 +27,13 @@ class UpstreamRedactionTests(unittest.TestCase):
         redacted = redact_upstream_text(source)
 
         self.assert_upstream_identifiers_are_hidden(redacted)
-        self.assertIn("st request failed", redacted)
-        self.assertIn("https://st/path", redacted)
+        self.assertIn("Upstream request failed", redacted)
+        self.assertIn("https://Upstream/path", redacted)
 
     def test_redact_upstream_data_recurses_without_mutating_input(self) -> None:
         source = {
             "message": ("sta" + "ckai error"),
+            ("sta" + "ckai_source"): "hidden key",
             "nested": ["sta" + "ckAI", {"url": "https://api." + "sta" + "ckai.com/run"}],
         }
 
@@ -39,7 +41,13 @@ class UpstreamRedactionTests(unittest.TestCase):
 
         self.assertEqual(source["message"], "sta" + "ckai error")
         self.assert_upstream_identifiers_are_hidden(redacted)
-        self.assertEqual(redacted["nested"][1]["url"], "https://st/run")
+        self.assertEqual(redacted["nested"][1]["url"], "https://Upstream/run")
+
+    def test_redacts_short_name_and_support_addresses_case_insensitively(self) -> None:
+        provider = "sta" + "ckai"
+        source = f"ST error; contact SUPPORT@{provider}.COM or support@{provider.replace('ai', '-ai')}.com"
+        redacted = redact_upstream_text(source)
+        self.assertEqual(redacted, "Upstream error; contact Upstream or Upstream")
 
     def test_st_error_redacts_public_message_and_payload(self) -> None:
         error = STError(

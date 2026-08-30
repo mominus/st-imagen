@@ -234,11 +234,32 @@ function bindAccountActions(items) {
 function bindMoreMenus() {
   $$(".table-more").forEach((details) => {
     const summary = details.querySelector("summary");
-    if (!summary) return;
+    const menu = details.querySelector(".table-more-menu");
+    if (!summary || !menu) return;
+    const positionMenu = () => {
+      if (!details.open || window.matchMedia("(max-width: 760px)").matches) return;
+      const anchor = summary.getBoundingClientRect();
+      const menuWidth = Math.max(132, menu.offsetWidth);
+      const menuHeight = menu.offsetHeight;
+      const left = Math.min(window.innerWidth - menuWidth - 12, Math.max(12, anchor.right - menuWidth));
+      const roomBelow = window.innerHeight - anchor.bottom;
+      const top = roomBelow >= menuHeight + 12
+        ? anchor.bottom + 6
+        : Math.max(12, anchor.top - menuHeight - 6);
+      menu.style.left = `${left}px`;
+      menu.style.top = `${top}px`;
+    };
     const syncExpandedState = () => {
       summary.setAttribute("aria-expanded", details.open ? "true" : "false");
+      if (details.open) requestAnimationFrame(positionMenu);
+      else {
+        menu.style.removeProperty("left");
+        menu.style.removeProperty("top");
+      }
     };
     details.addEventListener("toggle", syncExpandedState);
+    window.addEventListener("resize", positionMenu);
+    window.addEventListener("scroll", positionMenu, true);
     details.querySelectorAll(".table-more-menu button").forEach((button) => {
       button.addEventListener("click", () => {
         details.open = false;

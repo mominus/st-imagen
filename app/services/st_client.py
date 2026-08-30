@@ -197,7 +197,7 @@ class STClient:
         except Exception:
             err_payload = {"raw": body.decode("utf-8", errors="replace")[:2000]}
         return STError(
-            f"ST HTTP {resp.status_code}",
+            f"Upstream HTTP {resp.status_code}",
             status_code=resp.status_code,
             payload=err_payload,
             headers=headers,

@@ -6,6 +6,12 @@ from app.routers import generate as generate_mod
 
 
 class GeneratePayloadTests(unittest.TestCase):
+    def test_prompt_accepts_up_to_eight_thousand_characters(self) -> None:
+        req = generate_mod.GenerateRequest(prompt="画" * 8000, model="Nano Banana Pro")
+        self.assertEqual(len(req.prompt), 8000)
+        with self.assertRaises(ValueError):
+            generate_mod.GenerateRequest(prompt="画" * 8001, model="Nano Banana Pro")
+
     def test_text2img_nano_banana_pro_uses_aspect_ratio_and_resolution(self) -> None:
         req = generate_mod.GenerateRequest(
             prompt="a red apple on a white table",

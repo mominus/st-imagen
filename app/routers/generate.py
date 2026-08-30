@@ -438,7 +438,7 @@ def _model_options_for_img2img() -> List[Dict[str, str]]:
 
 
 class GenerateRequest(BaseModel):
-    prompt: str = Field(min_length=1, max_length=4000)
+    prompt: str = Field(min_length=1, max_length=8000)
     model: str = Field(min_length=1, max_length=100)
     aspect_ratio: str = Field(default="1:1", max_length=20)
     resolution: str = Field(default="2K", max_length=20)
