@@ -430,13 +430,18 @@ function renderUserExpiry(user) {
 
 function renderUserRow(user) {
   const lifecycle = computeUserLifecycle(user);
-  const toggle = toggleActionMeta(user.status);
+  // 临时禁用（异常请求）与手动停用一致提供"启用"按钮；启用会顺带解除临时禁用
+  const toggle = toggleActionMeta(lifecycle === "disabled" ? "disabled" : user.status);
   return `
     <tr data-id="${user.id}">
       <td class="col-user-name" data-label="用户">
         <div class="entity-cell">
           <strong>${escapeHtml(user.username)}</strong>
-          <span class="entity-meta">${escapeHtml(user.last_login_at ? `最近登录 ${fmtRelativeTime(user.last_login_at)}` : "尚未登录")}</span>
+          <span class="entity-meta">${escapeHtml(
+            `${user.last_login_at ? `登录${fmtRelativeTime(user.last_login_at)}` : "未登录"}，${
+              user.last_used_at ? `生成${fmtRelativeTime(user.last_used_at)}` : "未生成"
+            }`,
+          )}</span>
         </div>
       </td>
       <td class="col-user-status" data-label="状态">
@@ -458,12 +463,6 @@ function renderUserRow(user) {
       <td class="col-user-failures" data-label="失败次数">
         <div class="stack-cell"><strong class="mono">${fmtNumber(user.failure_count || 0)}</strong>
         ${user.disabled_until ? `<span class="table-note table-note-warning">禁用至 ${escapeHtml(fmtDate(user.disabled_until))}</span>` : ""}</div>
-      </td>
-      <td class="col-user-total" data-label="累计 / 最近登录">
-        <div class="entity-cell">
-          <strong class="mono">${fmtNumber(user.total_requests || 0)}</strong>
-          <span class="entity-meta">${escapeHtml(user.last_used_at ? `最近生成 ${fmtRelativeTime(user.last_used_at)}` : "尚无生成记录")}</span>
-        </div>
       </td>
       <td class="col-user-actions" data-label="操作">
         <div class="table-actions">
@@ -488,7 +487,8 @@ function bindUserActions(items) {
     if (!user) return;
 
     row.querySelector('[data-action="toggle-user"]').addEventListener("click", async (event) => {
-      const toggle = toggleActionMeta(user.status);
+      const lifecycle = computeUserLifecycle(user);
+      const toggle = toggleActionMeta(lifecycle === "disabled" ? "disabled" : user.status);
       if (!confirm(`确认${toggle.label}用户 "${user.username}" ?`)) return;
       try {
         await withBusyButton(event.currentTarget, `${toggle.label}中…`, async () => {
@@ -531,7 +531,12 @@ function bindUserActions(items) {
 function renderUsersTable() {
   const tbody = $("#usersTable tbody");
   const summary = $("#usersSummary");
+  const deleteButton = $("#deleteAllUsersBtn");
   const items = filteredUsers();
+  const hasFilters =
+    state.filters.users.query.trim() ||
+    state.filters.users.status !== "all" ||
+    state.filters.users.lifecycle !== "all";
   const active = state.users.filter((item) => computeUserLifecycle(item) === "active").length;
   const expiring = state.users.filter((item) => isExpiringSoon(item)).length;
   renderToolbarMeta(
@@ -546,13 +551,19 @@ function renderUsersTable() {
   if (summary) {
     summary.textContent = `共 ${fmtNumber(state.users.length)} 个用户，${fmtNumber(active)} 个可用；${fmtNumber(expiring)} 个 7 天内到期。`;
   }
+  if (deleteButton) {
+    deleteButton.textContent = hasFilters
+      ? `删除筛选结果${items.length ? `（${fmtNumber(items.length)}）` : ""}`
+      : "全部删除";
+    deleteButton.disabled = items.length === 0;
+  }
 
   if (!state.users.length) {
-    tbody.innerHTML = renderEmptyRow(7, "暂无用户。", "可手动创建用户，或先发放邀请码。");
+    tbody.innerHTML = renderEmptyRow(6, "暂无用户。", "可手动创建用户，或先发放邀请码。");
     return;
   }
   if (!items.length) {
-    tbody.innerHTML = renderEmptyRow(7, "没有匹配结果。", "尝试放宽筛选条件。");
+    tbody.innerHTML = renderEmptyRow(6, "没有匹配结果。", "尝试放宽筛选条件。");
     return;
   }
   tbody.innerHTML = items.map(renderUserRow).join("");
@@ -562,7 +573,7 @@ function renderUsersTable() {
 
 async function refreshUsers() {
   const tbody = $("#usersTable tbody");
-  tbody.innerHTML = renderEmptyRow(7, "用户列表加载中…", "正在同步用户数据。");
+  tbody.innerHTML = renderEmptyRow(6, "用户列表加载中…", "正在同步用户数据。");
   try {
     const data = await api("/api/admin/users");
     state.users = Array.isArray(data.items) ? data.items : [];
@@ -580,7 +591,7 @@ async function refreshUsers() {
       "users",
       "支持搜索与筛选。",
     );
-    tbody.innerHTML = renderErrorRow(7, err.message);
+    tbody.innerHTML = renderErrorRow(6, err.message);
     const summary = $("#usersSummary");
     if (summary) summary.textContent = `用户列表加载失败：${err.message}`;
     renderInsightPanels();
@@ -589,22 +600,51 @@ async function refreshUsers() {
 }
 
 async function deleteAllUsers(button) {
-  if (!state.users.length) {
-    showToast("当前没有用户可删除", "info");
+  const targets = filteredUsers();
+  if (!targets.length) {
+    showToast("当前筛选结果没有用户可删除", "info");
     return;
   }
-  if (!confirm("确认删除所有用户？此操作会同时清空用户会话，且不可恢复。")) return;
+  const deletingFiltered = Boolean(
+    state.filters.users.query.trim() ||
+    state.filters.users.status !== "all" ||
+    state.filters.users.lifecycle !== "all",
+  );
+  const prompt = deletingFiltered
+    ? `确认删除当前筛选的 ${targets.length} 个用户？此操作会同时清空用户会话，且不可恢复。`
+    : "确认删除所有用户？此操作会同时清空用户会话，且不可恢复。";
+  if (!confirm(prompt)) return;
   try {
     await withBusyButton(button, "删除中…", async () => {
-      try {
-        await api("/api/admin/users", { method: "DELETE" });
-      } catch (err) {
-        if (err.status !== 404 && err.status !== 405) throw err;
-        if (isMissingDeleteRouteError(err)) {
-          throw new Error("当前后端实例还没加载用户批量删除接口，请先重启 st-imagen 服务。");
+      if (!deletingFiltered) {
+        try {
+          await api("/api/admin/users", { method: "DELETE" });
+        } catch (err) {
+          if (err.status !== 404 && err.status !== 405) throw err;
+          if (isMissingDeleteRouteError(err)) {
+            throw new Error("当前后端实例还没加载用户批量删除接口，请先重启 st-imagen 服务。");
+          }
+          const failures = [];
+          for (const user of targets) {
+            try {
+              await api(`/api/admin/users/${user.id}`, { method: "DELETE" });
+            } catch (itemErr) {
+              if (isMissingDeleteRouteError(itemErr)) {
+                throw new Error("当前后端实例还没加载用户删除接口，请先重启 st-imagen 服务。");
+              }
+              failures.push(`${user.username}: ${itemErr.message}`);
+            }
+          }
+          if (failures.length) {
+            const summary = failures.slice(0, 3).join("；");
+            throw new Error(
+              failures.length > 3 ? `${summary}；另外还有 ${failures.length - 3} 个失败` : summary,
+            );
+          }
         }
+      } else {
         const failures = [];
-        for (const user of state.users) {
+        for (const user of targets) {
           try {
             await api(`/api/admin/users/${user.id}`, { method: "DELETE" });
           } catch (itemErr) {
@@ -624,7 +664,7 @@ async function deleteAllUsers(button) {
       await Promise.all([refreshUsers(), refreshOverview()]);
       renderInsightPanels();
     });
-    showToast("全部用户已删除", "success");
+    showToast(deletingFiltered ? "筛选的用户已删除" : "全部用户已删除", "success");
   } catch (err) {
     showToast(`全部删除失败：${err.message}`, "error");
   }

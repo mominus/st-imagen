@@ -4900,18 +4900,9 @@ td strong {
   min-width: 176px;
 }
 
-#usersTable .col-user-total {
-  min-width: 160px;
-}
-
 #usersTable .col-user-actions {
   width: 1%;
   min-width: 190px;
-}
-
-#usersTable .col-user-total .entity-cell {
-  justify-items: start;
-  text-align: left;
 }
 
 #usersTable .col-user-actions,

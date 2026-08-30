@@ -219,6 +219,85 @@ class UserAuthServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(raw_token)
         self.assertEqual(len(session.added), 2, "guest user and opaque session should be persisted")
 
+    async def test_invite_login_applies_invite_expiry_to_new_guest_user(self) -> None:
+        expires_at = datetime.now(UTC).replace(tzinfo=None) + timedelta(days=7)
+        invite = InviteCode(
+            id="invite-guest-expiry",
+            code_hash=CryptoService.hash_api_key("sti_expiring_code"),
+            code_prefix="sti_expiring",
+            code_suffix="code",
+            max_uses=1,
+            used_count=0,
+            daily_quota=5,
+            max_inflight=1,
+            expires_at=expires_at,
+        )
+        session = FakeSession(
+            [
+                FakeExecResult(rows=[(0, "expires_at", "DATETIME", 0, None, 0)]),
+                FakeExecResult(scalar=invite),
+                FakeExecResult(scalar=None),
+            ]
+        )
+        service = user_auth_mod.UserAuthService()
+
+        user, _ = await service.login_with_invite(
+            session,
+            invite_code="sti_expiring_code",
+            ip_address="203.0.113.5",
+            user_agent="pytest",
+        )
+
+        self.assertEqual(user.expires_at, expires_at, "guest account should inherit invite expiry")
+
+    async def test_invite_login_backfills_expiry_for_legacy_guest_user(self) -> None:
+        expires_at = datetime.now(UTC).replace(tzinfo=None) + timedelta(days=7)
+        invite = InviteCode(
+            id="invite-guest-legacy",
+            code_hash=CryptoService.hash_api_key("sti_legacy_code"),
+            code_prefix="sti_legacy",
+            code_suffix="code",
+            max_uses=5,
+            used_count=1,
+            daily_quota=5,
+            max_inflight=1,
+            expires_at=expires_at,
+        )
+        existing = User(
+            id="legacy-guest",
+            username="sti_legacy_code",
+            password_hash="unused",
+            status="active",
+            auth_kind="invite_guest",
+            invite_code_id=invite.id,
+            daily_quota=5,
+            daily_used=0,
+            max_inflight=1,
+            last_login_at=datetime.now(UTC).replace(tzinfo=None) - timedelta(days=1),
+        )
+        session = FakeSession(
+            [
+                FakeExecResult(rows=[(0, "expires_at", "DATETIME", 0, None, 0)]),
+                FakeExecResult(scalar=invite),
+                FakeExecResult(scalar=existing),
+            ]
+        )
+        service = user_auth_mod.UserAuthService()
+
+        user, _ = await service.login_with_invite(
+            session,
+            invite_code="sti_legacy_code",
+            ip_address="203.0.113.5",
+            user_agent="pytest",
+        )
+
+        self.assertIs(user, existing)
+        self.assertEqual(
+            user.expires_at,
+            expires_at,
+            "permanent legacy guest should adopt the invite expiry on re-login",
+        )
+
     async def test_create_user_supports_quota_and_expiry(self) -> None:
         session = FakeSession(
             [

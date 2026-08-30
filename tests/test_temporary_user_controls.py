@@ -1,10 +1,12 @@
 import asyncio
-from datetime import timedelta
+import re
+from datetime import datetime, timedelta
 
+import pytest
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models.database import Base, GenerationLog, User, is_abnormal_generation_failure
-from app.services.user_auth import build_user_usage_snapshot
+from app.services.user_auth import UserAuthService, UserDisabledError, build_user_usage_snapshot
 from app.time_utils import utcnow_naive
 
 
@@ -39,6 +41,16 @@ def test_abnormal_classifier_excludes_network_failures():
         "Error in Node Text to Image: Your request was rejected by the safety system"
     )
     assert not is_abnormal_generation_failure("Error in Node Text to Image: Network timeout")
+
+
+def test_temporary_ban_message_uses_beijing_time_format():
+    user = _user(disabled_until=datetime(2026, 8, 30, 4, 21, 13))
+    with pytest.raises(UserDisabledError) as exc_info:
+        UserAuthService._ensure_user_can_access(user, now=datetime(2026, 8, 30, 1, 0, 0))
+    message = str(exc_info.value)
+    # UTC 04:21:13 → 北京时间 12:21:13
+    assert message == "异常请求累计超过 3 次，账号禁用至08/30 12:21:13"
+    assert re.fullmatch(r"异常请求累计超过 3 次，账号禁用至\d{2}/\d{2} \d{2}:\d{2}:\d{2}", message)
 
 
 def test_four_abnormal_failures_temporarily_disable_user_for_three_hours():

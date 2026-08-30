@@ -1,7 +1,7 @@
 """普通用户鉴权：邀请码激活 + 本地账号 + 服务端会话。"""
 from __future__ import annotations
 
-from app.time_utils import utcnow_naive
+from app.time_utils import format_beijing_time, utcnow_naive
 
 import asyncio
 import logging
@@ -248,7 +248,9 @@ class UserAuthService:
         if user.status != "active":
             raise UserDisabledError("账号已停用")
         if getattr(user, "disabled_until", None) and user.disabled_until > current:
-            raise UserDisabledError(f"账号因异常请求已临时禁用至 {user.disabled_until.isoformat()}")
+            raise UserDisabledError(
+                f"异常请求累计超过 3 次，账号禁用至{format_beijing_time(user.disabled_until)}"
+            )
         if is_user_expired(user, now=current):
             raise UserExpiredError("账号已过期")
 
@@ -620,6 +622,7 @@ class UserAuthService:
                 last_login_at=now,
                 in_flight=0,
                 max_inflight=max(1, int(invite.max_inflight or self._default_user_max_inflight)),
+                expires_at=self._normalize_expiry(invite.expires_at),
             )
             invite.used_count += 1
             invite.updated_at = now
@@ -684,12 +687,16 @@ class UserAuthService:
                     last_login_at=now,
                     in_flight=0,
                     max_inflight=max(1, int(invite.max_inflight or self._default_user_max_inflight)),
+                    expires_at=self._normalize_expiry(invite.expires_at),
                 )
                 session.add(user)
             else:
                 self._ensure_user_can_access(user, now=now)
                 user.last_login_at = now
                 user.updated_at = now
+                # 旧数据回填：邀请码设置了期限但历史访客账号仍是永久有效
+                if user.expires_at is None and invite.expires_at is not None:
+                    user.expires_at = self._normalize_expiry(invite.expires_at)
             invite.used_count += 1
             invite.updated_at = now
             raw_token = await self._create_session(

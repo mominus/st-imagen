@@ -1314,11 +1314,13 @@ async def _stats_overview_payload(session: AsyncSession) -> dict:
     error_calls = total_calls - success_calls
     total_generated_images = await get_total_generated_images(session)
     total_users = (await session.execute(select(func.count(User.id)))).scalar_one()
+    now = utcnow_naive()
     active_users = (
         await session.execute(
             select(func.count(User.id))
             .where(User.status == "active")
-            .where(or_(User.expires_at.is_(None), User.expires_at > utcnow_naive()))
+            .where(or_(User.expires_at.is_(None), User.expires_at > now))
+            .where(or_(User.disabled_until.is_(None), User.disabled_until <= now))
         )
     ).scalar_one()
     total_invites = (await session.execute(select(func.count(InviteCode.id)))).scalar_one()

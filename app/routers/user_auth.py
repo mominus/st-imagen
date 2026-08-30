@@ -142,6 +142,8 @@ async def invite_login(
         )
     except (InvalidInviteCodeError, InviteCodeExhaustedError, InviteCodeRevokedError) as exc:
         return JSONResponse({"success": False, "message": str(exc)}, status_code=400)
+    except (UserDisabledError, UserExpiredError) as exc:
+        return JSONResponse({"success": False, "message": str(exc)}, status_code=401)
 
     await session.commit()
     resp = JSONResponse({"success": True, "user": _user_to_dict(user)})

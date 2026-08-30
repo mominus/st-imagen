@@ -453,7 +453,10 @@ function computeAccountLoadMeta(account) {
 
 function computeUserLifecycle(user) {
   if (user?.effective_status === "expired" || user?.is_expired) return "expired";
-  if (user?.status === "disabled") return "disabled";
+  // 异常请求触发的临时禁用（disabled_until 未到期）与手动停用同样显示为停用
+  if (user?.status === "disabled" || user?.effective_status === "temporarily_disabled") {
+    return "disabled";
+  }
   return "active";
 }
 
