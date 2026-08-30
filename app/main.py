@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
@@ -40,6 +41,7 @@ from app.services.account_pool import get_account_pool_service
 from app.services.auth import get_auth_service
 from app.services.database_maintenance import remove_expired_sessions, remove_old_generation_logs
 from app.services.st_client import close_st_client
+from app.services.upstream_redaction import redact_upstream_data
 from app.services.user_auth import get_user_auth_service
 
 logging.basicConfig(level=logging.INFO)
@@ -160,6 +162,24 @@ app = FastAPI(
     openapi_url=None,
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(HTTPException)
+async def sanitized_http_exception(_request: Request, exc: HTTPException):
+    """Guarantee that no upstream provider identifier crosses the API boundary."""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": redact_upstream_data(exc.detail)},
+        headers=exc.headers,
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def sanitized_validation_exception(_request: Request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=422,
+        content={"detail": redact_upstream_data(exc.errors())},
+    )
 
 
 # CORS：默认不开跨域；若显式配置 '*'，则不允许凭证。

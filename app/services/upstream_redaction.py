@@ -10,15 +10,23 @@ from typing import Any
 _UPSTREAM_DOMAIN_RE = re.compile(
     r"(?i)\b(?:[a-z0-9-]+\.)*" + "sta" + r"ck-?ai\.com\b"
 )
-_UPSTREAM_NAME_RE = re.compile(r"(?i)\b" + "sta" + r"ck-?ai\b")
+_UPSTREAM_NAME_RE = re.compile(
+    r"(?i)(?<![a-z0-9])" + "sta" + r"ck-?ai(?=$|[^a-z0-9])"
+)
+_UPSTREAM_SHORT_NAME_RE = re.compile(r"(?i)(?<![a-z0-9])st(?=$|[^a-z0-9])")
+_UPSTREAM_SUPPORT_EMAIL_RE = re.compile(
+    r"(?i)\bsupport@" + "sta" + r"ck-?ai\.com\b"
+)
 _HTTP_URL_RE = re.compile(r"(?i)https?://[^\s\"'<>]+")
 
 
 def redact_upstream_text(value: Any) -> str:
-    """将上游服务的名称和域名统一替换为 ``st``。"""
+    """将任何上游品牌、域名和支持邮箱统一替换为 ``Upstream``。"""
     text = str(value or "")
-    text = _UPSTREAM_DOMAIN_RE.sub("st", text)
-    return _UPSTREAM_NAME_RE.sub("st", text)
+    text = _UPSTREAM_SUPPORT_EMAIL_RE.sub("Upstream", text)
+    text = _UPSTREAM_DOMAIN_RE.sub("Upstream", text)
+    text = _UPSTREAM_NAME_RE.sub("Upstream", text)
+    return _UPSTREAM_SHORT_NAME_RE.sub("Upstream", text)
 
 
 def redact_upstream_data(value: Any) -> Any:
@@ -26,7 +34,10 @@ def redact_upstream_data(value: Any) -> Any:
     if isinstance(value, str):
         return redact_upstream_text(value)
     if isinstance(value, dict):
-        return {key: redact_upstream_data(item) for key, item in value.items()}
+        return {
+            redact_upstream_text(key) if isinstance(key, str) else key: redact_upstream_data(item)
+            for key, item in value.items()
+        }
     if isinstance(value, list):
         return [redact_upstream_data(item) for item in value]
     if isinstance(value, tuple):

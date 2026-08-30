@@ -86,7 +86,7 @@ class SharedClientMetadataTests(unittest.IsolatedAsyncioTestCase):
             await client.run_inference("org", "flow", "key", {"in-0": "p"})
 
         self.assertEqual(caught.exception.status_code, 503)
-        self.assertIn("ST_BASE_URL", caught.exception.message)
+        self.assertIn("Upstream_BASE_URL", caught.exception.message)
 
     async def test_specific_inference_path_is_rejected(self) -> None:
         client = STClient(base_url="https://api.example.test/inference/v0/run/org/flow")

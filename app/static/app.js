@@ -1385,7 +1385,18 @@ async function generate() {
       let msg = `HTTP ${r.status}`;
       try {
         const j = await r.json();
-        msg = j?.detail?.message || (typeof j?.detail === "string" ? j.detail : msg);
+        if (Array.isArray(j?.detail)) {
+          const reasons = j.detail.map((item) => {
+            const field = Array.isArray(item?.loc)
+              ? item.loc.filter((part) => !["body", "query", "path"].includes(String(part))).join(".")
+              : "";
+            const label = field === "prompt" ? "提示词" : field;
+            return `${label ? `${label}：` : ""}${item?.msg || "参数校验失败"}`;
+          });
+          msg = reasons.filter(Boolean).join("；") || msg;
+        } else {
+          msg = j?.detail?.message || (typeof j?.detail === "string" ? j.detail : msg);
+        }
       } catch (_) {}
       if (r.status === 401) {
         await handleUnauthorized("登录已失效，请重新登录");
