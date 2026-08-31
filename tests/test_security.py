@@ -166,6 +166,29 @@ class OutboundUrlTests(unittest.IsolatedAsyncioTestCase):
 
 
 class UserAuthServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_create_invites_accepts_admin_specified_codes(self) -> None:
+        session = FakeSession()
+        service = user_auth_mod.UserAuthService()
+
+        created = await service.create_invite_codes(
+            session,
+            count=99,
+            specified_codes="summer-guest\n\npartner-2026\n",
+            daily_quota=8,
+        )
+
+        self.assertEqual([raw for _, raw in created], ["summer-guest", "partner-2026"])
+        self.assertEqual([invite.code_prefix for invite, _ in created], ["summer-guest", "partner-2026"])
+        self.assertTrue(all(invite.daily_quota == 8 for invite, _ in created))
+
+    async def test_create_invites_rejects_duplicate_specified_codes(self) -> None:
+        with self.assertRaisesRegex(ValueError, "重复"):
+            await user_auth_mod.UserAuthService().create_invite_codes(
+                FakeSession(),
+                count=1,
+                specified_codes="same-code\nsame-code",
+            )
+
     async def test_ensure_user_schema_adds_missing_expires_at_column(self) -> None:
         session = FakeSession(
             [FakeExecResult(rows=[(0, "id", "VARCHAR(36)", 1, None, 1)])]

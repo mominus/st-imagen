@@ -77,6 +77,49 @@ const state = {
   batchRendering: false,
 };
 
+let activeConfirmation = null;
+
+function confirmAction(message, options = {}) {
+  const modal = $("#confirmModal");
+  const accept = $("#confirmModalAccept");
+  const cancel = $("#confirmModalCancel");
+  if (!modal || !accept || !cancel) return Promise.resolve(false);
+  if (activeConfirmation) activeConfirmation(false);
+
+  $("#confirmModalTitle").textContent = options.title || "确认操作";
+  $("#confirmModalMessage").textContent = String(message || "请确认是否继续。");
+  accept.textContent = options.confirmText || "确认";
+  accept.className = options.danger === false ? "btn btn-primary" : "btn btn-danger";
+  $("#confirmModalIcon").textContent = options.danger === false ? "✓" : "!";
+  modal.classList.toggle("is-safe", options.danger === false);
+  modal.classList.add("show");
+  modal.setAttribute("aria-hidden", "false");
+  document.body.classList.add("modal-open");
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      modal.classList.remove("show");
+      modal.setAttribute("aria-hidden", "true");
+      document.body.classList.toggle("modal-open", $$(".modal-mask.show").length > 0);
+      accept.onclick = null;
+      cancel.onclick = null;
+      modal.onclick = null;
+      activeConfirmation = null;
+      resolve(result);
+    };
+    activeConfirmation = finish;
+    accept.onclick = () => finish(true);
+    cancel.onclick = () => finish(false);
+    modal.onclick = (event) => {
+      if (event.target === modal) finish(false);
+    };
+    window.setTimeout(() => accept.focus({ preventScroll: true }), 30);
+  });
+}
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -791,6 +834,7 @@ function setModalVisible(id, visible) {
 }
 
 function closeAllModals() {
+  if (activeConfirmation) activeConfirmation(false);
   closeLogModal({ restoreFocus: false });
   $$(".modal-mask.show").forEach((el) => el.classList.remove("show"));
   $$(".modal-mask[aria-hidden='false']").forEach((el) => el.setAttribute("aria-hidden", "true"));
@@ -927,4 +971,3 @@ function logout() {
   showToast("已退出后台控制台", "info");
   showLogin();
 }
-

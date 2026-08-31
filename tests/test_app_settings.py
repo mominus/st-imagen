@@ -186,8 +186,9 @@ class CleanupRequestValidationTests(unittest.TestCase):
             StorageCleanupRequest(targets=[])
 
     def test_accepts_targets(self) -> None:
-        req = StorageCleanupRequest(targets=["logs", "logs", "generated_images"])
+        req = StorageCleanupRequest(targets=["logs", "logs", "generated_images"], logs_before="2026-08-01")
         self.assertEqual(req.targets, ["logs", "logs", "generated_images"])
+        self.assertEqual(req.logs_before.isoformat(), "2026-08-01")
 
 
 class SettingsValidationTests(unittest.TestCase):

@@ -116,6 +116,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   $("#inviteModalCancel").addEventListener("click", closeInviteModal);
+  $("#i_generation_mode").addEventListener("change", syncInviteGenerationMode);
   $("#inviteModalSave").addEventListener("click", saveInviteBatch);
   $("#inviteCopyBtn").addEventListener("click", copyInviteResults);
   $("#inviteModal").addEventListener("click", (event) => {

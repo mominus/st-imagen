@@ -33,3 +33,18 @@ def test_admin_uses_public_brand_logo_and_name():
     assert "后台 · see you · imagen" in html
     assert "see you <b>·</b> imagen" in html
     assert "see you · imagen" in html
+
+
+def test_admin_has_specified_invites_dated_log_cleanup_and_branded_confirm():
+    html = ADMIN_HTML.read_text(encoding="utf-8")
+    scripts = "\n".join(
+        (STATIC_ROOT / "admin" / name).read_text(encoding="utf-8")
+        for name in ("core.js", "resources.js", "settings.js", "dialogs.js")
+    )
+
+    assert 'id="i_generation_mode"' in html
+    assert 'id="i_specified_codes"' in html
+    assert 'id="cleanupLogsBeforeInput"' in html
+    assert 'id="confirmModal"' in html
+    assert "confirmAction(" in scripts
+    assert "confirm(" not in scripts

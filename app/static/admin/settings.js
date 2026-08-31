@@ -79,19 +79,19 @@ const CLEANUP_TARGET_META = {
   reference_images: { label: "参考图", unit: "张", stat: () => lastStorageStats?.reference_images },
 };
 
-async function runStorageCleanup(targets, button, actionLabel) {
+async function runStorageCleanup(targets, button, actionLabel, options = {}) {
   if (targets.every((key) => (CLEANUP_TARGET_META[key].stat()?.count ?? 0) === 0)) {
     showToast("当前没有可清理的内容", "info");
     return;
   }
-  if (!confirm(`确认${actionLabel}？删除后不可恢复。`)) return;
+  if (!(await confirmAction(`${actionLabel}，删除后不可恢复。`, { title: "清理存储", confirmText: "确认清理" }))) return;
 
   let data;
   try {
     data = await withBusyButton(button, "清理中…", async () =>
       api("/api/admin/settings/cleanup", {
         method: "POST",
-        body: JSON.stringify({ targets }),
+        body: JSON.stringify({ targets, logs_before: options.logsBefore || null }),
       })
     );
   } catch (err) {
@@ -259,7 +259,14 @@ function bindSettingsPage() {
     runStorageCleanup(["logs", "generated_images", "reference_images"], event.currentTarget, "全部日志与图片")
   );
   $("#cleanupLogsBtn")?.addEventListener("click", (event) =>
-    runStorageCleanup(["logs"], event.currentTarget, "全部生成日志")
+    runStorageCleanup(
+      ["logs"],
+      event.currentTarget,
+      $("#cleanupLogsBeforeInput")?.value
+        ? `删除 ${$("#cleanupLogsBeforeInput").value} 之前的生成日志`
+        : "删除全部生成日志",
+      { logsBefore: $("#cleanupLogsBeforeInput")?.value || null },
+    )
   );
   $("#cleanupGeneratedBtn")?.addEventListener("click", (event) =>
     runStorageCleanup(["generated_images"], event.currentTarget, "过期生成图片")
