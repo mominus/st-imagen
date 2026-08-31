@@ -383,7 +383,16 @@ async function saveUser() {
 function openInviteModal() {
   $("#inviteModalError").classList.add("is-hidden");
   $("#inviteResultText").value = "";
+  $("#i_specified_codes").value = "";
+  $("#i_generation_mode").value = "random";
+  syncInviteGenerationMode();
   setModalVisible("inviteModal", true);
+}
+
+function syncInviteGenerationMode() {
+  const specified = $("#i_generation_mode")?.value === "specified";
+  $("#inviteCountField")?.classList.toggle("is-hidden", specified);
+  $("#inviteSpecifiedField")?.classList.toggle("is-hidden", !specified);
 }
 
 function closeInviteModal() {
@@ -394,13 +403,21 @@ async function saveInviteBatch() {
   const errEl = $("#inviteModalError");
   errEl.classList.add("is-hidden");
 
+  const specified = $("#i_generation_mode").value === "specified";
+  const specifiedCodes = $("#i_specified_codes").value.trim();
+  if (specified && !specifiedCodes) {
+    errEl.textContent = "请至少输入一个指定邀请码";
+    errEl.classList.remove("is-hidden");
+    return;
+  }
   const payload = {
-    count: Number($("#i_count").value || 1),
+    count: specified ? 1 : Number($("#i_count").value || 1),
     max_uses: Number($("#i_max_uses").value || 1),
     expires_in_days: Number($("#i_expires_in_days").value || 30),
     one_time_quota: Number($("#i_daily_quota").value || 10),
     max_inflight: Number($("#i_max_inflight").value || 2),
     note: $("#i_note").value.trim(),
+    specified_codes: specified ? specifiedCodes : null,
   };
 
   try {

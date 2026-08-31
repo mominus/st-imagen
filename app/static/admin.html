@@ -523,6 +523,10 @@
                     <dt>生成日志</dt>
                     <dd id="storageLogsStat" class="mono">—</dd>
                     <p class="storage-stat-hint">日志存于数据库；大小为主库文件（含 WAL）占用</p>
+                    <label class="storage-date-filter" for="cleanupLogsBeforeInput">
+                      <span>删除此日期之前</span>
+                      <input id="cleanupLogsBeforeInput" type="date" />
+                    </label>
                     <button id="cleanupLogsBtn" class="btn btn-ghost storage-stat-btn" type="button">清理日志</button>
                   </div>
                   <div class="storage-stat">
@@ -559,6 +563,21 @@
     </main>
 
     <div class="toast-stack" id="toastStack" aria-live="polite" aria-atomic="true"></div>
+
+    <div class="modal-mask confirm-mask" id="confirmModal" aria-hidden="true">
+      <div class="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirmModalTitle" aria-describedby="confirmModalMessage">
+        <div class="confirm-dialog-icon" id="confirmModalIcon" aria-hidden="true">!</div>
+        <div class="confirm-dialog-copy">
+          <p class="panel-kicker">Confirm action</p>
+          <h3 id="confirmModalTitle">确认操作</h3>
+          <p id="confirmModalMessage">请确认是否继续。</p>
+        </div>
+        <div class="confirm-dialog-actions">
+          <button class="btn btn-ghost" id="confirmModalCancel" type="button">取消</button>
+          <button class="btn btn-danger" id="confirmModalAccept" type="button">确认</button>
+        </div>
+      </div>
+    </div>
 
     <div class="modal-mask" id="previewModal" aria-hidden="true">
       <div class="preview-modal preview-modal-admin" role="dialog" aria-modal="true" aria-label="图片预览">
@@ -767,8 +786,16 @@
         <h3 id="inviteModalTitle">生成邀请码</h3>
         <p class="modal-sub">生成后请立即保存。</p>
 
+        <div class="modal-field">
+          <label>生成方式</label>
+          <select id="i_generation_mode">
+            <option value="random">随机生成</option>
+            <option value="specified">指定生成</option>
+          </select>
+        </div>
+
         <div class="modal-field-row">
-          <div class="modal-field" style="margin-top: 0">
+          <div class="modal-field" id="inviteCountField" style="margin-top: 0">
             <label>数量</label>
             <input id="i_count" type="number" min="1" max="200" value="10" />
           </div>
@@ -776,6 +803,12 @@
             <label>单码可用次数</label>
             <input id="i_max_uses" type="number" min="1" max="1000" value="1" />
           </div>
+        </div>
+
+        <div class="modal-field is-hidden" id="inviteSpecifiedField">
+          <label>指定邀请码</label>
+          <textarea id="i_specified_codes" rows="7" maxlength="100000" placeholder="每行一个邀请码"></textarea>
+          <p class="muted" style="margin-top: 8px">每个邀请码长度 4-255 个字符；空行会自动忽略，单次最多 200 个。</p>
         </div>
 
         <div class="modal-field-row">

@@ -169,7 +169,7 @@ function bindAccountActions(items) {
 
     row.querySelector('[data-action="toggle-account"]').addEventListener("click", async (event) => {
       const toggle = toggleActionMeta(account.status);
-      if (!confirm(`确认${toggle.label}账号 "${account.name}" ?`)) return;
+      if (!(await confirmAction(`确认${toggle.label}账号 “${account.name}”？`, { title: `${toggle.label}账号`, confirmText: toggle.label, danger: toggle.nextStatus !== "active" }))) return;
       try {
         await withBusyButton(event.currentTarget, `${toggle.label}中…`, async () => {
           await api(`/api/admin/accounts/${id}`, {
@@ -186,7 +186,7 @@ function bindAccountActions(items) {
     });
 
     row.querySelector('[data-action="delete"]').addEventListener("click", async (event) => {
-      if (!confirm(`确认删除账号 "${account.name}" ?`)) return;
+      if (!(await confirmAction(`账号 “${account.name}” 将被永久删除。`, { title: "删除账号", confirmText: "确认删除" }))) return;
       try {
         await withBusyButton(event.currentTarget, "删除中…", async () => {
           await api(`/api/admin/accounts/${id}`, { method: "DELETE" });
@@ -349,7 +349,7 @@ async function bulkUpdateAccountStatus(button, status) {
     showToast(status === "active" ? "所有账号已经启用" : "所有账号已经停用", "info");
     return;
   }
-  if (!confirm(`确认${label}所有账号？`)) return;
+  if (!(await confirmAction(`将对 ${targets.length} 个账号执行“${label}”。`, { title: label, confirmText: label, danger: status !== "active" }))) return;
   try {
     await withBusyButton(button, "处理中…", async () => {
       try {
@@ -391,7 +391,7 @@ async function deleteAllAccounts(button) {
     showToast("当前没有账号可删除", "info");
     return;
   }
-  if (!confirm("确认删除所有账号？此操作不可恢复。")) return;
+  if (!(await confirmAction("所有账号都将被永久删除，此操作不可恢复。", { title: "删除所有账号", confirmText: "全部删除" }))) return;
   try {
     await withBusyButton(button, "删除中…", async () => {
       try {
@@ -510,7 +510,7 @@ function bindUserActions(items) {
     row.querySelector('[data-action="toggle-user"]').addEventListener("click", async (event) => {
       const lifecycle = computeUserLifecycle(user);
       const toggle = toggleActionMeta(lifecycle === "disabled" ? "disabled" : user.status);
-      if (!confirm(`确认${toggle.label}用户 "${user.username}" ?`)) return;
+      if (!(await confirmAction(`确认${toggle.label}用户 “${user.username}”？`, { title: `${toggle.label}用户`, confirmText: toggle.label, danger: toggle.nextStatus !== "active" }))) return;
       try {
         await withBusyButton(event.currentTarget, `${toggle.label}中…`, async () => {
           await api(`/api/admin/users/${id}`, {
@@ -529,7 +529,7 @@ function bindUserActions(items) {
     row.querySelector('[data-action="edit-user"]').addEventListener("click", () => openUserModal(user));
 
     row.querySelector('[data-action="delete-user"]').addEventListener("click", async (event) => {
-      if (!confirm(`确认删除用户 "${user.username}" ? 此操作不可恢复。`)) return;
+      if (!(await confirmAction(`用户 “${user.username}” 及其会话将被永久删除。`, { title: "删除用户", confirmText: "确认删除" }))) return;
       try {
         await withBusyButton(event.currentTarget, "删除中…", async () => {
           await api(`/api/admin/users/${id}`, { method: "DELETE" });
@@ -634,7 +634,7 @@ async function deleteAllUsers(button) {
   const prompt = deletingFiltered
     ? `确认删除当前筛选的 ${targets.length} 个用户？此操作会同时清空用户会话，且不可恢复。`
     : "确认删除所有用户？此操作会同时清空用户会话，且不可恢复。";
-  if (!confirm(prompt)) return;
+  if (!(await confirmAction(prompt, { title: deletingFiltered ? "删除筛选用户" : "删除所有用户", confirmText: "确认删除" }))) return;
   try {
     await withBusyButton(button, "删除中…", async () => {
       if (!deletingFiltered) {
@@ -770,7 +770,7 @@ function bindInviteActions(items) {
 
     if (revokeBtn) {
       revokeBtn.addEventListener("click", async (event) => {
-        if (!confirm(`确认撤销邀请码前缀 "${invite.code_prefix}" ?`)) return;
+        if (!(await confirmAction(`邀请码 “${invite.code_prefix}…” 撤销后将不能继续使用。`, { title: "撤销邀请码", confirmText: "确认撤销" }))) return;
         try {
           await withBusyButton(event.currentTarget, "撤销中…", async () => {
             await api(`/api/admin/invite-codes/${id}/revoke`, { method: "POST" });
@@ -786,7 +786,7 @@ function bindInviteActions(items) {
 
     if (deleteBtn) {
       deleteBtn.addEventListener("click", async (event) => {
-        if (!confirm(`确认删除邀请码前缀 "${invite.code_prefix}" ? 此操作不可恢复。`)) return;
+        if (!(await confirmAction(`邀请码 “${invite.code_prefix}…” 将被永久删除。`, { title: "删除邀请码", confirmText: "确认删除" }))) return;
         try {
           await withBusyButton(event.currentTarget, "删除中…", async () => {
             await api(`/api/admin/invite-codes/${id}`, { method: "DELETE" });
@@ -885,7 +885,7 @@ async function deleteAllInvites(button) {
   const prompt = deletingFiltered
     ? `确认删除当前筛选的 ${targets.length} 个邀请码？已注册用户不会被删除，但邀请码记录不可恢复。`
     : "确认删除所有邀请码？已注册用户不会被删除，但邀请码记录不可恢复。";
-  if (!confirm(prompt)) return;
+  if (!(await confirmAction(prompt, { title: deletingFiltered ? "删除筛选邀请码" : "删除所有邀请码", confirmText: "确认删除" }))) return;
   try {
     await withBusyButton(button, "删除中…", async () => {
       if (!deletingFiltered) {

@@ -7,7 +7,7 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -125,6 +125,7 @@ class AppSettingsUpdateRequest(BaseModel):
 
 class StorageCleanupRequest(BaseModel):
     targets: List[str] = Field(min_length=1)
+    logs_before: Optional[date] = None
 
 
 class AccountCreateRequest(BaseModel):
@@ -167,6 +168,7 @@ class InviteCodeCreateRequest(BaseModel):
     daily_quota: Optional[int] = Field(default=10, ge=0, le=1_000_000)
     one_time_quota: Optional[int] = Field(default=None, ge=0, le=1_000_000)
     max_inflight: Optional[int] = Field(default=None, ge=1, le=100)
+    specified_codes: Optional[str] = Field(default=None, max_length=100_000)
 
 
 class UserCreateRequest(BaseModel):
@@ -509,7 +511,13 @@ async def cleanup_storage(
 
     removed: Dict[str, int] = {}
     if "logs" in targets:
-        result = await session.execute(delete(GenerationLog))
+        stmt = delete(GenerationLog)
+        if req.logs_before is not None:
+            # The admin UI uses Beijing calendar dates. Convert that day's
+            # midnight to the UTC-naive convention used by SQLite rows.
+            cutoff = datetime.combine(req.logs_before, time.min, tzinfo=timezone(timedelta(hours=8)))
+            stmt = stmt.where(GenerationLog.timestamp < cutoff.astimezone(timezone.utc).replace(tzinfo=None))
+        result = await session.execute(stmt)
         await session.commit()
         removed["logs"] = max(0, int(result.rowcount or 0))
     image_targets = {
@@ -1091,15 +1099,21 @@ async def create_invite_codes(
         if req.expires_in_days is not None
         else None
     )
-    items = await service.create_invite_codes(
-        session,
-        count=req.count,
-        max_uses=req.max_uses,
-        note=req.note,
-        expires_at=expires_at,
-        daily_quota=req.one_time_quota if req.one_time_quota is not None else req.daily_quota,
-        max_inflight=req.max_inflight,
-    )
+    try:
+        items = await service.create_invite_codes(
+            session,
+            count=req.count,
+            max_uses=req.max_uses,
+            note=req.note,
+            expires_at=expires_at,
+            daily_quota=req.one_time_quota if req.one_time_quota is not None else req.daily_quota,
+            max_inflight=req.max_inflight,
+            specified_codes=req.specified_codes,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except IntegrityError as exc:
+        raise HTTPException(status_code=400, detail="指定邀请码已存在") from exc
     await session.commit()
     return {"items": [_invite_to_dict(invite, raw_code=raw_code) for invite, raw_code in items]}
 

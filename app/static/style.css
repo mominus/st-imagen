@@ -65,7 +65,6 @@
   --topbar-bg:   rgba(16, 13, 10, 0.72);
   --topbar-line: rgba(243, 238, 229, 0.06);
 
-  color-scheme: dark;
 }
 
 /* ==========================================================
@@ -2870,6 +2869,26 @@ kbd {
 
 .storage-stat-btn {
   margin-top: 10px;
+}
+
+.storage-date-filter {
+  display: grid;
+  gap: 6px;
+  margin-top: 14px;
+  color: var(--paper-muted);
+  font-size: 11px;
+}
+
+.storage-date-filter input {
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--ink-3);
+  color: var(--paper);
+  font: inherit;
+  color-scheme: dark;
 }
 
 .table-wrap {
@@ -5725,6 +5744,57 @@ td strong {
 .admin-ui .table-more-menu { position: fixed; z-index: 160; display: grid; min-width: 132px; gap: 3px; padding: 5px; border: 1px solid var(--admin-line); border-radius: 8px; background: var(--admin-surface); box-shadow: 0 12px 24px rgba(37, 35, 31, .14); }
 .admin-ui .table-more-menu .btn { width: 100%; justify-content: flex-start; min-height: 30px; padding: 5px 8px; border: 0; }
 
+/* Branded confirmation dialog replaces browser-native confirm popups. */
+.admin-ui .confirm-mask {
+  z-index: 260;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(24, 27, 26, .58);
+  backdrop-filter: blur(10px);
+}
+
+.confirm-dialog {
+  width: min(440px, 100%);
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 16px;
+  padding: 24px;
+  border: 1px solid var(--admin-line);
+  border-radius: 20px;
+  background: var(--admin-surface);
+  color: var(--admin-ink);
+  box-shadow: 0 28px 80px rgba(20, 22, 21, .3);
+  animation: confirmDialogIn .18s ease both;
+}
+
+.confirm-dialog-icon {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 16px;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  font-size: 24px;
+  font-weight: 750;
+}
+
+.confirm-mask.is-safe .confirm-dialog-icon {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 13%, transparent);
+}
+
+.confirm-dialog-copy h3 { margin: 3px 0 8px; color: var(--admin-ink); font-size: 21px; }
+.confirm-dialog-copy p:last-child { margin: 0; color: var(--admin-ink-soft); font-size: 13px; line-height: 1.65; }
+.confirm-dialog-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; }
+.confirm-dialog-actions .btn { min-width: 108px; min-height: 42px; }
+
+@keyframes confirmDialogIn {
+  from { opacity: 0; transform: translateY(10px) scale(.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
 /* Mobile operations dock: keep the five highest-frequency destinations within
    thumb reach while the full information architecture remains in the drawer. */
 .admin-mobile-nav { display: none; }
@@ -5733,6 +5803,9 @@ td strong {
 @media (max-width: 760px) {
   .admin-ui:not(.admin-login-state) { padding-bottom: calc(76px + env(safe-area-inset-bottom)); }
   .admin-ui .modal-mask { z-index: 180; }
+  .admin-ui .confirm-mask { z-index: 260; align-items: center; justify-content: center; padding: 14px; }
+  .admin-ui .confirm-dialog { padding: 20px 16px; border-radius: 18px; }
+  .admin-ui .confirm-dialog-actions { display: grid; grid-template-columns: 1fr 1fr; }
   .admin-ui:not(.admin-login-state) .toast-stack {
     bottom: calc(88px + env(safe-area-inset-bottom));
   }

@@ -360,8 +360,18 @@ class UserAuthService:
         expires_at: Optional[datetime] = None,
         daily_quota: Optional[int] = None,
         max_inflight: Optional[int] = None,
+        specified_codes: Optional[str] = None,
     ) -> List[Tuple[InviteCode, str]]:
-        count = max(1, min(200, int(count)))
+        requested_codes = [line.strip() for line in str(specified_codes or "").splitlines() if line.strip()]
+        if requested_codes:
+            if len(requested_codes) > 200:
+                raise ValueError("指定邀请码每次最多 200 个")
+            if len(set(requested_codes)) != len(requested_codes):
+                raise ValueError("指定邀请码中存在重复内容")
+            if any(len(code) < 4 or len(code) > 255 for code in requested_codes):
+                raise ValueError("每个指定邀请码长度需为 4-255 个字符")
+        else:
+            count = max(1, min(200, int(count)))
         max_uses = max(1, min(1000, int(max_uses)))
         quota, inflight = self._invite_defaults(
             daily_quota=daily_quota,
@@ -369,8 +379,7 @@ class UserAuthService:
         )
 
         created: List[Tuple[InviteCode, str]] = []
-        for _ in range(count):
-            raw_code = self._make_invite_code()
+        for raw_code in requested_codes or [self._make_invite_code() for _ in range(count)]:
             invite = InviteCode(
                 id=str(uuid.uuid4()),
                 code_hash=CryptoService.hash_api_key(raw_code),
