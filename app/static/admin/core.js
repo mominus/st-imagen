@@ -887,6 +887,10 @@ async function api(path, opts = {}) {
 }
 
 async function withBusyButton(button, pendingText, task) {
+  // Event.currentTarget becomes null as soon as an async event handler yields
+  // (for example while awaiting the themed confirmation dialog). The action
+  // must still run even when a caller passed that expired event property.
+  if (!button) return task();
   const original = button.textContent;
   button.disabled = true;
   button.textContent = pendingText;

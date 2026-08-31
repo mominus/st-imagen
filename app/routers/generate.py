@@ -354,6 +354,43 @@ async def _cleanup_uploads_by_retention(
     return removed
 
 
+def _clear_upload_dir(directory: Path) -> int:
+    """Delete every regular file in one managed upload directory."""
+    if not directory.exists():
+        return 0
+    removed = 0
+    for path in directory.iterdir():
+        if not path.is_file():
+            continue
+        try:
+            path.unlink()
+            removed += 1
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            logger.warning("manual upload cleanup failed: path=%s error=%s", path, exc)
+    return removed
+
+
+async def _clear_uploads(*, generated: bool = False, reference: bool = False) -> Dict[str, int]:
+    """Manual destructive cleanup; unlike retention cleanup, remove all selected files."""
+    if not generated and not reference:
+        return {}
+    removed: Dict[str, int] = {}
+    global _last_upload_cleanup_monotonic
+    async with _upload_cleanup_lock:
+        if reference:
+            removed["reference_images"] = await asyncio.to_thread(
+                _clear_upload_dir, REFERENCE_UPLOAD_DIR
+            )
+        if generated:
+            removed["generated_images"] = await asyncio.to_thread(
+                _clear_upload_dir, GENERATED_IMAGE_DIR
+            )
+        _last_upload_cleanup_monotonic = time.monotonic()
+    return removed
+
+
 async def _maybe_cleanup_uploads(*, force: bool = False) -> None:
     global _last_upload_cleanup_monotonic
 
