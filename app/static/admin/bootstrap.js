@@ -90,6 +90,7 @@ document.addEventListener("DOMContentLoaded", () => {
     await refreshLogs();
     renderInsightPanels();
   });
+  $("#deleteLogsBeforeBtn").addEventListener("click", (event) => deleteLogsBefore(event.currentTarget));
 
   $("#accountModalCancel").addEventListener("click", closeAccountModal);
   $("#accountModalSave").addEventListener("click", saveAccount);

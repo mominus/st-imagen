@@ -1080,3 +1080,26 @@ async function refreshLogs() {
     return false;
   }
 }
+
+async function deleteLogsBefore(button) {
+  const before = $("#deleteLogsBeforeInput")?.value || "";
+  if (!before) {
+    showToast("请先选择截止日期", "warning");
+    $("#deleteLogsBeforeInput")?.focus();
+    return;
+  }
+  const confirmed = await confirmAction(
+    `将永久删除 ${before} 之前的全部生成日志，日期当天及之后的日志会保留。`,
+    { title: "删除旧日志", confirmText: "确认删除" },
+  );
+  if (!confirmed) return;
+  try {
+    const data = await withBusyButton(button, "删除中…", () =>
+      api(`/api/admin/logs?before=${encodeURIComponent(before)}`, { method: "DELETE" })
+    );
+    await Promise.all([refreshLogs(), refreshOverview(), refreshSettings()]);
+    showToast(`已删除 ${fmtNumber(data.removed || 0)} 条旧日志`, "success");
+  } catch (err) {
+    showToast(`删除旧日志失败：${err.message}`, "error");
+  }
+}

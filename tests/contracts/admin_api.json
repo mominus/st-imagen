@@ -35,7 +35,8 @@
     {"method": "GET", "path": "/api/admin/stats/overview", "auth": true},
     {"method": "GET", "path": "/api/admin/stats/dashboard", "auth": true},
     {"method": "GET", "path": "/api/admin/dashboard/snapshot", "auth": true},
-    {"method": "GET", "path": "/api/admin/logs", "auth": true}
+    {"method": "GET", "path": "/api/admin/logs", "auth": true},
+    {"method": "DELETE", "path": "/api/admin/logs", "auth": true}
   ],
   "resource_fields": {
     "account": ["id", "name", "org_id", "flow_id", "api_key_masked", "private_api_key_set", "status", "total_requests", "in_flight", "max_inflight", "last_used_at", "created_at", "updated_at"],

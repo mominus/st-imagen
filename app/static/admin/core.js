@@ -79,18 +79,39 @@ const state = {
 
 let activeConfirmation = null;
 
+function ensureConfirmModal() {
+  let modal = $("#confirmModal");
+  if (!modal) {
+    document.body.insertAdjacentHTML("beforeend", `
+      <div class="modal-mask confirm-mask" id="confirmModal" aria-hidden="true">
+        <div class="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirmModalTitle" aria-describedby="confirmModalMessage">
+          <div class="confirm-dialog-icon" id="confirmModalIcon" aria-hidden="true">!</div>
+          <div class="confirm-dialog-copy"><p class="panel-kicker">Confirm action</p><h3 id="confirmModalTitle">确认操作</h3><p id="confirmModalMessage">请确认是否继续。</p></div>
+          <div class="confirm-dialog-actions"><button class="btn btn-ghost" id="confirmModalCancel" type="button">取消</button><button class="btn btn-danger" id="confirmModalAccept" type="button">确认</button></div>
+        </div>
+      </div>`);
+    modal = $("#confirmModal");
+  }
+  return {
+    modal,
+    accept: $("#confirmModalAccept"),
+    cancel: $("#confirmModalCancel"),
+    title: $("#confirmModalTitle"),
+    message: $("#confirmModalMessage"),
+    icon: $("#confirmModalIcon"),
+  };
+}
+
 function confirmAction(message, options = {}) {
-  const modal = $("#confirmModal");
-  const accept = $("#confirmModalAccept");
-  const cancel = $("#confirmModalCancel");
-  if (!modal || !accept || !cancel) return Promise.resolve(false);
+  const { modal, accept, cancel, title, message: messageEl, icon } = ensureConfirmModal();
+  if (!modal || !accept || !cancel || !title || !messageEl || !icon) return Promise.resolve(false);
   if (activeConfirmation) activeConfirmation(false);
 
-  $("#confirmModalTitle").textContent = options.title || "确认操作";
-  $("#confirmModalMessage").textContent = String(message || "请确认是否继续。");
+  title.textContent = options.title || "确认操作";
+  messageEl.textContent = String(message || "请确认是否继续。");
   accept.textContent = options.confirmText || "确认";
   accept.className = options.danger === false ? "btn btn-primary" : "btn btn-danger";
-  $("#confirmModalIcon").textContent = options.danger === false ? "✓" : "!";
+  icon.textContent = options.danger === false ? "✓" : "!";
   modal.classList.toggle("is-safe", options.danger === false);
   modal.classList.add("show");
   modal.setAttribute("aria-hidden", "false");

@@ -2871,18 +2871,18 @@ kbd {
   margin-top: 10px;
 }
 
-.storage-date-filter {
+.log-cleanup-date {
   display: grid;
-  gap: 6px;
-  margin-top: 14px;
+  gap: 3px;
+  min-width: 154px;
   color: var(--paper-muted);
-  font-size: 11px;
+  font-size: 10px;
 }
 
-.storage-date-filter input {
+.log-cleanup-date input {
   width: 100%;
-  min-height: 38px;
-  padding: 8px 10px;
+  min-height: 36px;
+  padding: 6px 9px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--ink-3);
@@ -5706,13 +5706,13 @@ td strong {
 }
 
 /* Admin record forms use a contextual right-side drawer on wide screens. */
-.admin-ui .modal-mask:not(#previewModal) {
+.admin-ui .modal-mask:not(#previewModal):not(#confirmModal) {
   align-items: stretch;
   justify-content: flex-end;
   padding: 0;
 }
 
-.admin-ui .modal-mask:not(#previewModal) .modal {
+.admin-ui .modal-mask:not(#previewModal):not(#confirmModal) .modal {
   width: min(560px, 100%);
   height: 100%;
   max-height: none;
@@ -5731,8 +5731,8 @@ td strong {
 }
 
 @media (max-width: 760px) {
-  .admin-ui .modal-mask:not(#previewModal) { padding: 10px; }
-  .admin-ui .modal-mask:not(#previewModal) .modal,
+  .admin-ui .modal-mask:not(#previewModal):not(#confirmModal) { padding: 10px; }
+  .admin-ui .modal-mask:not(#previewModal):not(#confirmModal) .modal,
   .admin-ui #userModal .modal,
   .admin-ui #accountImportModal .modal { width: 100%; height: auto; max-height: calc(100dvh - 20px); border-radius: 12px; }
 }
@@ -5746,6 +5746,9 @@ td strong {
 
 /* Branded confirmation dialog replaces browser-native confirm popups. */
 .admin-ui .confirm-mask {
+  position: fixed;
+  inset: 0;
+  display: none;
   z-index: 260;
   align-items: center;
   justify-content: center;
@@ -5753,13 +5756,17 @@ td strong {
   background: rgba(24, 27, 26, .58);
   backdrop-filter: blur(10px);
 }
+.admin-ui .confirm-mask.show { display: flex; }
 
 .confirm-dialog {
-  width: min(440px, 100%);
+  width: min(400px, calc(100vw - 32px));
+  max-width: 400px;
+  height: auto;
+  max-height: min(520px, calc(100dvh - 32px));
   display: grid;
   grid-template-columns: 52px minmax(0, 1fr);
   gap: 16px;
-  padding: 24px;
+  padding: 22px;
   border: 1px solid var(--admin-line);
   border-radius: 20px;
   background: var(--admin-surface);
@@ -5851,7 +5858,7 @@ td strong {
     padding-top: max(20px, env(safe-area-inset-top));
     padding-bottom: max(20px, env(safe-area-inset-bottom));
   }
-  .admin-ui .modal-mask:not(#previewModal) {
+  .admin-ui .modal-mask:not(#previewModal):not(#confirmModal) {
     align-items: flex-end;
     padding:
       max(10px, env(safe-area-inset-top))
@@ -5859,7 +5866,7 @@ td strong {
       max(10px, env(safe-area-inset-bottom));
     overscroll-behavior: contain;
   }
-  .admin-ui .modal-mask:not(#previewModal) .modal,
+  .admin-ui .modal-mask:not(#previewModal):not(#confirmModal) .modal,
   .admin-ui #userModal .modal,
   .admin-ui #accountImportModal .modal {
     width: 100%;
@@ -6051,7 +6058,7 @@ td strong {
   .admin-mobile-nav a { min-height: 46px; }
   .admin-mobile-nav a span { font-size: 16px; }
   .admin-mobile-nav a small { font-size: 9px; }
-  .admin-ui .modal-mask:not(#previewModal) { padding-right: 6px; padding-left: 6px; }
+  .admin-ui .modal-mask:not(#previewModal):not(#confirmModal) { padding-right: 6px; padding-left: 6px; }
   .admin-ui .modal-actions { gap: 6px; }
   .admin-ui .modal-actions .btn { min-width: 0; padding-right: 10px; padding-left: 10px; }
 }
