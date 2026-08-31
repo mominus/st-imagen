@@ -44,7 +44,8 @@ def test_admin_has_specified_invites_dated_log_cleanup_and_branded_confirm():
 
     assert 'id="i_generation_mode"' in html
     assert 'id="i_specified_codes"' in html
-    assert 'id="cleanupLogsBeforeInput"' in html
+    assert 'id="deleteLogsBeforeInput"' in html
+    assert 'id="cleanupLogsBeforeInput"' not in html
     assert 'id="confirmModal"' in html
     assert "confirmAction(" in scripts
     assert "confirm(" not in scripts

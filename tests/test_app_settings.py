@@ -5,7 +5,7 @@ import tempfile
 import os
 import time
 import unittest
-from datetime import timedelta
+from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -26,6 +26,7 @@ from app.services.generation_stats import (
 from app.routers.admin import (
     AppSettingsUpdateRequest,
     StorageCleanupRequest,
+    _log_cleanup_cutoff,
     _dir_stats,
     _runtime_config_payload,
     _setting_item,
@@ -181,14 +182,19 @@ class RetentionPruneTests(unittest.TestCase):
 
 
 class CleanupRequestValidationTests(unittest.TestCase):
+    def test_log_cleanup_date_uses_beijing_midnight(self) -> None:
+        self.assertEqual(
+            _log_cleanup_cutoff(date(2026, 8, 31)).isoformat(),
+            "2026-08-30T16:00:00",
+        )
+
     def test_requires_at_least_one_target(self) -> None:
         with self.assertRaises(ValidationError):
             StorageCleanupRequest(targets=[])
 
     def test_accepts_targets(self) -> None:
-        req = StorageCleanupRequest(targets=["logs", "logs", "generated_images"], logs_before="2026-08-01")
+        req = StorageCleanupRequest(targets=["logs", "logs", "generated_images"])
         self.assertEqual(req.targets, ["logs", "logs", "generated_images"])
-        self.assertEqual(req.logs_before.isoformat(), "2026-08-01")
 
 
 class SettingsValidationTests(unittest.TestCase):

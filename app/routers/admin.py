@@ -125,7 +125,6 @@ class AppSettingsUpdateRequest(BaseModel):
 
 class StorageCleanupRequest(BaseModel):
     targets: List[str] = Field(min_length=1)
-    logs_before: Optional[date] = None
 
 
 class AccountCreateRequest(BaseModel):
@@ -495,6 +494,12 @@ async def update_app_settings(
 CLEANUP_TARGETS = {"logs", "generated_images", "reference_images"}
 
 
+def _log_cleanup_cutoff(before: date) -> datetime:
+    """Convert an admin-selected Beijing date boundary to UTC-naive storage time."""
+    local_midnight = datetime.combine(before, time.min, tzinfo=timezone(timedelta(hours=8)))
+    return local_midnight.astimezone(timezone.utc).replace(tzinfo=None)
+
+
 @router.post("/settings/cleanup")
 async def cleanup_storage(
     req: StorageCleanupRequest,
@@ -511,13 +516,7 @@ async def cleanup_storage(
 
     removed: Dict[str, int] = {}
     if "logs" in targets:
-        stmt = delete(GenerationLog)
-        if req.logs_before is not None:
-            # The admin UI uses Beijing calendar dates. Convert that day's
-            # midnight to the UTC-naive convention used by SQLite rows.
-            cutoff = datetime.combine(req.logs_before, time.min, tzinfo=timezone(timedelta(hours=8)))
-            stmt = stmt.where(GenerationLog.timestamp < cutoff.astimezone(timezone.utc).replace(tzinfo=None))
-        result = await session.execute(stmt)
+        result = await session.execute(delete(GenerationLog))
         await session.commit()
         removed["logs"] = max(0, int(result.rowcount or 0))
     image_targets = {
@@ -1478,3 +1477,18 @@ async def recent_logs(
 ):
     del payload
     return await _recent_logs_payload(session, limit, offset=offset, status=status)
+
+
+@router.delete("/logs")
+async def delete_logs_before(
+    before: date = Query(...),
+    payload=Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    del payload
+    cutoff_utc = _log_cleanup_cutoff(before)
+    result = await session.execute(
+        delete(GenerationLog).where(GenerationLog.timestamp < cutoff_utc)
+    )
+    await session.commit()
+    return {"success": True, "removed": max(0, int(result.rowcount or 0)), "before": before.isoformat()}

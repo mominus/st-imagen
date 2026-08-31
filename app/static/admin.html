@@ -392,6 +392,11 @@
                 </div>
                 <div class="panel-actions">
                   <button id="reloadLogsBtn" class="btn btn-ghost" type="button">刷新</button>
+                  <label class="log-cleanup-date" for="deleteLogsBeforeInput">
+                    <span>删除日期之前</span>
+                    <input id="deleteLogsBeforeInput" type="date" />
+                  </label>
+                  <button id="deleteLogsBeforeBtn" class="btn btn-danger" type="button">删除旧日志</button>
                 </div>
               </header>
               <div class="module-toolbar">
@@ -523,10 +528,6 @@
                     <dt>生成日志</dt>
                     <dd id="storageLogsStat" class="mono">—</dd>
                     <p class="storage-stat-hint">日志存于数据库；大小为主库文件（含 WAL）占用</p>
-                    <label class="storage-date-filter" for="cleanupLogsBeforeInput">
-                      <span>删除此日期之前</span>
-                      <input id="cleanupLogsBeforeInput" type="date" />
-                    </label>
                     <button id="cleanupLogsBtn" class="btn btn-ghost storage-stat-btn" type="button">清理日志</button>
                   </div>
                   <div class="storage-stat">
