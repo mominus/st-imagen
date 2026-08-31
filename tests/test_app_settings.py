@@ -28,10 +28,11 @@ from app.routers.admin import (
     StorageCleanupRequest,
     _log_cleanup_cutoff,
     _dir_stats,
+    _storage_stats,
     _runtime_config_payload,
     _setting_item,
 )
-from app.routers.generate import BEIJING_TIME_ZONE, _beijing_now, _prune_upload_dir
+from app.routers.generate import BEIJING_TIME_ZONE, _beijing_now, _clear_upload_dir, _prune_upload_dir
 
 
 class AppSettingsServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -51,6 +52,19 @@ class AppSettingsServiceTests(unittest.IsolatedAsyncioTestCase):
         app_settings.clear_cache()
         await self._engine.dispose()
         self._tmpdir.cleanup()
+
+    async def test_empty_log_table_reports_zero_log_bytes(self) -> None:
+        async with self._factory() as session:
+            with (
+                patch("app.routers.admin._sqlite_storage_size", return_value=999_999),
+                patch("app.routers.admin._dir_stats", return_value={"count": 0, "size_bytes": 0}),
+                patch(
+                    "app.routers.generate._generated_disk_snapshot",
+                    return_value={"free_bytes": 1, "min_free_bytes": 0, "writable_bytes": 1, "can_write": True},
+                ),
+            ):
+                stats = await _storage_stats(session)
+        self.assertEqual(stats["logs"], {"count": 0, "size_bytes": 0})
 
     async def test_unset_key_returns_none_and_falls_back_to_default(self) -> None:
         self.assertIsNone(await app_settings.get_setting(app_settings.SETTING_GENERATED_IMAGE_RETENTION_DAYS))
@@ -182,6 +196,20 @@ class RetentionPruneTests(unittest.TestCase):
 
 
 class CleanupRequestValidationTests(unittest.TestCase):
+    def test_manual_upload_cleanup_deletes_all_regular_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "fresh.png").write_bytes(b"fresh")
+            (root / "old.webp").write_bytes(b"old")
+            nested = root / "generated"
+            nested.mkdir()
+            (nested / "keep.png").write_bytes(b"nested")
+
+            self.assertEqual(_clear_upload_dir(root), 2)
+            self.assertFalse((root / "fresh.png").exists())
+            self.assertFalse((root / "old.webp").exists())
+            self.assertTrue((nested / "keep.png").exists())
+
     def test_log_cleanup_date_uses_beijing_midnight(self) -> None:
         self.assertEqual(
             _log_cleanup_cutoff(date(2026, 8, 31)).isoformat(),

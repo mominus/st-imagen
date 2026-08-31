@@ -409,7 +409,9 @@ async def _storage_stats(session: AsyncSession) -> dict:
     return {
         "logs": {
             "count": int(log_count),
-            "size_bytes": _sqlite_storage_size(),
+            # An empty log table occupies no logical log data even though the
+            # shared SQLite file still contains schema and other tables.
+            "size_bytes": 0 if int(log_count) == 0 else _sqlite_storage_size(),
         },
         "generated_images": await asyncio.to_thread(
             _dir_stats, generate_mod.GENERATED_IMAGE_DIR
@@ -525,7 +527,7 @@ async def cleanup_storage(
     }
     if any(image_targets.values()):
         removed.update(
-            await generate_mod._cleanup_uploads_by_retention(**image_targets)
+            await generate_mod._clear_uploads(**image_targets)
         )
 
     logger.info("storage cleanup by admin: targets=%s removed=%s", targets, removed)

@@ -262,10 +262,10 @@ function bindSettingsPage() {
     runStorageCleanup(["logs"], event.currentTarget, "删除全部生成日志")
   );
   $("#cleanupGeneratedBtn")?.addEventListener("click", (event) =>
-    runStorageCleanup(["generated_images"], event.currentTarget, "过期生成图片")
+    runStorageCleanup(["generated_images"], event.currentTarget, "全部生成图片")
   );
   $("#cleanupReferenceBtn")?.addEventListener("click", (event) =>
-    runStorageCleanup(["reference_images"], event.currentTarget, "过期参考图")
+    runStorageCleanup(["reference_images"], event.currentTarget, "全部参考图")
   );
   RETENTION_FIELDS.forEach((field) => {
     const resetBtn = $(`#${field.resetBtnId}`);
