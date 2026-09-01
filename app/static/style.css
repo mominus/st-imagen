@@ -2872,8 +2872,8 @@ kbd {
 }
 
 .log-cleanup-date {
-  display: grid;
-  gap: 3px;
+  display: flex;
+  align-items: center;
   min-width: 154px;
   color: var(--paper-muted);
   font-size: 10px;
@@ -2881,7 +2881,8 @@ kbd {
 
 .log-cleanup-date input {
   width: 100%;
-  min-height: 36px;
+  height: 40px;
+  min-height: 40px;
   padding: 6px 9px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -4940,6 +4941,23 @@ td strong {
   min-width: 160px;
 }
 
+#invitesTable { table-layout: fixed; }
+#invitesTable th,
+#invitesTable td { min-width: 0 !important; overflow: hidden; text-overflow: ellipsis; }
+#invitesTable .col-invite-code { width: 18%; }
+#invitesTable .col-invite-status { width: 116px; }
+#invitesTable .col-invite-usage { width: 18%; }
+#invitesTable .col-invite-benefit { width: 12%; }
+#invitesTable .col-invite-expiry { width: 16%; }
+#invitesTable .col-invite-actions { width: 154px; }
+#invitesTable .col-invite-status .badge {
+  width: max-content;
+  max-width: 108px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 #invitesTable .col-invite-usage {
   min-width: 180px;
 }
@@ -5990,6 +6008,84 @@ td strong {
     box-shadow: 0 18px 54px rgba(20, 22, 21, .3);
   }
   .admin-ui .table-more-menu .btn { min-height: 44px; justify-content: center; }
+
+  /* Accounts, users and logs stay as one compact horizontal record on phones.
+     Secondary columns are intentionally hidden instead of stacking every
+     database field into a tall, hard-to-scan card. */
+  .admin-ui #accountsTable tbody tr,
+  .admin-ui #usersTable tbody tr,
+  .admin-ui #logsTable tbody tr {
+    display: grid;
+    align-items: center;
+    gap: 8px;
+    padding: 10px;
+    overflow: hidden;
+  }
+  .admin-ui #accountsTable tbody tr { grid-template-columns: minmax(92px, 1.4fr) minmax(78px, .9fr) auto auto; }
+  .admin-ui #usersTable tbody tr { grid-template-columns: minmax(96px, 1.4fr) minmax(72px, .8fr) minmax(82px, 1fr) auto; }
+  .admin-ui #logsTable tbody tr { grid-template-columns: 72px 64px minmax(88px, 1.2fr) minmax(74px, .8fr) auto; }
+  .admin-ui #accountsTable td:not([colspan]),
+  .admin-ui #usersTable td:not([colspan]),
+  .admin-ui #logsTable td:not([colspan]) {
+    display: block;
+    width: auto;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    overflow: hidden;
+  }
+  .admin-ui #accountsTable td:not([colspan])::before,
+  .admin-ui #usersTable td:not([colspan])::before,
+  .admin-ui #logsTable td:not([colspan])::before { display: none; }
+  .admin-ui #accountsTable td:first-child,
+  .admin-ui #usersTable td:first-child,
+  .admin-ui #logsTable td:first-child {
+    padding: 0;
+    background: transparent;
+    border-radius: 0;
+  }
+  .admin-ui #accountsTable .col-account-org-flow,
+  .admin-ui #accountsTable .col-account-total,
+  .admin-ui #usersTable .col-user-expiry,
+  .admin-ui #usersTable .col-user-failures,
+  .admin-ui #logsTable .col-log-account,
+  .admin-ui #logsTable .col-log-duration { display: none !important; }
+  .admin-ui #accountsTable .entity-meta,
+  .admin-ui #usersTable .entity-meta,
+  .admin-ui #logsTable .entity-meta,
+  .admin-ui #logsTable .table-note-danger { display: none; }
+  .admin-ui #accountsTable .metric-head,
+  .admin-ui #usersTable .metric-head { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .admin-ui #accountsTable .capacity-progress,
+  .admin-ui #usersTable .capacity-progress { display: none; }
+  .admin-ui #accountsTable .table-actions,
+  .admin-ui #usersTable .table-actions { flex-wrap: nowrap; gap: 5px; }
+  .admin-ui #accountsTable .table-actions > .btn,
+  .admin-ui #usersTable .table-actions > .btn,
+  .admin-ui #accountsTable .table-more summary,
+  .admin-ui #usersTable .table-more summary { min-height: 34px; padding: 6px 9px; font-size: 11px; }
+
+  /* Invite cards retain their useful detail layout, with status and actions
+     sharing the final row and badges constrained to their content width. */
+  .admin-ui #invitesTable tbody tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+  .admin-ui #invitesTable td { grid-column: 1 / -1; }
+  .admin-ui #invitesTable .col-invite-status {
+    grid-column: 1;
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    border-bottom: 0;
+  }
+  .admin-ui #invitesTable .col-invite-status::before { margin-right: 10px; }
+  .admin-ui #invitesTable .col-invite-status .badge { width: max-content; max-width: 108px; }
+  .admin-ui #invitesTable .col-invite-actions {
+    grid-column: 2;
+    display: flex;
+    align-items: center;
+    border-bottom: 0;
+  }
+  .admin-ui #invitesTable .col-invite-actions::before { display: none; }
+  .admin-ui #invitesTable .col-invite-actions .table-actions { flex-wrap: nowrap; justify-content: flex-end; }
 
   /* Creation detail uses a full-screen media-first layout on phones. */
   .admin-ui #previewModal { padding: 0; align-items: stretch; }
