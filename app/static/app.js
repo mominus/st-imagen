@@ -1198,6 +1198,11 @@ function renderPreviewModal() {
       if (previewEmpty) previewEmpty.classList.add("is-hidden");
     };
   }
+  if (previewImg.getAttribute("src") !== entry.url) {
+    // 上一张图片加载失败时会给 img 留下 is-hidden，换图时必须复位，否则后续能正常加载的图片也一直不可见
+    previewImg.classList.remove("is-hidden");
+    if (previewEmpty) previewEmpty.classList.add("is-hidden");
+  }
   previewImg.src = entry.url;
   previewImg.alt = promptText;
   $("#previewCounter").textContent = `${state.previewIndex + 1} / ${total}`;
@@ -1240,6 +1245,7 @@ function closePreview({ restoreFocus = true } = {}) {
   if (image) {
     image.removeAttribute("src");
     image.removeAttribute("alt");
+    image.classList.remove("is-hidden");
   }
   resetPreviewCopyState({ clearText: true });
   const returnFocusEl = state.previewReturnFocus;
