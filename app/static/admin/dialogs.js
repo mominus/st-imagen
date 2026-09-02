@@ -308,6 +308,11 @@ async function saveUser() {
   errEl.classList.add("is-hidden");
   const password = $("#u_new_password").value;
   const isEdit = !!state.editing.userId;
+  if (password && password.length < 8) {
+    errEl.textContent = "重置密码至少 8 位";
+    errEl.classList.remove("is-hidden");
+    return;
+  }
   let expiresAt = null;
   try {
     expiresAt = datetimeLocalToIso($("#u_expires_at").value);
@@ -410,10 +415,11 @@ async function saveInviteBatch() {
     errEl.classList.remove("is-hidden");
     return;
   }
+  const expiresInDaysValue = $("#i_expires_in_days").value.trim();
   const payload = {
     count: specified ? 1 : Number($("#i_count").value || 1),
     max_uses: Number($("#i_max_uses").value || 1),
-    expires_in_days: Number($("#i_expires_in_days").value || 30),
+    expires_in_days: expiresInDaysValue === "" ? 30 : Number(expiresInDaysValue),
     one_time_quota: Number($("#i_daily_quota").value || 10),
     max_inflight: Number($("#i_max_inflight").value || 2),
     note: $("#i_note").value.trim(),

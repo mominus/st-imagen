@@ -164,8 +164,14 @@ class User(Base):
     username = Column(String(64), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
     status = Column(String(20), default="active", nullable=False)  # active / disabled
-    auth_kind = Column(String(24), default="password", nullable=False)  # password / invite_guest
+    auth_kind = Column(
+        String(24), default="password", nullable=False
+    )  # password / invite_guest / invite_temporary / linuxdo
     invite_code_id = Column(String(36), nullable=True, index=True)
+    # LINUX DO Connect 绑定信息；linuxdo_id 为论坛唯一不可变标识，未绑定时为 NULL
+    linuxdo_id = Column(String(64), nullable=True, unique=True, index=True)
+    linuxdo_username = Column(String(255), nullable=True)
+    linuxdo_trust_level = Column(Integer, nullable=True)
     daily_quota = Column(Integer, default=10, nullable=False)
     daily_used = Column(Integer, default=0, nullable=False)
     total_requests = Column(Integer, default=0, nullable=False)
@@ -365,6 +371,9 @@ async def _ensure_columns(conn) -> None:
         ("users", "auth_kind", "VARCHAR(24) NOT NULL DEFAULT 'password'"),
         ("users", "abnormal_failure_count", "INTEGER NOT NULL DEFAULT 0"),
         ("users", "disabled_until", "DATETIME"),
+        ("users", "linuxdo_id", "VARCHAR(64)"),
+        ("users", "linuxdo_username", "VARCHAR(255)"),
+        ("users", "linuxdo_trust_level", "INTEGER"),
         ("generation_logs", "user_id", "VARCHAR(36)"),
         ("generation_logs", "output_images", "TEXT"),
         ("generation_logs", "error_code", "VARCHAR(64)"),
@@ -390,6 +399,10 @@ async def _ensure_indexes(conn) -> None:
         "ON generation_logs (timestamp, status)",
         "CREATE INDEX IF NOT EXISTS ix_generation_logs_timestamp_model "
         "ON generation_logs (timestamp, model)",
+        # 老库补建的 users.linuxdo_id 唯一索引；SQLite 唯一索引允许多个 NULL，
+        # 未绑定 LINUX DO 的账号不受影响。新库由模型 unique=True 建同名唯一索引。
+        "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_linuxdo_id "
+        "ON users (linuxdo_id)",
     )
     for statement in statements:
         await conn.execute(text(statement))

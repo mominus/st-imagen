@@ -170,12 +170,61 @@ function renderRuntimeConfig(config) {
   }
 }
 
+function renderLinuxdoSettings(linuxdo) {
+  const meta = $("#linuxdoStatusMeta");
+  const panel = $("#linuxdoInfoPanel");
+  if (!panel) return;
+  if (!linuxdo) {
+    panel.innerHTML = '<p class="muted">暂不可用</p>';
+    if (meta) meta.textContent = "未返回";
+    return;
+  }
+  const envText = linuxdo.env_enabled ? "启用" : "停用";
+  const rows = [
+    [
+      "登录状态",
+      linuxdo.enabled ? "已启用" : "已停用",
+      linuxdo.overridden ? `后台自定义（.env 默认${envText}）` : "跟随 .env 默认",
+    ],
+    [
+      "客户端凭据",
+      linuxdo.configured ? "已配置" : "未配置",
+      linuxdo.configured ? "LINUXDO_CLIENT_ID / SECRET 就绪" : "需在 .env 配置后才能发起授权",
+    ],
+    [
+      "回调地址",
+      linuxdo.redirect_uri || "—",
+      "填入 connect.linux.do「应用接入」的回调地址",
+    ],
+    [
+      "Scope / 最低信任等级",
+      `${linuxdo.scope || "—"} / TL${Number.isFinite(linuxdo.min_trust_level) ? linuxdo.min_trust_level : "—"}`,
+      "scope=user；信任等级 0 表示不限制",
+    ],
+  ];
+  panel.innerHTML = rows
+    .map(
+      ([label, value, hint]) => `
+        <div class="runtime-config-item">
+          <span>${escapeHtml(label)}</span>
+          <strong class="mono">${escapeHtml(value)}</strong>
+          <small>${escapeHtml(hint)}</small>
+        </div>
+      `
+    )
+    .join("");
+  if (meta) {
+    meta.textContent = linuxdo.enabled ? "已启用" : "已停用";
+  }
+}
+
 async function refreshSettings() {
   try {
     const data = await api("/api/admin/settings");
     state.runtimeConfig = data.runtime_config || null;
     renderSettingsForm(data.items);
     renderRuntimeConfig(data.runtime_config);
+    renderLinuxdoSettings(data.linuxdo);
     renderStorageStats(data.storage);
     return true;
   } catch (err) {
@@ -185,6 +234,7 @@ async function refreshSettings() {
       if (meta) meta.textContent = `加载失败：${err.message}`;
     });
     renderRuntimeConfig(null);
+    renderLinuxdoSettings(null);
     return false;
   }
 }
@@ -219,12 +269,34 @@ async function saveSettings() {
     state.runtimeConfig = data.runtime_config || null;
     renderSettingsForm(data.items);
     renderRuntimeConfig(data.runtime_config);
+    renderLinuxdoSettings(data.linuxdo);
     renderStorageStats(data.storage);
     showToast("设置已保存，并已按新策略执行一次清理", "success");
   } catch (err) {
     showToast(`保存失败：${err.message}`, "error");
   } finally {
     if (button) button.disabled = false;
+  }
+}
+
+async function setLinuxdoEnabled(value, successMessage) {
+  const buttons = ["#linuxdoEnableBtn", "#linuxdoDisableBtn", "#linuxdoResetBtn"].map((sel) => $(sel));
+  buttons.forEach((btn) => {
+    if (btn) btn.disabled = true;
+  });
+  try {
+    const data = await api("/api/admin/settings", {
+      method: "PUT",
+      body: JSON.stringify({ linuxdo_oauth_enabled: value }),
+    });
+    renderLinuxdoSettings(data.linuxdo);
+    showToast(successMessage, "success");
+  } catch (err) {
+    showToast(`操作失败：${err.message}`, "error");
+  } finally {
+    buttons.forEach((btn) => {
+      if (btn) btn.disabled = false;
+    });
   }
 }
 
@@ -271,4 +343,13 @@ function bindSettingsPage() {
     const resetBtn = $(`#${field.resetBtnId}`);
     if (resetBtn) resetBtn.addEventListener("click", () => resetRetentionField(field));
   });
+  $("#linuxdoEnableBtn")?.addEventListener("click", () =>
+    setLinuxdoEnabled(true, "LINUX DO 登录已启用")
+  );
+  $("#linuxdoDisableBtn")?.addEventListener("click", () =>
+    setLinuxdoEnabled(false, "LINUX DO 登录已停用")
+  );
+  $("#linuxdoResetBtn")?.addEventListener("click", () =>
+    setLinuxdoEnabled(null, "LINUX DO 登录已恢复 .env 默认")
+  );
 }

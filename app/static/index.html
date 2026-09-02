@@ -217,7 +217,7 @@
     </footer>
 
     <div class="modal-mask" id="authModal" aria-hidden="true">
-      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="authModalTitle">
+      <div class="modal" role="dialog" aria-modal="true" aria-label="用户入口">
         <aside class="auth-modal-aside" aria-hidden="true">
           <div class="auth-modal-aside-top">
             <div class="auth-modal-brand-row">
@@ -235,18 +235,14 @@
               <strong class="auth-modal-meta-value">账号登录</strong>
             </div>
             <div class="auth-modal-meta-item">
-              <span class="auth-modal-meta-label">访客入口</span>
-              <strong class="auth-modal-meta-value">访客直登</strong>
+              <span class="auth-modal-meta-label">无账号</span>
+              <strong class="auth-modal-meta-value">邀请码进入</strong>
             </div>
           </div>
         </aside>
 
         <section class="auth-modal-main">
           <div class="auth-modal-head">
-            <div class="auth-modal-title-wrap">
-              <p id="authModeCaption" class="auth-modal-caption">已有账号使用用户名和密码登录</p>
-              <h3 id="authModalTitle">账号登录</h3>
-            </div>
             <button class="auth-modal-close" id="authModalClose" type="button" aria-label="关闭">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M18 6 6 18" />
@@ -258,7 +254,7 @@
           <section id="authGate" class="auth-gate" aria-label="user access">
             <div class="auth-tabs" id="authTabs" role="tablist">
               <button type="button" class="auth-tab active" data-auth-mode="login" role="tab" aria-selected="true">已有账号登录</button>
-              <button type="button" class="auth-tab" data-auth-mode="activate" role="tab" aria-selected="false">访客直登</button>
+              <button type="button" class="auth-tab" data-auth-mode="activate" role="tab" aria-selected="false">邀请码注册</button>
             </div>
 
             <div id="authLoginPane" class="auth-pane">
@@ -275,17 +271,31 @@
               <div class="auth-actions">
                 <button id="authLoginBtn" type="button" class="btn btn-primary btn-block auth-submit-btn">登录</button>
               </div>
+              <div class="auth-oauth">
+                <div class="auth-oauth-divider"><span>或</span></div>
+                <button id="authLinuxdoBtn" type="button" class="btn btn-block auth-oauth-btn is-hidden">
+                  <img class="auth-oauth-logo" src="/static/assets/linuxdo_logo.png" alt="" aria-hidden="true" width="20" height="20" />
+                  <span>使用 LINUX DO 登录</span>
+                </button>
+              </div>
             </div>
 
             <div id="authActivatePane" class="auth-pane is-hidden">
-              <div class="auth-fields auth-fields-single">
+              <div id="authInviteCodeFields" class="auth-fields auth-fields-single">
                 <div class="auth-field">
-                  <label for="authInviteCode">访客码</label>
+                  <label for="authInviteCode">邀请码</label>
                   <input id="authInviteCode" type="text" autocomplete="off" placeholder="sti_..." />
                 </div>
               </div>
-              <div class="auth-actions">
+              <div id="authActivateActions" class="auth-actions">
                 <button id="authActivateBtn" type="button" class="btn btn-primary btn-block auth-submit-btn">进入创作</button>
+              </div>
+              <div id="authActivateOauth" class="auth-oauth auth-activate-oauth is-hidden">
+                <button id="authLinuxdoInviteBtn" type="button" class="btn btn-block auth-oauth-btn is-hidden">
+                  <img class="auth-oauth-logo" src="/static/assets/linuxdo_logo.png" alt="" aria-hidden="true" width="20" height="20" />
+                  <span>使用 LINUX DO 登录</span>
+                </button>
+                <p class="auth-oauth-hint">首次使用 LINUX DO 登录需要邀请码</p>
               </div>
             </div>
 

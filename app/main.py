@@ -35,7 +35,7 @@ from app.env import (
 ENV_PATH_LOADED, FORCED_ENV_KEYS = load_project_env()
 
 from app.models.database import close_database, get_session_factory, init_database
-from app.routers import admin_router, generate_router, user_auth_router
+from app.routers import admin_router, generate_router, linuxdo_auth_router, user_auth_router
 from app.routers.generate import close_downloads_client
 from app.services.account_pool import get_account_pool_service
 from app.services.auth import get_auth_service
@@ -207,6 +207,7 @@ if allow_origins:
 
 app.include_router(admin_router)
 app.include_router(user_auth_router)
+app.include_router(linuxdo_auth_router)
 app.include_router(generate_router)
 
 

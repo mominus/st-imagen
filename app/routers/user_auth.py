@@ -61,13 +61,33 @@ def _user_to_dict(user: User) -> dict:
     current = utcnow_naive()
     usage = build_user_usage_snapshot(user)
     auth_kind = str(getattr(user, "auth_kind", "password") or "password")
-    is_invite_guest = auth_kind == "invite_guest"
+    linuxdo_id = str(getattr(user, "linuxdo_id", None) or "").strip() or None
+    linuxdo_username = getattr(user, "linuxdo_username", None)
+    # 兼容认证类型尚未回填、但已经存在 LINUX DO 绑定信息的历史用户。
+    is_linuxdo = auth_kind == "linuxdo" or bool(linuxdo_id)
+    is_invite_guest = auth_kind == "invite_guest" and not is_linuxdo
+    if is_invite_guest:
+        display_name = "邀请码访客"
+    elif is_linuxdo:
+        display_id = str(linuxdo_username or linuxdo_id or user.username).strip()
+        display_name = f"@{display_id.lstrip('@')}"
+    else:
+        display_name = f"@{user.username}"
     return {
         "id": user.id,
         # 邀请码本身是 bearer credential；访客用户名用于后台关联，但不回显给浏览器。
         "username": None if is_invite_guest else user.username,
-        "display_name": "邀请码访客" if is_invite_guest else f"@{user.username}",
+        "display_name": display_name,
         "auth_kind": auth_kind,
+        "linuxdo": (
+            {
+                "id": linuxdo_id,
+                "username": linuxdo_username,
+                "trust_level": getattr(user, "linuxdo_trust_level", None),
+            }
+            if is_linuxdo
+            else None
+        ),
         "quota_type": "one_time" if is_temporary_user(user) else "daily",
         "status": user.status,
         "effective_status": get_effective_user_status(user, now=current),
@@ -87,9 +107,12 @@ def _user_to_dict(user: User) -> dict:
 
 @router.get("/status")
 async def status(current_user: Optional[User] = Depends(get_optional_user)):
+    from app.services import linuxdo_auth
+
     return {
         "authenticated": current_user is not None,
         "user": _user_to_dict(current_user) if current_user else None,
+        "linuxdo_enabled": await linuxdo_auth.is_enabled(),
     }
 
 
@@ -132,6 +155,14 @@ async def invite_login(
     session: AsyncSession = Depends(get_session),
 ):
     """仅凭邀请码创建访客会话，不要求用户提供账号密码。"""
+    from app.services import linuxdo_auth
+
+    if await linuxdo_auth.is_enabled():
+        return JSONResponse(
+            {"success": False, "message": "请使用 LINUX DO 登录完成注册"},
+            status_code=403,
+        )
+
     auth = get_user_auth_service()
     try:
         user, raw_token = await auth.login_with_invite(

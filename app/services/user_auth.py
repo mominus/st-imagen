@@ -745,6 +745,110 @@ class UserAuthService:
         await session.flush()
         return user, raw_token
 
+    async def _generate_linuxdo_username(self, session: AsyncSession, profile: dict) -> str:
+        """LINUX DO 用户名直接使用论坛用户 id（唯一且不可变）；极少数撞名时追加随机后缀。"""
+        base = str(profile.get("id") or "").strip() or "ldo_user"
+        for attempt in range(32):
+            candidate = base if attempt == 0 else f"{base[:31]}_{secrets.token_hex(2)}"
+            row = await session.execute(
+                select(User.username).where(User.username == candidate)
+            )
+            if row.scalar_one_or_none() is None:
+                return candidate
+        raise RuntimeError("生成 LINUX DO 用户名失败，请重试")
+
+    async def login_with_linuxdo(
+        self,
+        session: AsyncSession,
+        *,
+        profile: dict,
+        invite_code: Optional[str],
+        ip_address: Optional[str],
+        user_agent: Optional[str],
+    ) -> Tuple[User, str]:
+        """LINUX DO Connect 登录：已绑定直接建会话；未绑定需有效邀请码建号。
+
+        邀请码仅在首次绑定时消耗一次；之后每次登录只认 users.linuxdo_id，
+        账号的停用/过期/配额由 User 行本身管理（管理员后台可控制）。
+        """
+        await self.ensure_user_schema(session)
+        now = utcnow_naive()
+        linuxdo_id = str(profile.get("id") or "").strip()
+        if not linuxdo_id:
+            raise UserAuthError("LINUX DO 用户信息缺少 id")
+        linuxdo_username = str(profile.get("username") or "").strip() or None
+        trust_level = profile.get("trust_level")
+
+        async with self._activation_lock:
+            row = await session.execute(select(User).where(User.linuxdo_id == linuxdo_id))
+            user = row.scalar_one_or_none()
+            if user is not None:
+                self._ensure_user_can_access(user, now=now)
+                user.auth_kind = "linuxdo"
+                if linuxdo_username:
+                    user.linuxdo_username = linuxdo_username
+                if trust_level is not None:
+                    user.linuxdo_trust_level = int(trust_level)
+                user.last_login_at = now
+                user.updated_at = now
+                raw_token = await self._create_session(
+                    session,
+                    user=user,
+                    ip_address=ip_address,
+                    user_agent=user_agent,
+                )
+                await session.flush()
+                return user, raw_token
+
+            code = (invite_code or "").strip()
+            if not code:
+                raise InvalidInviteCodeError("首次使用 LINUX DO 登录需要邀请码")
+            code_hash = CryptoService.hash_api_key(code)
+            invite_row = await session.execute(
+                select(InviteCode).where(InviteCode.code_hash == code_hash)
+            )
+            invite = invite_row.scalar_one_or_none()
+            if invite is None:
+                raise InvalidInviteCodeError("邀请码无效")
+            if invite.revoked_at is not None:
+                raise InviteCodeRevokedError("邀请码已失效")
+            if invite.expires_at and invite.expires_at < now:
+                raise InvalidInviteCodeError("邀请码已过期")
+            if invite.used_count >= invite.max_uses:
+                raise InviteCodeExhaustedError("邀请码已达到使用上限")
+
+            username = await self._generate_linuxdo_username(session, profile)
+            user = User(
+                id=str(uuid.uuid4()),
+                username=username,
+                # LINUX DO 用户没有本地密码；存随机哈希占位以保持非空约束
+                password_hash=CryptoService.hash_password(secrets.token_urlsafe(32)),
+                status="active",
+                auth_kind="linuxdo",
+                invite_code_id=invite.id,
+                linuxdo_id=linuxdo_id,
+                linuxdo_username=linuxdo_username,
+                linuxdo_trust_level=None if trust_level is None else int(trust_level),
+                daily_quota=max(0, int(invite.daily_quota or 0)),
+                daily_used=0,
+                total_requests=0,
+                last_login_at=now,
+                in_flight=0,
+                max_inflight=max(1, int(invite.max_inflight or self._default_user_max_inflight)),
+                expires_at=self._normalize_expiry(invite.expires_at),
+            )
+            session.add(user)
+            invite.used_count += 1
+            invite.updated_at = now
+            raw_token = await self._create_session(
+                session,
+                user=user,
+                ip_address=ip_address,
+                user_agent=user_agent,
+            )
+            await session.flush()
+            return user, raw_token
+
     async def _create_session(
         self,
         session: AsyncSession,

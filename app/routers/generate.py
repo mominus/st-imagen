@@ -31,6 +31,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.database import Account, GenerationLog, get_session
+from app.public_url import public_base_url
 from app.services.deps import GenerationPrincipal, require_generation_principal
 from app.services import app_settings
 from app.services.generation_stats import increment_total_generated_images
@@ -526,19 +527,7 @@ class GeneratedImageSaveError(Exception):
 
 
 def _public_base_url(request: Optional[Request]) -> str:
-    configured = (os.getenv("PUBLIC_BASE_URL") or "").strip()
-    if configured:
-        return configured.rstrip("/") + "/"
-
-    if request is None:
-        return "http://127.0.0.1:8001/"
-    forwarded_host = (request.headers.get("x-forwarded-host") or "").split(",", 1)[0].strip()
-    forwarded_proto = (request.headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip()
-    if forwarded_host:
-        scheme = forwarded_proto or request.url.scheme
-        return f"{scheme}://{forwarded_host}/"
-
-    return str(request.base_url)
+    return public_base_url(request)
 
 
 def _detect_uploaded_image_extension(data: bytes) -> Optional[str]:

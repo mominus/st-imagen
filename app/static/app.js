@@ -4,7 +4,7 @@ const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 const ADMIN_TOKEN_KEY = "image_gen_admin_token";
 const UNAUTHENTICATED_HINT = "请先登录";
 const AUTH_FIELD_LABELS = {
-  invite_code: "访客码",
+  invite_code: "邀请码",
   username: "用户名",
   password: "密码",
 };
@@ -23,6 +23,7 @@ const state = {
   authKind: "none",
   authMode: "login",
   authGateVisible: false,
+  linuxdoEnabled: false,
   galleryItems: [],
   previewVisible: false,
   previewIndex: -1,
@@ -176,19 +177,11 @@ function showAuthError(msg) {
 function switchAuthMode(mode) {
   state.authMode = mode === "activate" ? "activate" : "login";
   const isLogin = state.authMode === "login";
-  const modalTitle = $("#authModalTitle");
-  const modeCaption = $("#authModeCaption");
   $$("#authTabs .auth-tab").forEach((btn) => {
     const active = btn.dataset.authMode === state.authMode;
     btn.classList.toggle("active", active);
     btn.setAttribute("aria-selected", active ? "true" : "false");
   });
-  if (modalTitle) {
-    modalTitle.textContent = isLogin ? "账号登录" : "访客码进入";
-  }
-  if (modeCaption) {
-    modeCaption.textContent = isLogin ? "已有账号使用用户名和密码登录" : "无需用户名和密码";
-  }
   $("#authLoginPane").classList.toggle("is-hidden", !isLogin);
   $("#authActivatePane").classList.toggle("is-hidden", isLogin);
   showAuthError("");
@@ -223,6 +216,54 @@ function openAuthGate({ mode = "login", message = "", focus = true, animate = tr
 function closeAuthGate() {
   if (state.authenticated) return;
   setAuthGateVisible(false);
+}
+
+function syncLinuxdoButtons() {
+  const visible = Boolean(state.linuxdoEnabled) && !state.authenticated;
+  $$("#authModal .auth-oauth-btn").forEach((btn) => {
+    btn.classList.toggle("is-hidden", !visible);
+  });
+  $("#authActivateActions")?.classList.toggle("is-hidden", Boolean(state.linuxdoEnabled));
+  $("#authActivateOauth")?.classList.toggle("is-hidden", !visible);
+}
+
+async function startLinuxdoLogin(inviteCode) {
+  showAuthError("");
+  try {
+    const r = await fetch("/api/auth/linuxdo/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ invite_code: inviteCode || "" }),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok || !data.authorize_url) {
+      showAuthError(extractApiMessage(data, "LINUX DO 登录暂不可用"));
+      return;
+    }
+    window.location.href = data.authorize_url;
+  } catch (_) {
+    showAuthError("LINUX DO 登录请求失败，请稍后重试");
+  }
+}
+
+// OAuth 回调失败会 303 回 /?auth_error=...；展示后清理地址栏，避免刷新重复提示
+function consumeAuthErrorParam() {
+  const params = new URLSearchParams(window.location.search);
+  const message = params.get("auth_error");
+  if (!message) return;
+  params.delete("auth_error");
+  const query = params.toString();
+  window.history.replaceState(
+    {},
+    "",
+    `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`
+  );
+  openAuthGate({
+    mode: message.indexOf("邀请码") !== -1 ? "activate" : "login",
+    message,
+    focus: false,
+    animate: false,
+  });
 }
 
 function formatValidationMessage(item) {
@@ -419,6 +460,7 @@ function applyAuthState(auth) {
   if (!state.authenticated) {
     switchAuthMode(state.authMode || "login");
   }
+  syncLinuxdoButtons();
   setLoading(state.isGenerating);
   if (state.authenticated) {
     void loadRecentImages();
@@ -435,6 +477,7 @@ async function loadAuthStatus() {
     const r = await fetch("/api/auth/status");
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const data = await r.json();
+    state.linuxdoEnabled = Boolean(data.linuxdo_enabled);
     if (data.user) {
       applyAuthState({ kind: "user", user: data.user });
       return;
@@ -495,10 +538,14 @@ async function submitLogin() {
 }
 
 async function submitActivation() {
+  if (state.linuxdoEnabled) {
+    showAuthError("请使用 LINUX DO 登录完成注册");
+    return;
+  }
   showAuthError("");
   const inviteCode = $("#authInviteCode").value.trim();
   if (!inviteCode) {
-    showAuthError("请输入访客码");
+    showAuthError("请输入邀请码");
     return;
   }
 
@@ -510,7 +557,7 @@ async function submitActivation() {
     });
     const data = await r.json().catch(() => ({}));
     if (!r.ok || !data.success) {
-      showAuthError(extractApiMessage(data, "访客码进入失败"));
+      showAuthError(extractApiMessage(data, "邀请码进入失败"));
       return;
     }
 
@@ -518,8 +565,21 @@ async function submitActivation() {
     applyAuthState({ kind: "user", user: data.user || null });
     showError("");
   } catch (_) {
-    showAuthError("访客码登录请求失败，请稍后重试");
+    showAuthError("邀请码登录请求失败，请稍后重试");
   }
+}
+
+function submitInviteRegistration() {
+  const inviteCode = $("#authInviteCode").value.trim();
+  if (!inviteCode) {
+    showAuthError("请输入邀请码");
+    return;
+  }
+  if (state.linuxdoEnabled) {
+    void startLinuxdoLogin(inviteCode);
+    return;
+  }
+  void submitActivation();
 }
 
 async function logoutUser() {
@@ -1659,7 +1719,9 @@ document.addEventListener("DOMContentLoaded", () => {
     if (e.target === e.currentTarget) closeAuthGate();
   });
   $("#authLoginBtn").addEventListener("click", submitLogin);
-  $("#authActivateBtn").addEventListener("click", submitActivation);
+  $("#authActivateBtn").addEventListener("click", submitInviteRegistration);
+  $("#authLinuxdoBtn").addEventListener("click", () => startLinuxdoLogin(""));
+  $("#authLinuxdoInviteBtn").addEventListener("click", submitInviteRegistration);
   $("#userLogoutBtn").addEventListener("click", logoutUser);
   $("#authLoginUsername").addEventListener("keydown", (e) => {
     if (e.key === "Enter") $("#authLoginPassword")?.focus();
@@ -1668,7 +1730,9 @@ document.addEventListener("DOMContentLoaded", () => {
     if (e.key === "Enter") submitLogin();
   });
   $("#authInviteCode").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") submitActivation();
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    submitInviteRegistration();
   });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && state.previewVisible) {
@@ -1691,6 +1755,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   bindModeTabs();
+  consumeAuthErrorParam();
   $("#model").addEventListener("change", () => {
     if (state.mode === "text2img") applyText2imgDimensionOptions();
   });

@@ -471,14 +471,14 @@ function renderUserRow(user) {
           <span class="table-note">${escapeHtml(user.invite_code_id ? "邀请码注册" : "手动创建")}</span>
         </div>
       </td>
-      <td class="col-user-quota" data-label="额度 / 并发">
-        <div class="metric-stack">
-          <div class="metric-head">
-            <strong class="mono">${escapeHtml(fmtQuota(user.daily_used || 0, user.daily_quota || 0))}</strong>
-            <span class="mono">并发 ${fmtNumber(user.in_flight || 0)}/${fmtNumber(user.max_inflight || 0)}</span>
-          </div>
-          ${renderCapacityBar(user.in_flight || 0, user.max_inflight || 0)}
-        </div>
+      <td class="col-user-quota" data-label="额度">
+        <strong class="mono">${escapeHtml(fmtQuota(user.daily_used || 0, user.daily_quota || 0))}</strong>
+      </td>
+      <td class="col-user-concurrency" data-label="并发">
+        <strong class="mono">${fmtNumber(user.in_flight || 0)} / ${fmtNumber(user.max_inflight || 0)}</strong>
+      </td>
+      <td class="col-user-generations" data-label="生图数">
+        <strong class="mono">${fmtNumber(user.total_requests || 0)}</strong>
       </td>
       <td class="col-user-expiry" data-label="期限">${renderUserExpiry(user)}</td>
       <td class="col-user-failures" data-label="失败次数">
@@ -580,11 +580,11 @@ function renderUsersTable() {
   }
 
   if (!state.users.length) {
-    tbody.innerHTML = renderEmptyRow(6, "暂无用户。", "可手动创建用户，或先发放邀请码。");
+    tbody.innerHTML = renderEmptyRow(8, "暂无用户。", "可手动创建用户，或先发放邀请码。");
     return;
   }
   if (!items.length) {
-    tbody.innerHTML = renderEmptyRow(6, "没有匹配结果。", "尝试放宽筛选条件。");
+    tbody.innerHTML = renderEmptyRow(8, "没有匹配结果。", "尝试放宽筛选条件。");
     return;
   }
   tbody.innerHTML = items.map(renderUserRow).join("");
@@ -594,7 +594,7 @@ function renderUsersTable() {
 
 async function refreshUsers() {
   const tbody = $("#usersTable tbody");
-  tbody.innerHTML = renderEmptyRow(6, "用户列表加载中…", "正在同步用户数据。");
+  tbody.innerHTML = renderEmptyRow(8, "用户列表加载中…", "正在同步用户数据。");
   try {
     const data = await api("/api/admin/users");
     state.users = Array.isArray(data.items) ? data.items : [];
@@ -612,7 +612,7 @@ async function refreshUsers() {
       "users",
       "支持搜索与筛选。",
     );
-    tbody.innerHTML = renderErrorRow(6, err.message);
+    tbody.innerHTML = renderErrorRow(8, err.message);
     const summary = $("#usersSummary");
     if (summary) summary.textContent = `用户列表加载失败：${err.message}`;
     renderInsightPanels();

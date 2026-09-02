@@ -20,10 +20,12 @@ logger = logging.getLogger(__name__)
 # 已知的设置键（集中在这一处登记）
 SETTING_GENERATED_IMAGE_RETENTION_DAYS = "generated_image_retention_days"
 SETTING_REFERENCE_UPLOAD_RETENTION_DAYS = "reference_upload_retention_days"
+SETTING_LINUXDO_OAUTH_ENABLED = "linuxdo_oauth_enabled"
 
 KNOWN_SETTING_KEYS = {
     SETTING_GENERATED_IMAGE_RETENTION_DAYS,
     SETTING_REFERENCE_UPLOAD_RETENTION_DAYS,
+    SETTING_LINUXDO_OAUTH_ENABLED,
 }
 
 # None 表示「确认无 DB 覆盖」，与「键不存在」区分开后可直接命中缓存
@@ -87,6 +89,20 @@ async def get_effective_float(key: str, default: float, *, minimum: float = 0.0)
         logger.warning("app setting %s=%r is not a valid float; fallback to %s", key, raw, default)
         return default
     return max(minimum, value)
+
+
+async def get_effective_bool(key: str, default: bool) -> bool:
+    """DB 覆盖值解析为 bool；未设置或解析失败回退 default。"""
+    raw = await get_setting(key)
+    if raw is None:
+        return default
+    normalized = str(raw).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    logger.warning("app setting %s=%r is not a valid bool; fallback to %s", key, raw, default)
+    return default
 
 
 def clear_cache() -> None:

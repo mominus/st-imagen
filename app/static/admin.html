@@ -315,7 +315,9 @@
                       <tr>
                         <th class="col-user-name">用户</th>
                         <th class="col-user-status">状态</th>
-                        <th class="col-user-quota">额度 / 并发</th>
+                        <th class="col-user-quota">额度</th>
+                        <th class="col-user-concurrency">并发</th>
+                        <th class="col-user-generations">生图数</th>
                         <th class="col-user-expiry">期限</th>
                         <th class="col-user-failures">失败次数</th>
                         <th class="col-user-actions">操作</th>
@@ -493,6 +495,22 @@
                       <button id="resetReferenceRetentionBtn" class="btn btn-ghost" type="button">恢复默认</button>
                     </div>
                     <p class="settings-field-hint">图生图上传参考图的磁盘保留期；0 = 永久保留。</p>
+                  </div>
+                </div>
+                <div class="settings-runtime-block">
+                  <div class="settings-field-head">
+                    <div>
+                      <label>LINUX DO Connect</label>
+                    </div>
+                    <span id="linuxdoStatusMeta" class="muted mono">加载中…</span>
+                  </div>
+                  <div class="settings-field-row">
+                    <button id="linuxdoEnableBtn" class="btn btn-ghost" type="button">启用登录</button>
+                    <button id="linuxdoDisableBtn" class="btn btn-ghost" type="button">停用登录</button>
+                    <button id="linuxdoResetBtn" class="btn btn-ghost" type="button">恢复 .env 默认</button>
+                  </div>
+                  <div id="linuxdoInfoPanel" class="runtime-config-grid">
+                    <p class="muted">加载中…</p>
                   </div>
                 </div>
                 <div class="settings-runtime-block">
@@ -764,7 +782,7 @@
 
         <div id="userPasswordField" class="modal-field">
           <label id="userPasswordLabel">密码</label>
-          <input id="u_new_password" type="password" autocomplete="new-password" placeholder="至少 8 位" />
+          <input id="u_new_password" type="password" autocomplete="new-password" minlength="8" placeholder="至少 8 位" />
           <p id="userPasswordHelp" class="muted" style="margin-top: 8px">编辑时可留空。</p>
         </div>
 
@@ -815,7 +833,8 @@
         <div class="modal-field-row">
           <div class="modal-field" style="margin-top: 0">
             <label>过期天数</label>
-            <input id="i_expires_in_days" type="number" min="1" max="3650" value="30" />
+            <input id="i_expires_in_days" type="number" min="0" max="3650" value="30" />
+            <p class="muted" style="margin-top: 8px">0 表示永久有效。</p>
           </div>
           <div class="modal-field" style="margin-top: 0">
             <label>最大并发</label>

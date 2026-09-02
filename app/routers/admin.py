@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -39,6 +39,7 @@ from app.services import app_settings
 from app.services.generation_stats import get_total_generated_images
 from app.services.dashboard_analytics import get_dashboard_analytics, normalize_failure_category
 from app.services.failure_classifier import dashboard_failure_code
+from app.services import linuxdo_auth
 from app.services.guard import get_generation_guard, get_login_throttle
 from app.services.st_client import STError, get_st_client
 from app.services.upstream_redaction import redact_upstream_text
@@ -121,6 +122,8 @@ class AppSettingsUpdateRequest(BaseModel):
     # 传数字 = 设置覆盖值；显式传 null = 清除覆盖（回退 env 默认）；不传 = 不改动
     generated_image_retention_days: Optional[float] = Field(default=None, ge=0, le=3650)
     reference_upload_retention_days: Optional[float] = Field(default=None, ge=0, le=3650)
+    # LINUX DO Connect 启停：true/false = 覆盖；null = 清除覆盖回退 env
+    linuxdo_oauth_enabled: Optional[bool] = None
 
 
 class StorageCleanupRequest(BaseModel):
@@ -162,7 +165,7 @@ class AccountBulkStatusRequest(BaseModel):
 class InviteCodeCreateRequest(BaseModel):
     count: int = Field(default=10, ge=1, le=200)
     max_uses: int = Field(default=1, ge=1, le=1000)
-    expires_in_days: Optional[int] = Field(default=30, ge=1, le=3650)
+    expires_in_days: Optional[int] = Field(default=30, ge=0, le=3650)
     note: Optional[str] = Field(default=None, max_length=255)
     daily_quota: Optional[int] = Field(default=10, ge=0, le=1_000_000)
     one_time_quota: Optional[int] = Field(default=None, ge=0, le=1_000_000)
@@ -192,7 +195,9 @@ class UserUpdateRequest(BaseModel):
     daily_quota: Optional[int] = Field(default=None, ge=0, le=1_000_000)
     max_inflight: Optional[int] = Field(default=None, ge=1, le=100)
     expires_at: Optional[datetime] = None
-    new_password: Optional[str] = Field(default=None, min_length=8, max_length=128)
+    # 留空表示不修改；密码长度由 user_auth service 统一校验，避免编辑用户时
+    # 因空值/短值直接收到难以理解的 HTTP 422。
+    new_password: Optional[str] = Field(default=None, max_length=128)
 
 
 def _account_to_dict(acc: Account) -> dict:
@@ -428,9 +433,22 @@ async def _storage_stats(session: AsyncSession) -> dict:
     }
 
 
-async def _settings_payload(session: AsyncSession) -> dict:
+def _linuxdo_settings_payload(request: Optional[Request]) -> dict:
+    """LINUX DO Connect 的只读运行信息；client 凭据只回显是否已配置。"""
+    return {
+        "configured": linuxdo_auth.is_configured(),
+        "scope": linuxdo_auth.oauth_scope(),
+        "min_trust_level": linuxdo_auth.min_trust_level(),
+        "redirect_uri": linuxdo_auth.resolve_redirect_uri(request),
+    }
+
+
+async def _settings_payload(
+    session: AsyncSession, request: Optional[Request] = None
+) -> dict:
     gen_raw = await app_settings.get_setting(app_settings.SETTING_GENERATED_IMAGE_RETENTION_DAYS)
     ref_raw = await app_settings.get_setting(app_settings.SETTING_REFERENCE_UPLOAD_RETENTION_DAYS)
+    linuxdo_raw = await app_settings.get_setting(app_settings.SETTING_LINUXDO_OAUTH_ENABLED)
     guard = get_generation_guard()
     pool = get_account_pool_service()
     return {
@@ -442,6 +460,12 @@ async def _settings_payload(session: AsyncSession) -> dict:
                 ref_raw, generate_mod.REFERENCE_UPLOAD_RETENTION_DAYS
             ),
         },
+        "linuxdo": {
+            **_linuxdo_settings_payload(request),
+            "enabled": await linuxdo_auth.is_enabled(),
+            "env_enabled": linuxdo_auth.env_enabled_default(),
+            "overridden": linuxdo_raw is not None,
+        },
         "storage": await _storage_stats(session),
         # Concurrency is intentionally read-only here.  The process-local
         # admission counters are created at startup and changing them from the
@@ -452,16 +476,18 @@ async def _settings_payload(session: AsyncSession) -> dict:
 
 @router.get("/settings")
 async def get_app_settings(
+    request: Request,
     payload=Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
     del payload
-    return await _settings_payload(session)
+    return await _settings_payload(session, request)
 
 
 @router.put("/settings")
 async def update_app_settings(
     req: AppSettingsUpdateRequest,
+    request: Request,
     payload=Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ):
@@ -469,6 +495,13 @@ async def update_app_settings(
     provided = req.model_dump(exclude_unset=True)
     if not provided:
         raise HTTPException(status_code=400, detail="没有可更新的设置项")
+
+    if "linuxdo_oauth_enabled" in provided:
+        value = provided.pop("linuxdo_oauth_enabled")
+        await app_settings.set_setting(
+            app_settings.SETTING_LINUXDO_OAUTH_ENABLED,
+            None if value is None else ("true" if value else "false"),
+        )
 
     field_to_key = {
         "generated_image_retention_days": app_settings.SETTING_GENERATED_IMAGE_RETENTION_DAYS,
@@ -489,7 +522,7 @@ async def update_app_settings(
     except Exception as exc:
         logger.warning("post-settings cleanup failed: %s", exc)
 
-    return await _settings_payload(session)
+    return await _settings_payload(session, request)
 
 
 # ---------------- Storage Cleanup ----------------
@@ -1097,7 +1130,7 @@ async def create_invite_codes(
     service = get_user_auth_service()
     expires_at = (
         utcnow_naive() + timedelta(days=req.expires_in_days)
-        if req.expires_in_days is not None
+        if req.expires_in_days and req.expires_in_days > 0
         else None
     )
     try:
@@ -1262,16 +1295,22 @@ async def update_user(
     del payload
     service = get_user_auth_service()
     fields_set = getattr(req, "model_fields_set", getattr(req, "__fields_set__", set()))
-    user = await service.update_user(
-        session,
-        user_id,
-        status=req.status,
-        daily_quota=req.daily_quota,
-        max_inflight=req.max_inflight,
-        expires_at=req.expires_at,
-        expires_at_provided="expires_at" in fields_set,
-        new_password=req.new_password,
-    )
+    new_password = req.new_password
+    if new_password is not None and not new_password.strip():
+        new_password = None
+    try:
+        user = await service.update_user(
+            session,
+            user_id,
+            status=req.status,
+            daily_quota=req.daily_quota,
+            max_inflight=req.max_inflight,
+            expires_at=req.expires_at,
+            expires_at_provided="expires_at" in fields_set,
+            new_password=new_password,
+        )
+    except InvalidPasswordError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     if user is None:
         raise HTTPException(status_code=404, detail="用户不存在")
     if req.status == "active":
