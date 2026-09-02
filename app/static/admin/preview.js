@@ -23,7 +23,10 @@ function renderPreviewModal() {
   state.previewIndex = activeIndex;
   if (promptEl) promptEl.textContent = prompt;
   if (errorEl) errorEl.textContent = error;
-  if (errorBlock) errorBlock.classList.toggle("is-hidden", !error);
+
+  // 失败且没有输出图片时,报错详情直接展示在图片位置;有图片时才留在侧栏。
+  const failureInStage = !hasImages && Boolean(error);
+  if (errorBlock) errorBlock.classList.toggle("is-hidden", !error || failureInStage);
 
   if (image) {
     if (activeImage) {
@@ -51,7 +54,21 @@ function renderPreviewModal() {
 
   if (emptyState) {
     emptyState.classList.toggle("is-hidden", hasImages);
-    if (!hasImages) emptyState.textContent = "暂无输出结果";
+    emptyState.classList.toggle("preview-stage-empty-danger", failureInStage);
+    if (!hasImages) {
+      emptyState.replaceChildren();
+      if (failureInStage) {
+        const title = document.createElement("strong");
+        title.className = "preview-stage-empty-title";
+        title.textContent = "生成失败";
+        const text = document.createElement("span");
+        text.className = "preview-stage-empty-text";
+        text.textContent = error;
+        emptyState.append(title, text);
+      } else {
+        emptyState.textContent = "暂无输出结果";
+      }
+    }
   }
 }
 
@@ -93,6 +110,12 @@ function closeLogModal({ restoreFocus = true } = {}) {
     image.removeAttribute("src");
     image.removeAttribute("alt");
     image.classList.remove("is-hidden");
+  }
+  const emptyState = $("#previewEmptyState");
+  if (emptyState) {
+    emptyState.classList.remove("preview-stage-empty-danger");
+    emptyState.replaceChildren();
+    emptyState.textContent = "暂无输出结果";
   }
   const promptEl = $("#previewPrompt");
   if (promptEl) promptEl.textContent = "";

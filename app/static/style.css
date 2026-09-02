@@ -2303,8 +2303,10 @@ kbd {
 }
 
 .preview-prompt-scroll {
-  flex: 0 0 auto;
-  height: 320px;
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
+  max-height: none;
   padding: 18px 12px 18px 18px;
   border: 1px solid var(--line);
   border-radius: 18px;
@@ -2394,7 +2396,7 @@ kbd {
 }
 
 .preview-sidebar.preview-sidebar-compact {
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 16px;
 }
 
@@ -2404,7 +2406,10 @@ kbd {
 }
 
 .preview-modal-admin .preview-prompt-scroll {
-  height: clamp(240px, 38vh, 360px);
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
+  max-height: none;
 }
 
 .preview-stage-empty {
@@ -2425,6 +2430,43 @@ kbd {
   display: none;
 }
 
+/* 失败且无输出图片时,报错详情直接占据图片位置展示。 */
+.preview-stage-empty.preview-stage-empty-danger {
+  grid-template-rows: auto minmax(0, 1fr);
+  place-items: center stretch;
+  gap: 14px;
+  border-color: rgba(236, 116, 116, 0.32);
+  background:
+    radial-gradient(circle at top right, rgba(236, 116, 116, 0.12), transparent 34%),
+    rgba(236, 116, 116, 0.05);
+  color: var(--danger);
+  text-align: center;
+}
+
+.preview-stage-empty-danger .preview-stage-empty-title {
+  justify-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+
+.preview-stage-empty-danger .preview-stage-empty-text {
+  align-self: stretch;
+  overflow-y: auto;
+  padding: 14px 16px;
+  border: 1px solid rgba(236, 116, 116, 0.22);
+  border-radius: 14px;
+  background: rgba(236, 116, 116, 0.07);
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+  text-align: left;
+}
+
 .preview-figure img.is-hidden {
   display: none;
 }
@@ -2433,6 +2475,7 @@ kbd {
   #previewModal .preview-modal {
     grid-template-columns: 1fr;
     grid-template-rows: minmax(320px, 56vh) minmax(0, 1fr);
+    height: calc(100dvh - 28px);
     max-height: calc(100vh - 28px);
   }
 
@@ -2472,7 +2515,8 @@ kbd {
   }
 
   #previewModal .preview-modal {
-    grid-template-rows: minmax(260px, 48vh) minmax(0, 1fr);
+    grid-template-rows: minmax(220px, 42dvh) minmax(0, 1fr);
+    height: calc(100dvh - 20px);
     max-height: calc(100vh - 20px);
     border-radius: 26px;
   }
@@ -2510,17 +2554,33 @@ kbd {
   }
 
   .preview-panel-head {
-    align-items: flex-start;
-    flex-direction: column;
+    align-items: center;
+    flex-direction: row;
+    justify-content: space-between;
   }
 
   .preview-sidebar {
-    gap: 16px;
-    padding: 18px 16px 16px;
+    gap: 12px;
+    padding: 16px 14px 14px;
+  }
+
+  /* 规格标签在窄屏改为单行横滑,不再折行挤压提示词区。 */
+  .preview-chip-row {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .preview-chip-row::-webkit-scrollbar {
+    display: none;
+  }
+
+  .preview-chip {
+    flex: 0 0 auto;
   }
 
   .preview-panel {
-    min-height: auto;
+    min-height: 0;
     padding: 16px;
   }
 
@@ -2533,12 +2593,11 @@ kbd {
   }
 
   .preview-prompt-scroll {
-    height: 240px;
     padding: 14px 10px 14px 14px;
   }
 
   .preview-footer {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;
   }
 
@@ -3613,20 +3672,21 @@ td strong {
 }
 
 @media (max-width: 760px) {
+  /* 手机端表单优先:隐藏装饰侧栏,弹窗自身可滚动,登录/注册始终可达。 */
   #authModal .modal {
     grid-template-columns: 1fr;
     width: min(560px, 100%);
+    max-height: calc(100dvh - 20px);
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
 
   #authModal .auth-modal-aside {
-    padding: 22px 20px;
-    border-right: none;
-    border-bottom: 1px solid var(--line);
-    gap: 22px;
+    display: none;
   }
 
   #authModal .auth-modal-main {
-    padding: 22px 20px 24px;
+    padding: 22px 20px max(24px, env(safe-area-inset-bottom));
   }
 
   #authModal .auth-modal-head {
@@ -5897,7 +5957,7 @@ td strong {
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
-/* Mobile operations dock: keep the five highest-frequency destinations within
+/* Mobile operations dock: keep the highest-frequency destinations within
    thumb reach while the full information architecture remains in the drawer. */
 .admin-mobile-nav { display: none; }
 .mobile-scroll-hint { display: none; }
@@ -5992,7 +6052,7 @@ td strong {
     bottom: max(10px, env(safe-area-inset-bottom));
     left: 10px;
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
     min-height: 62px;
     padding: 6px;
     border: 1px solid var(--admin-line);
@@ -6020,56 +6080,365 @@ td strong {
     background: var(--admin-coral-soft);
   }
 
-  /* Resource tables become compact, touch-friendly record cards. */
+  /* ==========================================================
+     Resource tables become full-detail record cards on phones.
+     Nothing is hidden: identity + status share a header band,
+     numeric clusters collapse into stat tiles, the remaining
+     fields render as label:value rows via data-label, and row
+     actions pin to the card footer.
+     ========================================================== */
+  .admin-ui #accountsTable,
+  .admin-ui #usersTable,
+  .admin-ui #invitesTable,
+  .admin-ui #logsTable {
+    display: block;
+    width: 100%;
+  }
+  .admin-ui #accountsTable thead,
+  .admin-ui #usersTable thead,
+  .admin-ui #invitesTable thead,
+  .admin-ui #logsTable thead { display: none; }
   .admin-ui #accountsTable tbody,
   .admin-ui #usersTable tbody,
   .admin-ui #invitesTable tbody,
-  .admin-ui #logsTable tbody { gap: 10px; padding: 0 10px 12px; }
+  .admin-ui #logsTable tbody {
+    display: grid;
+    gap: 10px;
+    padding: 12px 12px 14px;
+  }
   .admin-ui #accountsTable tbody tr,
   .admin-ui #usersTable tbody tr,
   .admin-ui #invitesTable tbody tr,
   .admin-ui #logsTable tbody tr {
-    position: relative;
-    overflow: visible;
-    border-color: var(--admin-line);
-    border-radius: 14px;
-    box-shadow: 0 8px 24px rgba(37, 35, 31, .06);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    border: 1px solid var(--admin-line);
+    border-radius: 16px;
+    background: var(--admin-surface);
+    box-shadow: 0 8px 24px rgba(37, 35, 31, .05);
+    overflow: hidden;
   }
   .admin-ui #accountsTable td,
   .admin-ui #usersTable td,
   .admin-ui #invitesTable td,
-  .admin-ui #logsTable td { padding: 10px 12px; }
-  .admin-ui #accountsTable td:not([colspan]),
-  .admin-ui #usersTable td:not([colspan]),
-  .admin-ui #invitesTable td:not([colspan]),
-  .admin-ui #logsTable td:not([colspan]) {
-    grid-template-columns: 72px minmax(0, 1fr);
-    gap: 10px;
-    align-items: center;
+  .admin-ui #logsTable td {
+    display: block;
+    width: auto;
+    min-width: 0;
+    padding: 9px 14px;
+    border: 0;
+    background: transparent;
+    overflow: visible;
+    text-overflow: clip;
   }
-  .admin-ui #accountsTable td:first-child,
-  .admin-ui #usersTable td:first-child,
-  .admin-ui #invitesTable td:first-child,
-  .admin-ui #logsTable td:first-child {
-    padding-top: 13px;
-    padding-bottom: 13px;
+  .admin-ui #accountsTable td[colspan],
+  .admin-ui #usersTable td[colspan],
+  .admin-ui #invitesTable td[colspan],
+  .admin-ui #logsTable td[colspan] {
+    grid-column: 1 / -1;
+    padding: 24px 14px;
+  }
+  /* Header, footer and metric cells carry no data-label caption. */
+  .admin-ui #accountsTable td.col-account-name::before,
+  .admin-ui #accountsTable td.col-account-status::before,
+  .admin-ui #accountsTable td.col-account-actions::before,
+  .admin-ui #usersTable td.col-user-name::before,
+  .admin-ui #usersTable td.col-user-status::before,
+  .admin-ui #usersTable td.col-user-actions::before,
+  .admin-ui #invitesTable td.col-invite-code::before,
+  .admin-ui #invitesTable td.col-invite-status::before,
+  .admin-ui #invitesTable td.col-invite-actions::before,
+  .admin-ui #logsTable td.col-log-time::before,
+  .admin-ui #logsTable td.col-log-duration::before,
+  .admin-ui #logsTable td.col-log-preview::before {
+    content: none;
+  }
+
+  /* Label:value rows — every secondary field stays on the card. */
+  .admin-ui #accountsTable td.col-account-org-flow,
+  .admin-ui #accountsTable td.col-account-total,
+  .admin-ui #usersTable td.col-user-expiry,
+  .admin-ui #usersTable td.col-user-failures,
+  .admin-ui #invitesTable td.col-invite-benefit,
+  .admin-ui #invitesTable td.col-invite-expiry,
+  .admin-ui #invitesTable td.col-invite-note,
+  .admin-ui #logsTable td.col-log-request,
+  .admin-ui #logsTable td.col-log-model,
+  .admin-ui #logsTable td.col-log-account,
+  .admin-ui #logsTable td.col-log-status {
+    display: grid;
+    grid-template-columns: 88px minmax(0, 1fr);
+    gap: 2px 10px;
+    align-items: start;
+    border-top: 1px solid color-mix(in srgb, var(--admin-line) 62%, transparent);
+  }
+  .admin-ui #accountsTable td.col-account-org-flow::before,
+  .admin-ui #accountsTable td.col-account-total::before,
+  .admin-ui #usersTable td.col-user-expiry::before,
+  .admin-ui #usersTable td.col-user-failures::before,
+  .admin-ui #invitesTable td.col-invite-benefit::before,
+  .admin-ui #invitesTable td.col-invite-expiry::before,
+  .admin-ui #invitesTable td.col-invite-note::before,
+  .admin-ui #logsTable td.col-log-request::before,
+  .admin-ui #logsTable td.col-log-model::before,
+  .admin-ui #logsTable td.col-log-account::before,
+  .admin-ui #logsTable td.col-log-status::before {
+    content: attr(data-label);
+    padding-top: 2px;
+    color: var(--admin-ink-faint);
+    font-size: 10.5px;
+    line-height: 1.6;
+    letter-spacing: .08em;
+    white-space: nowrap;
+  }
+
+  /* Header band: identity left, status badge right. */
+  .admin-ui #accountsTable td.col-account-name,
+  .admin-ui #accountsTable td.col-account-status,
+  .admin-ui #usersTable td.col-user-name,
+  .admin-ui #usersTable td.col-user-status,
+  .admin-ui #invitesTable td.col-invite-code,
+  .admin-ui #invitesTable td.col-invite-status,
+  .admin-ui #logsTable td.col-log-time,
+  .admin-ui #logsTable td.col-log-duration {
+    border-top: 0;
     background: var(--admin-surface-soft);
-    border-radius: 14px 14px 0 0;
   }
-  .admin-ui .account-org-flow-stack { max-width: 100%; }
-  .admin-ui .account-org-flow-stack code,
-  .admin-ui .entity-cell,
-  .admin-ui .stack-cell,
-  .admin-ui .metric-stack { min-width: 0; max-width: 100%; }
+  .admin-ui #accountsTable td.col-account-name,
+  .admin-ui #usersTable td.col-user-name,
+  .admin-ui #invitesTable td.col-invite-code,
+  .admin-ui #logsTable td.col-log-time {
+    padding: 12px 14px 10px;
+  }
+  .admin-ui #accountsTable td.col-account-name strong,
+  .admin-ui #usersTable td.col-user-name strong,
+  .admin-ui #invitesTable td.col-invite-code strong code {
+    font-size: 14.5px;
+  }
+  .admin-ui #accountsTable td.col-account-status,
+  .admin-ui #usersTable td.col-user-status,
+  .admin-ui #invitesTable td.col-invite-status {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    justify-content: center;
+    gap: 3px;
+    padding: 12px 14px 10px;
+  }
+  .admin-ui #accountsTable td.col-account-status .stack-cell,
+  .admin-ui #usersTable td.col-user-status .stack-cell {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 3px;
+  }
+  .admin-ui #invitesTable td.col-invite-status .badge {
+    width: auto;
+    max-width: none;
+  }
+
+  /* Full-width metric rows: value + badge + capacity bar. */
+  .admin-ui #accountsTable td.col-account-load,
+  .admin-ui #invitesTable td.col-invite-usage {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 7px;
+    border-top: 1px solid color-mix(in srgb, var(--admin-line) 62%, transparent);
+  }
+  .admin-ui #accountsTable td.col-account-load::before,
+  .admin-ui #invitesTable td.col-invite-usage::before {
+    content: attr(data-label);
+    color: var(--admin-ink-faint);
+    font-size: 10.5px;
+    line-height: 1.6;
+    letter-spacing: .08em;
+  }
+  .admin-ui #accountsTable .metric-head,
+  .admin-ui #invitesTable .metric-head {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    row-gap: 4px;
+  }
+  .admin-ui #accountsTable .metric-stack,
+  .admin-ui #invitesTable .metric-stack {
+    width: 100%;
+  }
+
+  /* Accounts card: name+status / load / workflow / totals / actions. */
+  .admin-ui #accountsTable tbody tr {
+    grid-template-areas:
+      "name status"
+      "load load"
+      "orgflow orgflow"
+      "total total"
+      "actions actions";
+  }
+  .admin-ui #accountsTable td.col-account-name { grid-area: name; }
+  .admin-ui #accountsTable td.col-account-status { grid-area: status; }
+  .admin-ui #accountsTable td.col-account-load { grid-area: load; }
+  .admin-ui #accountsTable td.col-account-org-flow { grid-area: orgflow; }
+  .admin-ui #accountsTable td.col-account-total { grid-area: total; }
+  .admin-ui #accountsTable td.col-account-actions { grid-area: actions; }
+  .admin-ui #accountsTable .account-org-flow-stack {
+    max-width: 100%;
+    width: 100%;
+  }
+
+  /* Users card: name+status / 3 stat tiles / expiry / failures / actions. */
+  .admin-ui #usersTable tbody tr {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-areas:
+      "name name status"
+      "quota conc gen"
+      "expiry expiry expiry"
+      "failures failures failures"
+      "actions actions actions";
+  }
+  .admin-ui #usersTable td.col-user-name { grid-area: name; }
+  .admin-ui #usersTable td.col-user-status { grid-area: status; }
+  .admin-ui #usersTable td.col-user-quota { grid-area: quota; }
+  .admin-ui #usersTable td.col-user-concurrency { grid-area: conc; }
+  .admin-ui #usersTable td.col-user-generations { grid-area: gen; }
+  .admin-ui #usersTable td.col-user-expiry { grid-area: expiry; }
+  .admin-ui #usersTable td.col-user-failures { grid-area: failures; }
+  .admin-ui #usersTable td.col-user-actions { grid-area: actions; }
+  .admin-ui #usersTable td.col-user-quota,
+  .admin-ui #usersTable td.col-user-concurrency,
+  .admin-ui #usersTable td.col-user-generations {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 3px;
+    justify-items: start;
+    padding: 11px 14px;
+    border-top: 1px solid color-mix(in srgb, var(--admin-line) 62%, transparent);
+  }
+  .admin-ui #usersTable td.col-user-concurrency,
+  .admin-ui #usersTable td.col-user-generations {
+    border-left: 1px solid color-mix(in srgb, var(--admin-line) 62%, transparent);
+    padding-left: 12px;
+  }
+  .admin-ui #usersTable td.col-user-quota::before,
+  .admin-ui #usersTable td.col-user-concurrency::before,
+  .admin-ui #usersTable td.col-user-generations::before {
+    content: attr(data-label);
+    color: var(--admin-ink-faint);
+    font-size: 10px;
+    line-height: 1.5;
+    letter-spacing: .08em;
+  }
+  .admin-ui #usersTable td.col-user-quota strong,
+  .admin-ui #usersTable td.col-user-concurrency strong,
+  .admin-ui #usersTable td.col-user-generations strong {
+    font-size: 15px;
+  }
+  .admin-ui #usersTable td.col-user-failures .stack-cell {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 3px 10px;
+  }
+
+  /* Invites card: code+status / usage / benefit / expiry / note / actions. */
+  .admin-ui #invitesTable tbody tr {
+    grid-template-areas:
+      "code status"
+      "usage usage"
+      "benefit benefit"
+      "expiry expiry"
+      "note note"
+      "actions actions";
+  }
+  .admin-ui #invitesTable td.col-invite-code { grid-area: code; }
+  .admin-ui #invitesTable td.col-invite-status { grid-area: status; }
+  .admin-ui #invitesTable td.col-invite-usage { grid-area: usage; }
+  .admin-ui #invitesTable td.col-invite-benefit { grid-area: benefit; }
+  .admin-ui #invitesTable td.col-invite-expiry { grid-area: expiry; }
+  .admin-ui #invitesTable td.col-invite-note { grid-area: note; }
+  .admin-ui #invitesTable td.col-invite-actions { grid-area: actions; }
+  .admin-ui #invitesTable td.col-invite-note {
+    overflow-wrap: anywhere;
+  }
+  .admin-ui #invitesTable td.col-invite-note::before {
+    align-self: start;
+  }
+
+  /* Logs card: time+duration / request / model / principal / status / view. */
+  .admin-ui #logsTable tbody tr {
+    grid-template-areas:
+      "time duration"
+      "request request"
+      "model model"
+      "account account"
+      "status status"
+      "preview preview";
+  }
+  .admin-ui #logsTable td.col-log-time { grid-area: time; }
+  .admin-ui #logsTable td.col-log-duration { grid-area: duration; }
+  .admin-ui #logsTable td.col-log-request { grid-area: request; }
+  .admin-ui #logsTable td.col-log-model { grid-area: model; }
+  .admin-ui #logsTable td.col-log-account { grid-area: account; }
+  .admin-ui #logsTable td.col-log-status { grid-area: status; }
+  .admin-ui #logsTable td.col-log-preview { grid-area: preview; }
+  .admin-ui #logsTable td.col-log-duration {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding: 12px 14px 10px;
+  }
+  .admin-ui #logsTable td.col-log-status .log-status-cell {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 10px;
+  }
   .admin-ui #logsTable .table-note-danger {
+    flex-basis: 100%;
     display: -webkit-box;
     overflow: hidden;
     -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
+    -webkit-line-clamp: 3;
     white-space: normal;
   }
+
+  /* Card footer: full-width touch targets, primary action stretches. */
+  .admin-ui #accountsTable td.col-account-actions,
+  .admin-ui #usersTable td.col-user-actions,
+  .admin-ui #invitesTable td.col-invite-actions,
+  .admin-ui #logsTable td.col-log-preview {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    border-top: 1px solid var(--admin-line);
+    background: color-mix(in srgb, var(--admin-surface-soft) 55%, transparent);
+    padding: 10px 14px 12px;
+  }
+  .admin-ui #accountsTable .table-actions,
+  .admin-ui #usersTable .table-actions,
+  .admin-ui #invitesTable .table-actions {
+    display: flex;
+    width: 100%;
+    gap: 8px;
+  }
+  .admin-ui #accountsTable td.col-account-actions .table-actions > .btn,
+  .admin-ui #usersTable td.col-user-actions .table-actions > .btn,
+  .admin-ui #invitesTable td.col-invite-actions .table-actions > .btn {
+    flex: 1 1 auto;
+    min-height: 40px;
+    justify-content: center;
+    font-size: 13px;
+  }
+  .admin-ui #accountsTable td.col-account-actions .table-more summary,
+  .admin-ui #usersTable td.col-user-actions .table-more summary {
+    min-height: 40px;
+    padding: 8px 14px;
+    font-size: 13px;
+  }
+  .admin-ui #logsTable td.col-log-preview .btn {
+    min-width: 120px;
+    min-height: 40px;
+    justify-content: center;
+  }
   .admin-ui .table-actions { gap: 8px; }
-  .admin-ui .table-actions > .btn,
   .admin-ui .table-more summary { min-height: 40px; padding: 8px 13px; }
   .admin-ui .table-more-menu {
     position: fixed !important;
@@ -6085,87 +6454,6 @@ td strong {
     box-shadow: 0 18px 54px rgba(20, 22, 21, .3);
   }
   .admin-ui .table-more-menu .btn { min-height: 44px; justify-content: center; }
-
-  /* Accounts, users and logs stay as one compact horizontal record on phones.
-     Secondary columns are intentionally hidden instead of stacking every
-     database field into a tall, hard-to-scan card. */
-  .admin-ui #accountsTable tbody tr,
-  .admin-ui #usersTable tbody tr,
-  .admin-ui #logsTable tbody tr {
-    display: grid;
-    align-items: center;
-    gap: 8px;
-    padding: 10px;
-    overflow: hidden;
-  }
-  .admin-ui #accountsTable tbody tr { grid-template-columns: minmax(92px, 1.4fr) minmax(78px, .9fr) auto auto; }
-  .admin-ui #usersTable tbody tr { grid-template-columns: minmax(0, 1.35fr) minmax(0, .85fr) minmax(0, .8fr) minmax(0, .8fr) minmax(0, .7fr) auto; }
-  .admin-ui #logsTable tbody tr { grid-template-columns: 72px 64px minmax(88px, 1.2fr) minmax(74px, .8fr) auto; }
-  .admin-ui #accountsTable td:not([colspan]),
-  .admin-ui #usersTable td:not([colspan]),
-  .admin-ui #logsTable td:not([colspan]) {
-    display: block;
-    width: auto;
-    min-width: 0;
-    padding: 0;
-    border: 0;
-    overflow: hidden;
-  }
-  .admin-ui #accountsTable td:not([colspan])::before,
-  .admin-ui #usersTable td:not([colspan])::before,
-  .admin-ui #logsTable td:not([colspan])::before { display: none; }
-  .admin-ui #accountsTable td:first-child,
-  .admin-ui #usersTable td:first-child,
-  .admin-ui #logsTable td:first-child {
-    padding: 0;
-    background: transparent;
-    border-radius: 0;
-  }
-  .admin-ui #accountsTable .col-account-org-flow,
-  .admin-ui #accountsTable .col-account-total,
-  .admin-ui #usersTable .col-user-expiry,
-  .admin-ui #usersTable .col-user-failures,
-  .admin-ui #logsTable .col-log-account,
-  .admin-ui #logsTable .col-log-duration { display: none !important; }
-  .admin-ui #accountsTable .entity-meta,
-  .admin-ui #usersTable .entity-meta,
-  .admin-ui #logsTable .entity-meta,
-  .admin-ui #logsTable .table-note-danger { display: none; }
-  .admin-ui #accountsTable .metric-head,
-  .admin-ui #usersTable .metric-head { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .admin-ui #usersTable .col-user-quota,
-  .admin-ui #usersTable .col-user-concurrency,
-  .admin-ui #usersTable .col-user-generations { white-space: nowrap; }
-  .admin-ui #accountsTable .capacity-progress,
-  .admin-ui #usersTable .capacity-progress { display: none; }
-  .admin-ui #accountsTable .table-actions,
-  .admin-ui #usersTable .table-actions { flex-wrap: nowrap; gap: 5px; }
-  .admin-ui #accountsTable .table-actions > .btn,
-  .admin-ui #usersTable .table-actions > .btn,
-  .admin-ui #accountsTable .table-more summary,
-  .admin-ui #usersTable .table-more summary { min-height: 34px; padding: 6px 9px; font-size: 11px; }
-
-  /* Invite cards retain their useful detail layout, with status and actions
-     sharing the final row and badges constrained to their content width. */
-  .admin-ui #invitesTable tbody tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
-  .admin-ui #invitesTable td { grid-column: 1 / -1; }
-  .admin-ui #invitesTable .col-invite-status {
-    grid-column: 1;
-    display: flex;
-    align-items: center;
-    min-width: 0;
-    border-bottom: 0;
-  }
-  .admin-ui #invitesTable .col-invite-status::before { margin-right: 10px; }
-  .admin-ui #invitesTable .col-invite-status .badge { width: max-content; max-width: 108px; }
-  .admin-ui #invitesTable .col-invite-actions {
-    grid-column: 2;
-    display: flex;
-    align-items: center;
-    border-bottom: 0;
-  }
-  .admin-ui #invitesTable .col-invite-actions::before { display: none; }
-  .admin-ui #invitesTable .col-invite-actions .table-actions { flex-wrap: nowrap; justify-content: flex-end; }
 
   /* Creation detail uses a full-screen media-first layout on phones. */
   .admin-ui #previewModal { padding: 0; align-items: stretch; }
@@ -6190,12 +6478,29 @@ td strong {
     max-height: none;
     object-fit: contain;
   }
+  .admin-ui #previewModal .preview-stage-empty {
+    min-height: 0;
+    height: 100%;
+    padding: 16px;
+  }
   .admin-ui #previewModal .preview-sidebar {
     min-height: 0;
     overflow-y: auto;
-    padding: 16px 16px max(24px, env(safe-area-inset-bottom));
+    padding: 14px 14px max(18px, env(safe-area-inset-bottom));
   }
-  .admin-ui #previewModal .preview-prompt-scroll { height: auto; max-height: 28dvh; }
+  .admin-ui #previewModal .preview-sidebar.preview-sidebar-compact {
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    gap: 12px;
+  }
+  .admin-ui #previewModal .preview-panel { min-height: 0; }
+  .admin-ui #previewModal .preview-prompt-scroll {
+    flex: 1 1 auto;
+    height: auto;
+    min-height: 0;
+    max-height: none;
+    padding: 12px;
+  }
+  .admin-ui #previewModal .preview-error-scroll { max-height: 30dvh; }
 }
 
 @media (max-width: 560px) {
