@@ -47,11 +47,15 @@ def test_browser_stream_uses_sanitized_progress_events_only():
 
 def test_public_brand_uses_the_supplied_logo_and_name():
     html = (ROOT / "app" / "static" / "index.html").read_text(encoding="utf-8")
-    logo = ROOT / "app" / "static" / "assets" / "see-you-logo.png"
+    logo = ROOT / "app" / "static" / "assets" / "logo.png"
 
     assert logo.is_file()
     assert logo.stat().st_size > 0
     assert logo.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
-    assert html.count('src="/static/assets/see-you-logo.png"') == 2
-    assert "<title>see you · imagen — 让想象，显影</title>" in html
-    assert "see you · imagen" in html
+    assert html.count('src="/static/assets/logo.png"') == 2
+    assert "<title>画点啥 — 让想象，显影</title>" in html
+    assert "画点啥" in html
+    # Visual studio sub-tag was removed from the front-end topbar
+    assert "Visual studio" not in html
+    # favicon must be served so the logo shows in browser tabs
+    assert 'href="/static/assets/favicon.ico"' in html

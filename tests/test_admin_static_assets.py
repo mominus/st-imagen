@@ -29,10 +29,12 @@ def test_admin_feature_scripts_exist_and_load_in_dependency_order():
 def test_admin_uses_public_brand_logo_and_name():
     html = ADMIN_HTML.read_text(encoding="utf-8")
 
-    assert html.count('src="/static/assets/see-you-logo.png"') == 2
-    assert "后台 · see you · imagen" in html
-    assert "see you <b>·</b> imagen" in html
-    assert "see you · imagen" in html
+    assert html.count('src="/static/assets/logo.png"') == 2
+    assert "后台 · 画点啥" in html
+    assert "画点啥" in html
+    # favicon links should be present in the admin head
+    assert 'href="/static/assets/favicon.ico"' in html
+    assert 'href="/static/assets/logo.png"' in html
 
 
 def test_admin_has_specified_invites_dated_log_cleanup_and_branded_confirm():
