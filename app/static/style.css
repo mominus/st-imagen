@@ -2303,10 +2303,9 @@ kbd {
 }
 
 .preview-prompt-scroll {
-  flex: 1 1 auto;
-  height: auto;
+  flex: 0 0 auto;
+  height: 320px;
   min-height: 0;
-  max-height: none;
   padding: 18px 12px 18px 18px;
   border: 1px solid var(--line);
   border-radius: 18px;
@@ -2406,10 +2405,7 @@ kbd {
 }
 
 .preview-modal-admin .preview-prompt-scroll {
-  flex: 1 1 auto;
-  height: auto;
-  min-height: 0;
-  max-height: none;
+  height: clamp(240px, 38vh, 360px);
 }
 
 .preview-stage-empty {
@@ -2593,6 +2589,10 @@ kbd {
   }
 
   .preview-prompt-scroll {
+    flex: 1 1 auto;
+    height: auto;
+    min-height: 0;
+    max-height: none;
     padding: 14px 10px 14px 14px;
   }
 
