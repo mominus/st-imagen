@@ -261,6 +261,7 @@ ST_BASE_URL=<真实 ST API 根地址>
 PUBLIC_BASE_URL=https://img.example.com
 USER_SESSION_SECURE=true
 USER_SESSION_SAMESITE=lax
+USER_SESSION_COOKIE_NAME=imagen_session
 CORS_ORIGINS=https://img.example.com
 CORS_ALLOW_CREDENTIALS=true
 ST_TRUST_ENV=false
