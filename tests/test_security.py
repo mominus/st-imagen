@@ -6,6 +6,10 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import httpx
+from starlette.requests import Request
+
+from app.main import _metric_path
 from app.models.database import Account, Admin, InviteCode, User
 from app.services import account_pool as account_pool_mod
 from app.services import auth as auth_mod
@@ -163,6 +167,55 @@ class OutboundUrlTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaises(outbound_url_mod.UnsafeOutboundURLError):
             await outbound_url_mod.ensure_safe_outbound_url("http://localhost/test.png")
+
+    async def test_safe_stream_pins_validated_ip_and_preserves_host_and_sni(self) -> None:
+        class RecordingClient:
+            def __init__(self) -> None:
+                self.request = None
+
+            def build_request(self, method, url, **kwargs):
+                self.request = httpx.Request(method, url, **kwargs)
+                return self.request
+
+            async def send(self, request, *, stream):
+                return httpx.Response(200, request=request)
+
+        client = RecordingClient()
+        with patch.object(
+            outbound_url_mod,
+            "_resolve_hostname_ips",
+            return_value={"93.184.216.34"},
+        ):
+            await outbound_url_mod.open_safe_stream(
+                client, "GET", "https://example.com:8443/image.png"
+            )
+
+        self.assertEqual(str(client.request.url), "https://93.184.216.34:8443/image.png")
+        self.assertEqual(client.request.headers["host"], "example.com:8443")
+        self.assertEqual(client.request.extensions["sni_hostname"], "example.com")
+
+
+class MetricsCardinalityTests(unittest.TestCase):
+    def test_unmatched_paths_share_one_metric_label(self) -> None:
+        first = Request({"type": "http", "method": "GET", "path": "/random-a", "headers": []})
+        second = Request({"type": "http", "method": "GET", "path": "/random-b", "headers": []})
+
+        self.assertEqual(_metric_path(first), "__unmatched__")
+        self.assertEqual(_metric_path(second), "__unmatched__")
+
+    def test_matched_path_uses_route_template(self) -> None:
+        route = SimpleNamespace(path="/api/users/{user_id}")
+        request = Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": "/api/users/123",
+                "headers": [],
+                "route": route,
+            }
+        )
+
+        self.assertEqual(_metric_path(request), "/api/users/{user_id}")
 
 
 class UserAuthServiceTests(unittest.IsolatedAsyncioTestCase):

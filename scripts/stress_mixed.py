@@ -13,7 +13,7 @@ import json
 import subprocess
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -197,7 +197,7 @@ async def main() -> int:
             client = httpx.AsyncClient(base_url=args.base_url, timeout=None, trust_env=False)
             client.cookies.set("st_imagen_session", token)
             clients.append(client)
-    print(f"[boot] 30 个访客会话就绪")
+    print("[boot] 30 个访客会话就绪")
 
     # Phase 2: 任务矩阵 = 30 GPT (quality=high) + 30 Nano (10 画幅 × 3 清晰度)
     specs: List[tuple] = []

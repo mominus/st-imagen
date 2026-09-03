@@ -443,6 +443,8 @@ class GenerationAdmission:
 class LoginThrottle:
     """管理员登录防爆破：同一用户名连续失败 N 次后锁定 M 秒。"""
 
+    MAX_TRACKED_KEYS = 10_000
+
     def __init__(self, max_failures: int, lockout_seconds: float) -> None:
         self.max_failures = max(0, max_failures)
         self.lockout_seconds = lockout_seconds
@@ -474,6 +476,18 @@ class LoginThrottle:
             return
         moment = now if now is not None else time.monotonic()
         entry = self._failures.get(username)
+        if entry is None and len(self._failures) >= self.MAX_TRACKED_KEYS:
+            expired = [
+                key
+                for key, (_count, first_at) in self._failures.items()
+                if moment - first_at >= self.lockout_seconds
+            ]
+            for key in expired:
+                self._failures.pop(key, None)
+            # Random usernames must not turn the throttle itself into an
+            # unbounded-memory denial of service.
+            while len(self._failures) >= self.MAX_TRACKED_KEYS:
+                self._failures.pop(next(iter(self._failures)))
         if entry is None or moment - entry[1] >= self.lockout_seconds:
             self._failures[username] = (1, moment)
         else:
@@ -576,3 +590,17 @@ def get_login_throttle() -> LoginThrottle:
             _env_float("ADMIN_LOGIN_LOCKOUT_SECONDS", 60.0),
         )
     return _login_throttle
+
+
+_user_login_throttle: Optional[LoginThrottle] = None
+
+
+def get_user_login_throttle() -> LoginThrottle:
+    """Failure throttle shared by ordinary-user login identities and IPs."""
+    global _user_login_throttle
+    if _user_login_throttle is None:
+        _user_login_throttle = LoginThrottle(
+            _env_int("USER_LOGIN_MAX_FAILURES", 5),
+            _env_float("USER_LOGIN_LOCKOUT_SECONDS", 60.0),
+        )
+    return _user_login_throttle

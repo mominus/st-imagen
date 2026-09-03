@@ -730,7 +730,10 @@ class UserAuthService:
         normalized_username = self.normalize_username(username)
         row = await session.execute(select(User).where(User.username == normalized_username))
         user = row.scalar_one_or_none()
-        if user is None or not CryptoService.verify_password(password, user.password_hash):
+        password_matches = user is not None and await asyncio.to_thread(
+            CryptoService.verify_password, password, user.password_hash
+        )
+        if not password_matches:
             raise InvalidUserCredentialsError("用户名或密码错误")
         now = utcnow_naive()
         self._ensure_user_can_access(user, now=now)
