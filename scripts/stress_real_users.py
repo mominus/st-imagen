@@ -175,7 +175,7 @@ class RealUserStressRunner:
         self.user_prefix = self.reuse_user_prefix or f"{args.user_prefix}_{self.stamp.lower()}"
         self.env_values = dotenv_values(self.project_root / ".env")
         self.admin_username, self.admin_password = self._load_admin_credentials()
-        self.session_cookie_name = str(self.env_values.get("USER_SESSION_COOKIE_NAME") or "st_imagen_session")
+        self.session_cookie_name = str(self.env_values.get("USER_SESSION_COOKIE_NAME") or "imagen_session")
         self.admin_client = httpx.AsyncClient(
             base_url=args.base_url,
             timeout=httpx.Timeout(args.http_timeout, connect=10.0),

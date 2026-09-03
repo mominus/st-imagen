@@ -126,14 +126,19 @@ class UserAuthService:
     _schema_lock: asyncio.Lock = asyncio.Lock()
 
     def __init__(self) -> None:
-        self._session_cookie_name = os.getenv("USER_SESSION_COOKIE_NAME", "st_imagen_session")
+        self._session_cookie_name = (
+            os.getenv("USER_SESSION_COOKIE_NAME") or "imagen_session"
+        ).strip()
+        if not re.fullmatch(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+", self._session_cookie_name):
+            raise RuntimeError("USER_SESSION_COOKIE_NAME 不是合法的 Cookie 名称")
         self._session_days = max(1, int(os.getenv("USER_SESSION_DAYS", "30")))
-        self._session_secure = os.getenv("USER_SESSION_SECURE", "true").lower() in {
-            "1",
-            "true",
-            "yes",
-        }
+        session_secure = (os.getenv("USER_SESSION_SECURE") or "true").strip().lower()
+        if session_secure not in {"1", "true", "yes", "on", "0", "false", "no", "off"}:
+            raise RuntimeError("USER_SESSION_SECURE 必须是明确的布尔值")
+        self._session_secure = session_secure in {"1", "true", "yes", "on"}
         self._session_samesite = (os.getenv("USER_SESSION_SAMESITE", "lax") or "lax").lower()
+        if self._session_samesite not in {"lax", "strict"}:
+            raise RuntimeError("USER_SESSION_SAMESITE 仅允许设置为 lax 或 strict")
         self._session_domain = (os.getenv("USER_SESSION_DOMAIN") or "").strip() or None
         self._default_user_daily_quota = max(
             0,

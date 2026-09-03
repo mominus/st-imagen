@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
+from fastapi import Response
 from starlette.requests import Request
 
 from app.main import _metric_path
@@ -219,6 +220,44 @@ class MetricsCardinalityTests(unittest.TestCase):
 
 
 class UserAuthServiceTests(unittest.IsolatedAsyncioTestCase):
+    def test_session_cookie_uses_private_default_and_security_attributes(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "USER_SESSION_COOKIE_NAME": "",
+                "USER_SESSION_SECURE": "true",
+                "USER_SESSION_SAMESITE": "lax",
+                "USER_SESSION_DOMAIN": "",
+            },
+        ):
+            service = user_auth_mod.UserAuthService()
+            response = Response()
+            service.set_session_cookie(response, "secret-token")
+
+        cookie = response.headers["set-cookie"]
+        self.assertTrue(cookie.startswith("imagen_session=secret-token;"))
+        self.assertIn("HttpOnly", cookie)
+        self.assertIn("Secure", cookie)
+        self.assertIn("SameSite=lax", cookie)
+        self.assertIn("Path=/", cookie)
+        self.assertNotIn("Domain=", cookie)
+        self.assertNotIn("st_imagen", cookie)
+
+    def test_session_cookie_rejects_cross_site_mode(self) -> None:
+        with patch.dict(os.environ, {"USER_SESSION_SAMESITE": "none"}):
+            with self.assertRaisesRegex(RuntimeError, "lax 或 strict"):
+                user_auth_mod.UserAuthService()
+
+    def test_session_cookie_rejects_invalid_name(self) -> None:
+        with patch.dict(os.environ, {"USER_SESSION_COOKIE_NAME": "bad cookie"}):
+            with self.assertRaisesRegex(RuntimeError, "Cookie 名称"):
+                user_auth_mod.UserAuthService()
+
+    def test_session_cookie_rejects_ambiguous_secure_value(self) -> None:
+        with patch.dict(os.environ, {"USER_SESSION_SECURE": "treu"}):
+            with self.assertRaisesRegex(RuntimeError, "明确的布尔值"):
+                user_auth_mod.UserAuthService()
+
     async def test_create_invites_accepts_admin_specified_codes(self) -> None:
         session = FakeSession()
         service = user_auth_mod.UserAuthService()

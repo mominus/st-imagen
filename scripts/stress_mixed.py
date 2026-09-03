@@ -193,9 +193,9 @@ async def main() -> int:
             if resp.status_code != 200:
                 print(f"[boot] 用户 {i} 登录失败: {resp.status_code} {resp.text[:120]}")
                 return 1
-            token = resp.cookies.get("st_imagen_session")
+            token = resp.cookies.get("imagen_session")
             client = httpx.AsyncClient(base_url=args.base_url, timeout=None, trust_env=False)
-            client.cookies.set("st_imagen_session", token)
+            client.cookies.set("imagen_session", token)
             clients.append(client)
     print("[boot] 30 个访客会话就绪")
 
