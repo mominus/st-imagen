@@ -10,20 +10,22 @@ def _yaml(name: str) -> dict:
     return yaml.safe_load((ROOT / name).read_text(encoding="utf-8"))
 
 
-def test_4c8g_profile_relaxes_resources_without_adding_workers():
-    production_app = _yaml("compose.prod.yml")["services"]["app"]
-    services = _yaml("compose.4c8g.yml")["services"]
+def test_production_profile_matches_2c2g_resources_without_extra_override():
+    services = _yaml("compose.prod.yml")["services"]
     app = services["app"]
     nginx = services["nginx"]
 
+    assert not (ROOT / "compose.4c8g.yml").exists()
     assert app["environment"]["UVICORN_WORKERS"] == "1"
-    assert app["cpus"] == 3.2
-    assert app["mem_limit"] == "6g"
-    assert app["environment"]["HTTP_MAX_CONNECTIONS"] == "256"
-    assert app["environment"]["GENERATED_IMAGE_DOWNLOAD_CONCURRENCY"] == "64"
-    assert nginx["cpus"] == 0.6
-    assert nginx["mem_limit"] == "512m"
-    assert production_app["environment"]["ACCOUNT_MAX_INFLIGHT"] == "${ACCOUNT_MAX_INFLIGHT:-10}"
+    assert app["cpus"] == 1.6
+    assert app["mem_limit"] == "1400m"
+    assert app["memswap_limit"] == "1400m"
+    assert app["environment"]["HTTP_MAX_CONNECTIONS"] == "128"
+    assert app["environment"]["GENERATED_IMAGE_DOWNLOAD_CONCURRENCY"] == "32"
+    assert app["environment"]["DB_POOL_SIZE"] == "4"
+    assert app["environment"]["ACCOUNT_MAX_INFLIGHT"] == "${ACCOUNT_MAX_INFLIGHT:-10}"
+    assert nginx["cpus"] == 0.4
+    assert nginx["mem_limit"] == "300m"
 
 
 def test_cloudflare_profile_mounts_origin_certificate_and_https_proxy():

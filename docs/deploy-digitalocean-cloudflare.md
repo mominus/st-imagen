@@ -2,7 +2,7 @@
 
 本文适用于在 Ubuntu **2 vCPU / 2 GiB** VPS 上长期运行，并由 Cloudflare 管理域名 DNS 和公网 TLS。DigitalOcean、阿里云或其他提供标准 Ubuntu 的云厂商均可使用。
 
-> 本项目必须保持 `UVICORN_WORKERS=1`。账号槽位、全局准入、限流和熔断状态均在进程内。仓库的 `compose.prod.yml` 已包含 2C2G 资源限制，不要叠加 `compose.4c8g.yml`。
+> 本项目必须保持 `UVICORN_WORKERS=1`。账号槽位、全局准入、限流和熔断状态均在进程内。仓库的 `compose.prod.yml` 已包含 2C2G 资源限制。
 
 ## 0. 部署拓扑与文件
 
@@ -17,7 +17,7 @@
 - `compose.prod.yml`：2C2G 生产基线；
 - `compose.cloudflare.yml`：Cloudflare Origin CA TLS。
 
-本文所有命令都故意不包含 `compose.4c8g.yml`。
+仓库不再保留额外的大规格资源覆盖文件，首次部署、更新、恢复和排障始终使用上述两个文件。
 
 服务器私有文件：
 
@@ -501,7 +501,7 @@ sudo journalctl -u docker --since '1 hour ago'
 
 ## 10. 2C2G 资源确认与迁移恢复
 
-日常部署始终只使用 `compose.prod.yml` 和 `compose.cloudflare.yml`。确认最终配置没有意外叠加旧的 4C8G 覆盖层：
+日常部署始终只使用 `compose.prod.yml` 和 `compose.cloudflare.yml`。更新后重建现有容器，确认 2C2G 资源限制已经落到容器：
 
 ```bash
 cd /opt/st-imagen

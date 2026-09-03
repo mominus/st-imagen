@@ -55,10 +55,12 @@ st-imagen/
 │       ├── index.html / app.js
 │       └── admin.html / admin.js
 │       └── style.css
-├── deploy/nginx.conf            # 生产反向代理与 SSE 配置
+├── deploy/nginx.conf            # HTTP 反向代理与 SSE 配置
+├── deploy/nginx.cloudflare.conf # Cloudflare Origin CA HTTPS 反向代理
 ├── scripts/                     # 压测与压测数据清理工具
 ├── tests/                       # 单元测试与韧性测试
-├── compose.prod.yml             # 生产 Docker Compose
+├── compose.prod.yml             # 2C2G 生产 Docker Compose
+├── compose.cloudflare.yml       # Cloudflare Origin CA HTTPS 覆盖
 ├── compose.vps-stress.yml       # 2c2g 容器压测 Compose
 ├── Dockerfile
 ├── data/                        # SQLite、上传和生成图片持久化目录
