@@ -55,10 +55,12 @@ st-imagen/
 │       ├── index.html / app.js
 │       └── admin.html / admin.js
 │       └── style.css
-├── deploy/nginx.conf            # 生产反向代理与 SSE 配置
+├── deploy/nginx.conf            # HTTP 反向代理与 SSE 配置
+├── deploy/nginx.cloudflare.conf # Cloudflare Origin CA HTTPS 反向代理
 ├── scripts/                     # 压测与压测数据清理工具
 ├── tests/                       # 单元测试与韧性测试
-├── compose.prod.yml             # 生产 Docker Compose
+├── compose.prod.yml             # 2C2G 生产 Docker Compose
+├── compose.cloudflare.yml       # Cloudflare Origin CA HTTPS 覆盖
 ├── compose.vps-stress.yml       # 2c2g 容器压测 Compose
 ├── Dockerfile
 ├── data/                        # SQLite、上传和生成图片持久化目录
@@ -153,7 +155,7 @@ http://localhost:8001/<你的 ADMIN_PATH>
 
 ## 生产部署（Docker Compose）
 
-> DigitalOcean 4C8G 临时部署、Cloudflare Origin CA、完整安全加固、验收、备份以及之后迁移到阿里云 2C2G 的逐步操作，见 [DigitalOcean + Cloudflare 部署手册](docs/deploy-digitalocean-cloudflare.md)。
+> 2C2G VPS、Cloudflare Origin CA、完整安全加固、验收、更新、备份与迁移恢复的逐步操作，见 [DigitalOcean + Cloudflare 部署手册](docs/deploy-digitalocean-cloudflare.md)。
 
 生产编排按单机 `2c2g` 设计：FastAPI 固定单 worker，由 nginx 提供静态文件和 SSE 反向代理。首次部署准备干净的数据目录即可，SQLite 数据库和图片会在容器启动后自动创建。
 

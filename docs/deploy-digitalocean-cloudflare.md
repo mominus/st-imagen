@@ -1,13 +1,8 @@
-# DigitalOcean 4C8G + Cloudflare 完整部署手册
+# 2C2G VPS + Cloudflare 完整部署手册
 
-本文适用于以下迁移路径：
+本文适用于在 Ubuntu **2 vCPU / 2 GiB** VPS 上长期运行，并由 Cloudflare 管理域名 DNS 和公网 TLS。DigitalOcean、阿里云或其他提供标准 Ubuntu 的云厂商均可使用。
 
-1. 先在 DigitalOcean 的 Ubuntu VPS 上临时以 **4 vCPU / 8 GiB** 运行；
-2. 域名 DNS 和公网 TLS 由 Cloudflare 管理；
-3. 到期后迁移到阿里云 **2 vCPU / 2 GiB**，恢复仓库默认资源限制。
-
-> 本项目必须保持 `UVICORN_WORKERS=1`。账号槽位、全局准入、限流和熔断状态均在进程内；4C8G
-> 通过提高容器 CPU/内存、连接池和图片落盘并发来放宽资源，而不是增加 worker。
+> 本项目必须保持 `UVICORN_WORKERS=1`。账号槽位、全局准入、限流和熔断状态均在进程内。仓库的 `compose.prod.yml` 已包含 2C2G 资源限制。
 
 ## 0. 部署拓扑与文件
 
@@ -17,11 +12,12 @@
                                       └─ /uploads 直接读取 data/uploads
 ```
 
-会组合三个 Compose 文件：
+部署只组合两个 Compose 文件：
 
-- `compose.prod.yml`：长期 2C2G 基线；
-- `compose.cloudflare.yml`：Cloudflare Origin CA TLS；
-- `compose.4c8g.yml`：DigitalOcean 临时资源覆盖层。
+- `compose.prod.yml`：2C2G 生产基线；
+- `compose.cloudflare.yml`：Cloudflare Origin CA TLS。
+
+仓库不再保留额外的大规格资源覆盖文件，首次部署、更新、恢复和排障始终使用上述两个文件。
 
 服务器私有文件：
 
@@ -47,7 +43,7 @@ ssh-keygen -t ed25519 -a 64 -C "digitalocean-st-imagen"
 ### 1.2 Droplet 参数
 
 - Ubuntu 24.04 LTS x64；
-- 临时规格 4 vCPU / 8 GiB，磁盘至少 50 GiB；
+- 规格 2 vCPU / 2 GiB，磁盘至少 50 GiB；
 - 绑定 Reserved IP；
 - 选择主要用户与上游延迟较低的区域；
 - 创建时绑定刚才确认过的 SSH key。
@@ -197,8 +193,8 @@ git clone <你的仓库 SSH/HTTPS 地址> /opt/st-imagen
 cd /opt/st-imagen
 test -d .git
 git status --short --branch
-git checkout main
-git pull --ff-only
+git switch main
+git pull --ff-only origin main
 ```
 
 创建目录时一次使用最终正确权限：`data` 保护数据库，只有公开 uploads 允许 nginx 读取。
@@ -240,8 +236,8 @@ chmod 600 .env
 先构建镜像，以便使用镜像内的 `cryptography` 生成 Fernet key：
 
 ```bash
-docker compose -f compose.prod.yml -f compose.4c8g.yml build app
-FERNET_KEY=$(docker compose -f compose.prod.yml -f compose.4c8g.yml run --rm --no-deps app \
+docker compose -f compose.prod.yml build app
+FERNET_KEY=$(docker compose -f compose.prod.yml run --rm --no-deps app \
   python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')
 JWT_KEY=$(openssl rand -base64 48 | tr -d '\n')
 printf 'Fernet: %s\nJWT: %s\n' "$FERNET_KEY" "$JWT_KEY"
@@ -272,7 +268,7 @@ ST_TRUST_ENV=false
 - 不要修改 Fernet key；否则数据库内已有 API key 无法解密；
 - `ADMIN_PATH` 只是降低入口曝光，不替代管理员认证；
 - 同源部署可把 `CORS_ORIGINS` 留空；若填写，必须是精确 HTTPS Origin，末尾不加 `/`；
-- 4C8G 覆盖层已经把连接池和下载并发放宽，不要为了利用 4 核把 worker 改成 4；
+- 2C2G 部署必须保持单 worker，不要通过增加 worker 绕过进程内并发控制；
 - `GENERATION_GLOBAL_MAX_CONCURRENT` 和各账号 `max_inflight` 仍应按上游承载能力压测后设置，CPU 变多不代表上游额度变多。
 
 `ST_BASE_URL` 必须是上游 API 根地址，不是本站域名、网页首页、示例占位符或具体
@@ -287,17 +283,16 @@ ST_TRUST_ENV=false
 
 ```bash
 cd /opt/st-imagen
-export COMPOSE_FILES='-f compose.prod.yml -f compose.cloudflare.yml -f compose.4c8g.yml'
-docker compose $COMPOSE_FILES config --quiet
-docker compose $COMPOSE_FILES up -d --force-recreate app
-docker compose $COMPOSE_FILES ps
-docker compose $COMPOSE_FILES logs --tail=100 app
+docker compose -f compose.prod.yml -f compose.cloudflare.yml config --quiet
+docker compose -f compose.prod.yml -f compose.cloudflare.yml up -d --force-recreate app
+docker compose -f compose.prod.yml -f compose.cloudflare.yml ps
+docker compose -f compose.prod.yml -f compose.cloudflare.yml logs --tail=100 app
 ```
 
 例如修改 `ACCOUNT_MAX_INFLIGHT=10` 后，验证容器实际获得的新值：
 
 ```bash
-docker compose $COMPOSE_FILES exec app sh -c \
+docker compose -f compose.prod.yml -f compose.cloudflare.yml exec app sh -c \
   'printf "ACCOUNT_MAX_INFLIGHT=%s\\n" "$ACCOUNT_MAX_INFLIGHT"'
 ```
 
@@ -392,25 +387,22 @@ Cloudflare → **SSL/TLS → Overview** 设置为 **Full (strict)**，不要使�
 2. `/uploads/*`：尊重源站 `Cache-Control`；
 3. 不要对整个站点使用 “Cache Everything”，否则登录态/API 可能被错误缓存。
 
-## 7. 校验并启动临时 4C8G 部署
+## 7. 校验并启动 2C2G 部署
 
 ```bash
 cd /opt/st-imagen
-export COMPOSE_FILES='-f compose.prod.yml -f compose.cloudflare.yml -f compose.4c8g.yml'
-docker compose $COMPOSE_FILES config --quiet
-docker compose $COMPOSE_FILES config > /tmp/st-imagen.compose.yml
+docker compose -f compose.prod.yml -f compose.cloudflare.yml config --quiet
+docker compose -f compose.prod.yml -f compose.cloudflare.yml config > /tmp/st-imagen.compose.yml
 sudo stat -c '%U:%G %a %n' deploy/certs/origin.pem deploy/certs/origin.key
-docker compose $COMPOSE_FILES run --rm --no-deps nginx nginx -t
-docker compose $COMPOSE_FILES up -d --build
-docker compose $COMPOSE_FILES ps
-docker compose $COMPOSE_FILES logs --tail=200 app nginx
+docker compose -f compose.prod.yml -f compose.cloudflare.yml run --rm --no-deps nginx nginx -t
+docker compose -f compose.prod.yml -f compose.cloudflare.yml build --pull app
+docker compose -f compose.prod.yml -f compose.cloudflare.yml run --rm --no-deps app alembic upgrade head
+docker compose -f compose.prod.yml -f compose.cloudflare.yml up -d --force-recreate --remove-orphans app nginx
+docker compose -f compose.prod.yml -f compose.cloudflare.yml ps
+docker compose -f compose.prod.yml -f compose.cloudflare.yml logs --tail=200 app nginx
 ```
 
-证书预期 `root:root 644`，私钥预期 `root:root 600`。新数据库由应用初始化；已有数据库再执行：
-
-```bash
-docker compose $COMPOSE_FILES run --rm app alembic upgrade head
-```
+证书预期 `root:root 644`，私钥预期 `root:root 600`。Alembic 命令对新数据库和已有数据库都可重复安全执行，不要等容器启动后才补做迁移。
 
 不要在此处再次递归修改整个 `data`；第 4 节已经同时设置 app 所有权和 nginx uploads 读取权限。
 
@@ -449,40 +441,57 @@ curl -fsS "https://$DOMAIN/health/ready"
 ```bash
 docker inspect st-imagen-app --format 'CPU={{.HostConfig.NanoCpus}} Memory={{.HostConfig.Memory}} Swap={{.HostConfig.MemorySwap}}'
 docker stats --no-stream
-docker compose $COMPOSE_FILES exec app sh -c 'echo workers=$UVICORN_WORKERS http=$HTTP_MAX_CONNECTIONS downloads=$GENERATED_IMAGE_DOWNLOAD_CONCURRENCY db=$DB_POOL_SIZE'
+docker compose -f compose.prod.yml -f compose.cloudflare.yml exec app sh -c 'echo workers=$UVICORN_WORKERS http=$HTTP_MAX_CONNECTIONS downloads=$GENERATED_IMAGE_DOWNLOAD_CONCURRENCY db=$DB_POOL_SIZE'
 ```
 
-4C8G 预期：app 约 3.2 CPU、6 GiB；nginx 约 0.6 CPU、512 MiB；宿主机仍保留资源给 Docker、文件缓存和 SSH。
+2C2G 预期：app 上限约 1.6 CPU、1400 MiB；nginx 上限约 0.4 CPU、300 MiB；宿主机仍保留资源给 Docker、文件缓存和 SSH。
 
 ## 9. 日常更新、监控与备份
 
-更新前先备份：
+每次 SSH 登录都是新的 Shell，因此不要依赖之前 `export` 的 `COMPOSE_FILES`。下面故意写出完整的两个 `-f` 参数，复制整段即可执行。
+
+更新前先确认仓库干净并备份：
 
 ```bash
+set -euo pipefail
 cd /opt/st-imagen
+test -d .git
+test -z "$(git status --porcelain)" || { echo "工作区有未提交修改，停止更新"; exit 1; }
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-docker compose $COMPOSE_FILES exec app python scripts/backup_data.py --include-uploads
-tar --acls --xattrs -C /opt -czf "/home/deploy/st-imagen-$STAMP.tgz" st-imagen/data st-imagen/.env st-imagen/deploy/certs
+docker compose -f compose.prod.yml -f compose.cloudflare.yml exec -T app \
+  python scripts/backup_data.py --include-uploads
+sudo tar --acls --xattrs -C /opt -czf "/home/deploy/st-imagen-$STAMP.tgz" \
+  st-imagen/data st-imagen/.env st-imagen/deploy/certs
+sudo chown deploy:deploy "/home/deploy/st-imagen-$STAMP.tgz"
 chmod 600 "/home/deploy/st-imagen-$STAMP.tgz"
 ```
 
-更新：
+然后拉取明确的 `origin/main`、构建新镜像、执行迁移并重建两个服务：
 
 ```bash
-git fetch --all --prune
-git checkout main
-git pull --ff-only
-docker compose $COMPOSE_FILES build --pull
-docker compose $COMPOSE_FILES run --rm app alembic upgrade head
-docker compose $COMPOSE_FILES up -d
-docker compose $COMPOSE_FILES ps
+set -euo pipefail
+cd /opt/st-imagen
+git fetch origin --prune
+git switch main
+git pull --ff-only origin main
+
+docker compose -f compose.prod.yml -f compose.cloudflare.yml config --quiet
+docker compose -f compose.prod.yml -f compose.cloudflare.yml pull nginx
+docker compose -f compose.prod.yml -f compose.cloudflare.yml build --pull app
+docker compose -f compose.prod.yml -f compose.cloudflare.yml run --rm --no-deps app \
+  alembic upgrade head
+docker compose -f compose.prod.yml -f compose.cloudflare.yml up -d --force-recreate --remove-orphans app nginx
+docker compose -f compose.prod.yml -f compose.cloudflare.yml ps
+docker compose -f compose.prod.yml -f compose.cloudflare.yml logs --tail=100 app nginx
 curl -fsS "https://$DOMAIN/health/ready"
 ```
+
+这里显式写 `origin main`，避免本地分支没有 upstream、错误跟踪功能分支或远程默认分支变化时，裸 `git pull --ff-only` 拉错目标。`--no-deps` 防止数据库迁移命令提前启动旧依赖，迁移成功后才统一重建 app 和 nginx；这样 nginx 配置或镜像有更新时也不会被漏掉。
 
 常用排障：
 
 ```bash
-docker compose $COMPOSE_FILES logs -f --tail=200 app nginx
+docker compose -f compose.prod.yml -f compose.cloudflare.yml logs -f --tail=200 app nginx
 docker stats
 df -h /opt/st-imagen/data
 sudo journalctl -u docker --since '1 hour ago'
@@ -490,81 +499,17 @@ sudo journalctl -u docker --since '1 hour ago'
 
 归档包含 `.env` 和 TLS 私钥，必须在上传对象存储前使用 `age`、GPG 或等效工具加密，并在完成恢复/传输后删除服务器上的临时明文归档。建议至少每天把 `data/` 的加密备份同步到独立对象存储；只有同一 VPS 上的备份不具备灾难恢复能力。定期做恢复演练，而不只是确认备份文件存在。
 
-## 10. 到期后迁移到阿里云 2C2G
+## 10. 2C2G 资源确认与迁移恢复
 
-### 10.1 准备新机
-
-阿里云新机同样在创建时绑定 SSH key，并按第 2 节建立 deploy 公钥登录，不使用 root 密码部署。
-安全组开放策略与 DigitalOcean 相同：
-
-- SSH 22 仅允许运维 IP；
-- 80/443 只允许 Cloudflare 官方 IP 段（初次联调可短暂放宽）；
-- 安装同版本 Docker Engine/Compose；
-- 克隆相同 Git commit；
-- 创建 `/opt/st-imagen`。
-
-### 10.2 停写与最终备份
-
-选择维护窗口，在 DigitalOcean 旧机执行：
+日常部署始终只使用 `compose.prod.yml` 和 `compose.cloudflare.yml`。更新后重建现有容器，确认 2C2G 资源限制已经落到容器：
 
 ```bash
 cd /opt/st-imagen
-docker compose $COMPOSE_FILES stop nginx
-docker compose $COMPOSE_FILES exec app python scripts/backup_data.py --include-uploads || true
-docker compose $COMPOSE_FILES stop app
-sudo tar --acls --xattrs -czf /home/deploy/st-imagen-final.tgz data .env deploy/certs
-sudo chmod 600 /home/deploy/st-imagen-final.tgz
-sha256sum /home/deploy/st-imagen-final.tgz > /home/deploy/st-imagen-final.tgz.sha256
+docker compose -f compose.prod.yml -f compose.cloudflare.yml config --quiet
+docker inspect st-imagen-app --format 'CPU={{.HostConfig.NanoCpus}} Memory={{.HostConfig.Memory}}'
 ```
 
-此时旧站停止接收写入，避免复制 SQLite 时产生分叉。
-
-复制到阿里云：
-
-```bash
-rsync -avP /home/deploy/st-imagen-final.tgz* deploy@<ALIYUN_IP>:/home/deploy/
-```
-
-### 10.3 在 2C2G 恢复
-
-阿里云新机：
-
-```bash
-cd /opt/st-imagen
-sha256sum -c /home/deploy/st-imagen-final.tgz.sha256
-sudo tar --acls --xattrs -xzf /home/deploy/st-imagen-final.tgz -C /opt/st-imagen
-sudo chown -R 10001:10001 data
-sudo chmod 750 data
-sudo find data/uploads -type d -exec chmod 755 {} +
-sudo find data/uploads -type f -exec chmod 644 {} +
-sudo chown deploy:deploy .env
-sudo chmod 600 .env
-sudo chown root:root deploy/certs/origin.pem deploy/certs/origin.key
-sudo chmod 644 deploy/certs/origin.pem
-sudo chmod 600 deploy/certs/origin.key
-```
-
-**2C2G 启动时不要再包含 `compose.4c8g.yml`：**
-
-```bash
-export COMPOSE_FILES='-f compose.prod.yml -f compose.cloudflare.yml'
-docker compose $COMPOSE_FILES config --quiet
-docker compose $COMPOSE_FILES up -d --build
-docker compose $COMPOSE_FILES run --rm app alembic upgrade head
-docker compose $COMPOSE_FILES ps
-```
-
-这样会自动恢复 `compose.prod.yml` 的长期限制：app 1.6 CPU / 1400 MiB，nginx 0.4 CPU / 300 MiB，且 worker 仍为 1。
-
-### 10.4 切换 Cloudflare DNS
-
-1. 把 Cloudflare A 记录改为阿里云公网 IP；
-2. 保持橙云和 Full (strict)；
-3. 连续验证首页、后台、登录、上传、SSE 和图片；
-4. 观察阿里云日志与资源至少一个业务高峰；
-5. 确认新备份链可用后再销毁 DigitalOcean Droplet。
-
-Cloudflare 开启代理时 DNS TTL 对终端用户影响较小，但边缘到源站切换仍可能短暂复用旧连接；建议旧机在切换后保留一段观察时间，不要立即销毁。
+预期 app 为 1.6 CPU、1400 MiB。若从旧服务器迁移，只复制同一 Git commit 对应的 `data/`、`.env` 和 `deploy/certs/`，恢复权限后按第 7 节启动；切换 DNS 前必须停止旧站写入，不能让两个 SQLite 实例同时接收业务后再尝试合并。
 
 ## 11. 回滚
 
@@ -572,10 +517,10 @@ Cloudflare 开启代理时 DNS TTL 对终端用户影响较小，但边缘到源
 
 ```bash
 git checkout <上一个已验证 commit>
-docker compose $COMPOSE_FILES up -d --build
+docker compose -f compose.prod.yml -f compose.cloudflare.yml up -d --build
 ```
 
-迁移失败：把 Cloudflare A 记录切回 DigitalOcean IP，并用原来的三个 Compose 文件重新启动旧机。不要让新旧两台同时接受写入后再合并 SQLite。
+迁移失败：把 Cloudflare A 记录切回旧服务器 IP，并用相同的两个 Compose 文件重新启动旧机。不要让新旧两台同时接受写入后再合并 SQLite。
 
 ## 12. 集中故障排查
 
@@ -666,9 +611,8 @@ sudo chown -R 10001:10001 data
 sudo chmod 750 data
 sudo find data/uploads -type d -exec chmod 755 {} +
 sudo find data/uploads -type f -exec chmod 644 {} +
-export COMPOSE_FILES='-f compose.prod.yml -f compose.cloudflare.yml -f compose.4c8g.yml'
 IMAGE=$(sudo find data/uploads/generated -maxdepth 1 -type f -printf '%f\n' | head -n 1)
-docker compose $COMPOSE_FILES exec --user 101 nginx test -r "/srv/uploads/generated/$IMAGE"
+docker compose -f compose.prod.yml -f compose.cloudflare.yml exec --user 101 nginx test -r "/srv/uploads/generated/$IMAGE"
 ```
 
 不要对整个 `data` 执行 `chmod -R 755`；数据库仍需保护。权限立即生效，无需重启容器。
@@ -680,7 +624,7 @@ docker compose $COMPOSE_FILES exec --user 101 nginx test -r "/srv/uploads/genera
 以下检查不会输出 API key：
 
 ```bash
-docker compose $COMPOSE_FILES exec app python - <<'UPSTREAMPY'
+docker compose -f compose.prod.yml -f compose.cloudflare.yml exec app python - <<'UPSTREAMPY'
 import os
 from urllib.parse import urlsplit
 value = os.environ.get("ST_BASE_URL", "")
@@ -699,7 +643,7 @@ UPSTREAMPY
 sudo chown root:root deploy/certs/origin.pem deploy/certs/origin.key
 sudo chmod 644 deploy/certs/origin.pem
 sudo chmod 600 deploy/certs/origin.key
-docker compose $COMPOSE_FILES run --rm --no-deps nginx nginx -t
+docker compose -f compose.prod.yml -f compose.cloudflare.yml run --rm --no-deps nginx nginx -t
 ```
 
 ### 12.7 nginx 临时目录不能 chown
@@ -708,8 +652,10 @@ docker compose $COMPOSE_FILES run --rm --no-deps nginx nginx -t
 确认 `compose.prod.yml` 的 `cap_add` 包含 `CHOWN`、`NET_BIND_SERVICE`、`SETGID`、`SETUID`，然后：
 
 ```bash
-git pull --ff-only
-docker compose $COMPOSE_FILES up -d --force-recreate nginx
+git fetch origin --prune
+git switch main
+git pull --ff-only origin main
+docker compose -f compose.prod.yml -f compose.cloudflare.yml up -d --force-recreate nginx
 ```
 
 不要使用 `chmod 777` 或 `privileged: true`。
