@@ -6,8 +6,8 @@ import ipaddress
 import os
 import socket
 from dataclasses import dataclass
-from typing import Optional, Set
-from urllib.parse import urljoin, urlparse
+from typing import Optional, Set, Tuple
+from urllib.parse import urljoin, urlparse, urlunparse
 
 import httpx
 
@@ -40,6 +40,7 @@ class OutboundTarget:
     scheme: str
     hostname: str
     port: Optional[int]
+    resolved_ips: Tuple[str, ...] = ()
 
 
 def _normalize_hostname(raw: str) -> str:
@@ -128,7 +129,34 @@ async def ensure_safe_outbound_url(url: str) -> OutboundTarget:
         raise UnsafeOutboundURLError(
             f"不允许访问内网或保留地址: {target.hostname} -> {', '.join(blocked[:4])}"
         )
-    return target
+    return OutboundTarget(
+        url=target.url,
+        scheme=target.scheme,
+        hostname=target.hostname,
+        port=target.port,
+        resolved_ips=tuple(sorted(resolved_ips)),
+    )
+
+
+def _pinned_request_url(target: OutboundTarget) -> str:
+    """Build a URL whose connection endpoint is an already-validated IP.
+
+    Keeping the hostname in the URL after validation would let the HTTP client
+    resolve it again, opening a DNS-rebinding window between validation and
+    connect.  Host and TLS SNI are supplied separately by ``open_safe_stream``.
+    """
+    if not target.resolved_ips:
+        return target.url
+    parsed = urlparse(target.url)
+    ip = target.resolved_ips[0]
+    host = f"[{ip}]" if ":" in ip else ip
+    netloc = f"{host}:{target.port}" if target.port is not None else host
+    return urlunparse(parsed._replace(netloc=netloc))
+
+
+def _host_header(target: OutboundTarget) -> str:
+    host = f"[{target.hostname}]" if ":" in target.hostname else target.hostname
+    return f"{host}:{target.port}" if target.port is not None else host
 
 
 async def open_safe_stream(
@@ -144,10 +172,21 @@ async def open_safe_stream(
     redirects = 0
 
     while True:
-        await ensure_safe_outbound_url(current_url)
+        target = await ensure_safe_outbound_url(current_url)
+        request_url = _pinned_request_url(target)
         extensions = {"timeout": timeout.as_dict()} if timeout is not None else None
+        if target.scheme == "https" and target.resolved_ips:
+            extensions = dict(extensions or {})
+            extensions["sni_hostname"] = target.hostname
+        request_headers = dict(headers or {})
+        if target.resolved_ips:
+            request_headers["Host"] = _host_header(target)
+            # The pool sees the pinned IP as the origin.  Do not let a TLS
+            # connection opened with one hostname's SNI be reused for another
+            # hostname that happens to resolve to the same address.
+            request_headers["Connection"] = "close"
         request = client.build_request(
-            method, current_url, headers=headers, extensions=extensions
+            method, request_url, headers=request_headers, extensions=extensions
         )
         response = await client.send(request, stream=True)
 
@@ -156,11 +195,12 @@ async def open_safe_stream(
             if redirects >= max_redirects:
                 await response.aclose()
                 raise UnsafeOutboundURLError("重定向次数过多")
-            next_url = urljoin(str(response.url), location)
+            # Resolve relative redirects against the logical hostname, not the
+            # IP-pinned transport URL.
+            next_url = urljoin(current_url, location)
             await response.aclose()
             current_url = next_url
             redirects += 1
             continue
 
-        await ensure_safe_outbound_url(str(response.url))
         return response
