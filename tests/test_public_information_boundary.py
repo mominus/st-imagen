@@ -59,3 +59,10 @@ def test_public_brand_uses_the_supplied_logo_and_name():
     assert "Visual studio" not in html
     # favicon must be served so the logo shows in browser tabs
     assert 'href="/static/assets/favicon.ico"' in html
+
+
+def test_linuxdo_callback_errors_remain_visible_for_three_seconds():
+    frontend_source = (ROOT / "app" / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert "const OAUTH_ERROR_MIN_VISIBLE_MS = 3000;" in frontend_source
+    assert "window.setTimeout(loadAuthStatus, OAUTH_ERROR_MIN_VISIBLE_MS);" in frontend_source

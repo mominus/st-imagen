@@ -36,6 +36,7 @@ const MAX_REFERENCE_IMAGES = 5;
 const REFERENCE_UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
 const REFERENCE_UPLOAD_DEFAULT_TEXT = "";
 const RECENT_IMAGES_LIMIT = 24;
+const OAUTH_ERROR_MIN_VISIBLE_MS = 3000;
 // 服务端工作流允许 200s 无进度；浏览器再留 20s 保护余量。
 const GENERATE_STREAM_IDLE_TIMEOUT_MS = 220 * 1000;
 const IMG2IMG_PREVIEW_DEFAULT_ASPECT_RATIO = "";
@@ -250,7 +251,7 @@ async function startLinuxdoLogin(inviteCode) {
 function consumeAuthErrorParam() {
   const params = new URLSearchParams(window.location.search);
   const message = params.get("auth_error");
-  if (!message) return;
+  if (!message) return false;
   params.delete("auth_error");
   const query = params.toString();
   window.history.replaceState(
@@ -264,6 +265,7 @@ function consumeAuthErrorParam() {
     focus: false,
     animate: false,
   });
+  return true;
 }
 
 function formatValidationMessage(item) {
@@ -1761,7 +1763,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   bindModeTabs();
-  consumeAuthErrorParam();
+  const hasOauthError = consumeAuthErrorParam();
   $("#model").addEventListener("change", () => {
     if (state.mode === "text2img") applyText2imgDimensionOptions();
   });
@@ -1769,6 +1771,12 @@ document.addEventListener("DOMContentLoaded", () => {
   bindPreviewModal();
   bindReferenceUpload();
   loadOptions();
-  loadAuthStatus();
+  if (hasOauthError) {
+    // loadAuthStatus() refreshes the auth modal and clears its message. Keep
+    // OAuth registration failures readable for at least three seconds.
+    window.setTimeout(loadAuthStatus, OAUTH_ERROR_MIN_VISIBLE_MS);
+  } else {
+    loadAuthStatus();
+  }
   $("#generateBtn").addEventListener("click", generate);
 });
