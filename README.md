@@ -155,7 +155,7 @@ http://localhost:8001/<你的 ADMIN_PATH>
 
 ## 生产部署（Docker Compose）
 
-> 2C2G VPS、Cloudflare Origin CA、完整安全加固、验收、更新、备份与迁移恢复的逐步操作，见 [DigitalOcean + Cloudflare 部署手册](docs/deploy-digitalocean-cloudflare.md)。
+> 2C2G VPS、Cloudflare Origin CA、完整安全加固、验收、更新、备份与迁移恢复的逐步操作，见 [通用 VPS + Cloudflare 部署手册](docs/deploy-vps-cloudflare.md)。
 
 生产编排按单机 `2c2g` 设计：FastAPI 固定单 worker，由 nginx 提供静态文件和 SSE 反向代理。首次部署准备干净的数据目录即可，SQLite 数据库和图片会在容器启动后自动创建。
 
@@ -168,9 +168,10 @@ sudo chown -R 10001:10001 data
 sudo chmod 750 data
 sudo find data/uploads -type d -exec chmod 755 {} +
 sudo find data/uploads -type f -exec chmod 644 {} +
-docker compose -f compose.prod.yml config --quiet
-docker compose -f compose.prod.yml up -d --build
-docker compose -f compose.prod.yml ps
+export COMPOSE_FILES='-f compose.prod.yml'
+docker compose $COMPOSE_FILES config --quiet
+docker compose $COMPOSE_FILES up -d --build
+docker compose $COMPOSE_FILES ps
 ```
 
 `data/` 是唯一需要持久化的目录，包含 SQLite 数据库和上传/生成图片；压测报告、临时图片、Python 缓存和本地虚拟环境不属于部署内容。生产环境不要使用 `compose.vps-stress.yml`，该文件只用于受限容器压测。当前 Compose 暴露 HTTP `80` 端口，HTTPS 证书应由云 LB 或外层反向代理负责；启用 `USER_SESSION_SECURE=true` 时，生产访问必须经过 HTTPS。

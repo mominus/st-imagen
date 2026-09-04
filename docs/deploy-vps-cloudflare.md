@@ -1,6 +1,6 @@
 # 2C2G VPS + Cloudflare 完整部署手册
 
-本文适用于在 Ubuntu **2 vCPU / 2 GiB** VPS 上长期运行，并由 Cloudflare 管理域名 DNS 和公网 TLS。DigitalOcean、阿里云或其他提供标准 Ubuntu 的云厂商均可使用。
+本文适用于在任意云厂商的 Ubuntu **2 vCPU / 2 GiB** VPS 上长期运行，并由 Cloudflare 管理域名 DNS 和公网 TLS。当前服务器可以是阿里云 ECS，后续迁移到其他提供标准 Ubuntu 的厂商时仍使用同一套步骤。
 
 > 本项目必须保持 `UVICORN_WORKERS=1`。账号槽位、全局准入、限流和熔断状态均在进程内。仓库的 `compose.prod.yml` 已包含 2C2G 资源限制。
 
@@ -25,106 +25,110 @@
 - `deploy/certs/origin.pem`、`deploy/certs/origin.key`：Cloudflare Origin CA 证书和私钥；
 - `data/`：SQLite、参考图、生成图和备份，是迁移时必须复制的持久化目录。
 
-## 1. 创建 DigitalOcean Droplet（使用 SSH key）
+## 1. 创建通用云服务器（SSH Key）
 
-后续新 VPS 统一使用 SSH key，不再走 root 密码部署路径。
+本节不依赖特定云厂商。控制台中的“实例”“云服务器”“ECS”“安全组”“云防火墙”等名称可能不同，但作用相同；请把厂商术语映射到下面描述的通用资源。
 
-### 1.1 在本机准备密钥
+### 1.1 在本机准备 SSH 密钥
 
-如果 Termius 已有专用 Ed25519 私钥，可直接使用；否则在自己的电脑生成：
+SSH 密钥用于证明登录者身份，比长期开放 root 密码更不容易遭遇撞库和暴力破解。如果 Termius 或本机已有专用 Ed25519 密钥，可直接使用；否则在**自己的电脑**生成：
 
 ```bash
-ssh-keygen -t ed25519 -a 64 -C "digitalocean-st-imagen"
+# 生成 Ed25519 密钥对；-a 64 增加私钥口令推导成本，注释仅用于识别用途。
+ssh-keygen -t ed25519 -a 64 -C "st-imagen-vps"
 ```
 
-私钥只能保存在自己的设备；向 DigitalOcean 添加的是 `.pub` 公钥。在创建 Droplet 的
-**Authentication Method** 选择 **SSH Key**，勾选这把公钥，不选择 Password。
+私钥（默认 `~/.ssh/id_ed25519`）只能留在自己的设备；上传到云厂商控制台的是公钥文件 `~/.ssh/id_ed25519.pub`。创建实例时选择“密钥对/SSH Key”认证并绑定该公钥，不要把私钥上传到服务器或控制台。
 
-### 1.2 Droplet 参数
+### 1.2 通用实例参数
 
-- Ubuntu 24.04 LTS x64；
-- 规格 2 vCPU / 2 GiB，磁盘至少 50 GiB；
-- 绑定 Reserved IP；
-- 选择主要用户与上游延迟较低的区域；
-- 创建时绑定刚才确认过的 SSH key。
+- 系统：Ubuntu 24.04 LTS x64；
+- 规格：2 vCPU / 2 GiB；
+- 系统盘：至少 50 GiB，图片保留较多时应单独评估容量；
+- 公网地址：绑定固定公网 IP/EIP，避免重启实例后源站地址变化；
+- 地域：选择主要用户和上游 API 网络延迟较低的地域；
+- 登录认证：绑定第 1.1 节准备的 SSH 公钥。
 
-记录：
+在本机终端记录实际值，后文命令会复用：
 
 ```bash
+# VPS 的固定公网 IPv4；请替换示例地址。
 export VPS_IP="203.0.113.10"
+# 已托管到 Cloudflare、准备指向本 VPS 的完整域名。
 export DOMAIN="img.example.com"
 ```
 
-### 1.3 Cloud Firewall
+### 1.3 配置云安全组/云防火墙
 
-DigitalOcean Cloud Firewall（云防火墙）在流量到达 Ubuntu 前过滤；UFW 是系统防火墙，
-应用登录则是第三层，三者不能互相替代。
+云安全组在流量到达 Ubuntu 前过滤网络包；Ubuntu UFW 是主机内第二层防火墙；应用登录是第三层认证，三者不能互相替代。
 
-- Inbound（入站）TCP 22：只允许你当前公网 IP `/32`；IP 变化先更新规则；
-- Inbound TCP 80：联调期允许全部，稳定后只允许 Cloudflare 官方网段；
-- Inbound TCP 443：联调期允许全部，稳定后只允许 Cloudflare 官方网段；
-- Outbound（出站）：保留 All traffic，供 apt、GitHub、Docker、DNS、NTP 和上游 API 使用。
+- 入站 TCP 22：只允许当前运维公网 IP `/32`；运维 IP 变化时先更新规则；
+- 入站 TCP 80：联调期可临时允许全部，稳定后只允许 Cloudflare 官方网段；
+- 入站 TCP 443：联调期可临时允许全部，稳定后只允许 Cloudflare 官方网段；
+- 出站：允许 apt、GitHub、Docker Registry、DNS、NTP 和上游 API 所需流量。
 
-不要开放这些端口：8001、5432、3306、2375、2376。开始前确认 DigitalOcean 的 Recovery
-Console/Recovery 页面可用；22 端口不要填 Cloudflare IP。
+不要对公网开放 8001、5432、3306、2375、2376。开始系统加固前，确认云厂商提供的 VNC/串口/救援控制台可用，防止 SSH 配置错误后完全失联；22 端口允许的是你的运维 IP，不是 Cloudflare IP。
 
-## 2. 首次 SSH key 登录与系统加固
+## 2. 首次登录、建立运维账号并加固 SSH
 
-### 2.1 首次登录并创建运维用户
+本节目的：先保留可恢复的初始管理员会话，创建日常使用的 `deploy` 账号并验证其密钥和 sudo 权限，最后才关闭 root 与密码登录。**不要跳过验证直接禁用 root 登录。**
 
-在**自己的电脑/Termius**连接。看到 `root@ubuntu...#` 就说明你仍在 VPS 内，不能在那里
-运行这条登录测试。
+### 2.1 使用云厂商绑定的密钥首次登录
 
-**本机执行：**
+在**自己的电脑/Termius**执行：
 
 ```bash
+# 强制优先使用公钥认证连接初始 root 账号；避免客户端回退到密码猜测。
 ssh -o PreferredAuthentications=publickey root@"$VPS_IP"
 ```
 
-若失败，先修正 DigitalOcean 绑定的公钥或 Termius 私钥选择，不要临时改用弱密码。登录后
-保持 root 窗口开启：
+若云镜像的默认账号不是 root，请按厂商说明先使用 `ubuntu` 等默认账号并通过 `sudo -i` 进入 root Shell。失败时检查实例绑定的公钥、本机选择的私钥和安全组 22 端口，不要临时改用弱密码。成功后保持这个初始窗口开启，再逐条执行：
 
 ```bash
+# 刷新 Ubuntu 软件包索引，不安装软件。
 apt update
+# 安装当前可用的系统安全与功能更新；期间按提示确认服务重启策略。
 apt full-upgrade -y
+# 创建无特权的日常运维账号；命令会要求设置本地信息/密码。
 adduser deploy
+# 把 deploy 加入 sudo 组，使其可在审计边界内临时提权。
 usermod -aG sudo deploy
+# 创建 deploy 的 SSH 配置目录，并限制为仅本人可访问。
 install -d -m 700 -o deploy -g deploy /home/deploy/.ssh
+# 复制云厂商已写入 root 的公钥授权；不会复制任何私钥。
 install -m 600 -o deploy -g deploy \
   /root/.ssh/authorized_keys /home/deploy/.ssh/authorized_keys
 ```
 
-### 2.2 独立窗口验证 deploy key 和 sudo
+### 2.2 在第二个本机窗口验证 deploy 登录和 sudo
 
-此时**不要在 `root@ubuntu...#` 后运行 ssh**。服务器只有公钥，没有你电脑上的私钥；从
-VPS 连接它自己必然会得到 `Permission denied (publickey)`，也绝不能为了测试把私钥上传
-到 VPS。
-
-在自己的电脑另开一个 Termius 标签页/本地终端，并选择创建 Droplet 时使用的**同一把
-私钥**。Termius 中应为这个 Host 的 Identity/Key 指定对应 Keychain 私钥，然后运行：
+保持原窗口不动，在自己的电脑另开终端。这样即使新账号配置错误，原会话仍可修复。不要在 VPS Shell 内执行下面的 `ssh`，也不要把本机私钥复制到 VPS。
 
 ```bash
+# IdentitiesOnly 防止 SSH 客户端尝试错误密钥；-i 指向本机私钥。
 ssh -o IdentitiesOnly=yes -o PreferredAuthentications=publickey \
   -i ~/.ssh/id_ed25519 deploy@"$VPS_IP"
 ```
 
-如果 Termius 已经通过界面选好了私钥，直接新建 `deploy` 连接即可，不需要在 Termius
-终端中输入 `-i`。成功进入后，提示符应从本机变为 `deploy@ubuntu...$`，再运行：
+Termius 已为 Host 选择正确 Keychain 私钥时，可直接新建 `deploy` 连接。登录成功后执行：
 
 ```bash
+# 立即验证 sudo 凭据，失败时不会执行后续加固。
 sudo -v
+# 应输出 deploy，确认当前不是 root。
 whoami
+# 应输出 root，确认 deploy 确实拥有 sudo 权限。
 sudo whoami
 ```
 
-必须依次确认 deploy 公钥登录成功、`sudo whoami` 输出 `root`、Recovery Console 可用；
-原 root 窗口和新 deploy 窗口都保持打开。
+只有 deploy 公钥登录成功、`sudo whoami` 输出 `root`，且云厂商救援控制台可用后，才能继续。
 
-### 2.3 最后才关闭 root/password SSH
+### 2.3 最后关闭 root、密码和键盘交互登录
 
-在 deploy 会话执行：
+在已验证的 deploy 会话执行：
 
 ```bash
+# 使用 sudoedit 安全编辑 root 拥有的 sshd 配置文件。
 sudoedit /etc/ssh/sshd_config.d/00-st-imagen-hardening.conf
 ```
 
@@ -137,24 +141,31 @@ KbdInteractiveAuthentication no
 PubkeyAuthentication yes
 ```
 
-验证最终生效值后才 reload：
+逐条验证并应用：
 
 ```bash
+# 只检查 sshd 配置语法；失败时不要 reload。
 sudo sshd -t
+# 显示最终生效值，确认没有被其他配置文件覆盖。
 sudo sshd -T | grep -E '^(permitrootlogin|passwordauthentication|kbdinteractiveauthentication|pubkeyauthentication) '
+# 无中断重载配置，现有 SSH 会话会继续保留。
 sudo systemctl reload ssh
 ```
 
-OpenSSH 多数认证项是先读到的值生效，`00-st-imagen-hardening.conf` 必须排在 Ubuntu 的
-`50-cloud-init.conf` 前。再开第三个窗口测试 `ssh deploy@$VPS_IP`；成功后才退出 root。
+OpenSSH 多数认证项是先读到的值生效，因此 `00-st-imagen-hardening.conf` 放在 Ubuntu 常见的 `50-cloud-init.conf` 前。保留现有窗口，再开第三个本机窗口测试 `ssh deploy@"$VPS_IP"`；成功后才退出初始管理员窗口。
 
-### 2.4 基础工具与时间
+### 2.4 安装基础运维工具并启用自动安全更新
 
 ```bash
+# 安装自动更新、TLS 根证书、下载、Git 和迁移同步工具。
 sudo apt install -y unattended-upgrades ca-certificates curl git rsync
+# 打开 unattended-upgrades 的交互配置，启用系统安全更新。
 sudo dpkg-reconfigure -plow unattended-upgrades
+# 统一使用 UTC，避免日志、备份文件名和数据库时间跨时区混乱。
 sudo timedatectl set-timezone UTC
+# 启用网络时间同步，避免 TLS、OAuth 和会话过期判断因时钟漂移失败。
 sudo timedatectl set-ntp true
+# 查看时区、NTP 服务和当前同步状态。
 timedatectl status
 ```
 
@@ -236,8 +247,9 @@ chmod 600 .env
 先构建镜像，以便使用镜像内的 `cryptography` 生成 Fernet key：
 
 ```bash
-docker compose -f compose.prod.yml build app
-FERNET_KEY=$(docker compose -f compose.prod.yml run --rm --no-deps app \
+export COMPOSE_FILES='-f compose.prod.yml'
+docker compose $COMPOSE_FILES build app
+FERNET_KEY=$(docker compose $COMPOSE_FILES run --rm --no-deps app \
   python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')
 JWT_KEY=$(openssl rand -base64 48 | tr -d '\n')
 printf 'Fernet: %s\nJWT: %s\n' "$FERNET_KEY" "$JWT_KEY"
@@ -283,16 +295,17 @@ ST_TRUST_ENV=false
 
 ```bash
 cd /opt/st-imagen
-docker compose -f compose.prod.yml -f compose.cloudflare.yml config --quiet
-docker compose -f compose.prod.yml -f compose.cloudflare.yml up -d --force-recreate app
-docker compose -f compose.prod.yml -f compose.cloudflare.yml ps
-docker compose -f compose.prod.yml -f compose.cloudflare.yml logs --tail=100 app
+export COMPOSE_FILES='-f compose.prod.yml -f compose.cloudflare.yml'
+docker compose $COMPOSE_FILES config --quiet
+docker compose $COMPOSE_FILES up -d --force-recreate app
+docker compose $COMPOSE_FILES ps
+docker compose $COMPOSE_FILES logs --tail=100 app
 ```
 
 例如修改 `ACCOUNT_MAX_INFLIGHT=10` 后，验证容器实际获得的新值：
 
 ```bash
-docker compose -f compose.prod.yml -f compose.cloudflare.yml exec app sh -c \
+docker compose $COMPOSE_FILES exec app sh -c \
   'printf "ACCOUNT_MAX_INFLIGHT=%s\\n" "$ACCOUNT_MAX_INFLIGHT"'
 ```
 
@@ -308,7 +321,7 @@ Cloudflare → **DNS → Records**：
 
 - Type：`A`；
 - Name：例如 `img`；
-- IPv4：DigitalOcean Reserved IP/Droplet IP；
+- IPv4：VPS 的固定公网 IP/EIP；
 - Proxy status：**Proxied（橙云）**；
 - TTL：Auto。
 
@@ -391,15 +404,16 @@ Cloudflare → **SSL/TLS → Overview** 设置为 **Full (strict)**，不要使�
 
 ```bash
 cd /opt/st-imagen
-docker compose -f compose.prod.yml -f compose.cloudflare.yml config --quiet
-docker compose -f compose.prod.yml -f compose.cloudflare.yml config > /tmp/st-imagen.compose.yml
+export COMPOSE_FILES='-f compose.prod.yml -f compose.cloudflare.yml'
+docker compose $COMPOSE_FILES config --quiet
+docker compose $COMPOSE_FILES config > /tmp/st-imagen.compose.yml
 sudo stat -c '%U:%G %a %n' deploy/certs/origin.pem deploy/certs/origin.key
-docker compose -f compose.prod.yml -f compose.cloudflare.yml run --rm --no-deps nginx nginx -t
-docker compose -f compose.prod.yml -f compose.cloudflare.yml build --pull app
-docker compose -f compose.prod.yml -f compose.cloudflare.yml run --rm --no-deps app alembic upgrade head
-docker compose -f compose.prod.yml -f compose.cloudflare.yml up -d --force-recreate --remove-orphans app nginx
-docker compose -f compose.prod.yml -f compose.cloudflare.yml ps
-docker compose -f compose.prod.yml -f compose.cloudflare.yml logs --tail=200 app nginx
+docker compose $COMPOSE_FILES run --rm --no-deps nginx nginx -t
+docker compose $COMPOSE_FILES build --pull app
+docker compose $COMPOSE_FILES run --rm --no-deps app alembic upgrade head
+docker compose $COMPOSE_FILES up -d --force-recreate --remove-orphans app nginx
+docker compose $COMPOSE_FILES ps
+docker compose $COMPOSE_FILES logs --tail=200 app nginx
 ```
 
 证书预期 `root:root 644`，私钥预期 `root:root 600`。Alembic 命令对新数据库和已有数据库都可重复安全执行，不要等容器启动后才补做迁移。
@@ -439,26 +453,29 @@ curl -fsS "https://$DOMAIN/health/ready"
 ### 8.3 资源覆盖是否生效
 
 ```bash
+cd /opt/st-imagen
+export COMPOSE_FILES='-f compose.prod.yml -f compose.cloudflare.yml'
 docker inspect st-imagen-app --format 'CPU={{.HostConfig.NanoCpus}} Memory={{.HostConfig.Memory}} Swap={{.HostConfig.MemorySwap}}'
 docker stats --no-stream
-docker compose -f compose.prod.yml -f compose.cloudflare.yml exec app sh -c 'echo workers=$UVICORN_WORKERS http=$HTTP_MAX_CONNECTIONS downloads=$GENERATED_IMAGE_DOWNLOAD_CONCURRENCY db=$DB_POOL_SIZE'
+docker compose $COMPOSE_FILES exec app sh -c 'echo workers=$UVICORN_WORKERS http=$HTTP_MAX_CONNECTIONS downloads=$GENERATED_IMAGE_DOWNLOAD_CONCURRENCY db=$DB_POOL_SIZE'
 ```
 
 2C2G 预期：app 上限约 1.6 CPU、1400 MiB；nginx 上限约 0.4 CPU、300 MiB；宿主机仍保留资源给 Docker、文件缓存和 SSH。
 
 ## 9. 日常更新、监控与备份
 
-每次 SSH 登录都是新的 Shell，因此不要依赖之前 `export` 的 `COMPOSE_FILES`。下面故意写出完整的两个 `-f` 参数，复制整段即可执行。
+`COMPOSE_FILES` 只是当前 Shell 的命令缩写；每次重新 SSH 登录都要再次 `export`。下面的独立命令块都会先定义它，避免变量为空时 Compose 找不到配置。不要给变量外层再加双引号，保留 Bash 对两个 `-f` 参数的分词。
 
 更新前先确认仓库干净并备份：
 
 ```bash
 set -euo pipefail
 cd /opt/st-imagen
+export COMPOSE_FILES='-f compose.prod.yml -f compose.cloudflare.yml'
 test -d .git
 test -z "$(git status --porcelain)" || { echo "工作区有未提交修改，停止更新"; exit 1; }
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-docker compose -f compose.prod.yml -f compose.cloudflare.yml exec -T app \
+docker compose $COMPOSE_FILES exec -T app \
   python scripts/backup_data.py --include-uploads
 sudo tar --acls --xattrs -C /opt -czf "/home/deploy/st-imagen-$STAMP.tgz" \
   st-imagen/data st-imagen/.env st-imagen/deploy/certs
@@ -471,27 +488,28 @@ chmod 600 "/home/deploy/st-imagen-$STAMP.tgz"
 ```bash
 set -euo pipefail
 cd /opt/st-imagen
+export COMPOSE_FILES='-f compose.prod.yml -f compose.cloudflare.yml'
 git fetch origin --prune
 git switch main
 git pull --ff-only origin main
 
-docker compose -f compose.prod.yml -f compose.cloudflare.yml config --quiet
-docker compose -f compose.prod.yml -f compose.cloudflare.yml pull nginx
-docker compose -f compose.prod.yml -f compose.cloudflare.yml build --pull app
-docker compose -f compose.prod.yml -f compose.cloudflare.yml run --rm --no-deps app \
+docker compose $COMPOSE_FILES config --quiet
+docker compose $COMPOSE_FILES pull nginx
+docker compose $COMPOSE_FILES build --pull app
+docker compose $COMPOSE_FILES run --rm --no-deps app \
   alembic upgrade head
-docker compose -f compose.prod.yml -f compose.cloudflare.yml up -d --force-recreate --remove-orphans app nginx
-docker compose -f compose.prod.yml -f compose.cloudflare.yml ps
-docker compose -f compose.prod.yml -f compose.cloudflare.yml logs --tail=100 app nginx
+docker compose $COMPOSE_FILES up -d --force-recreate --remove-orphans app nginx
+docker compose $COMPOSE_FILES ps
+docker compose $COMPOSE_FILES logs --tail=100 app nginx
 curl -fsS "https://$DOMAIN/health/ready"
 ```
 
-这里显式写 `origin main`，避免本地分支没有 upstream、错误跟踪功能分支或远程默认分支变化时，裸 `git pull --ff-only` 拉错目标。`--no-deps` 防止数据库迁移命令提前启动旧依赖，迁移成功后才统一重建 app 和 nginx；这样 nginx 配置或镜像有更新时也不会被漏掉。
+这里显式写 `origin main`，避免本地分支没有 upstream、错误跟踪功能分支或远程默认分支变化时，裸 `git pull --ff-only` 拉错目标。每个更新命令块都重新导出 `COMPOSE_FILES`，所以不会依赖旧 SSH 会话。`--no-deps` 防止数据库迁移命令提前启动旧依赖，迁移成功后才统一重建 app 和 nginx；这样 nginx 配置或镜像有更新时也不会被漏掉。
 
 常用排障：
 
 ```bash
-docker compose -f compose.prod.yml -f compose.cloudflare.yml logs -f --tail=200 app nginx
+docker compose $COMPOSE_FILES logs -f --tail=200 app nginx
 docker stats
 df -h /opt/st-imagen/data
 sudo journalctl -u docker --since '1 hour ago'
@@ -505,7 +523,8 @@ sudo journalctl -u docker --since '1 hour ago'
 
 ```bash
 cd /opt/st-imagen
-docker compose -f compose.prod.yml -f compose.cloudflare.yml config --quiet
+export COMPOSE_FILES='-f compose.prod.yml -f compose.cloudflare.yml'
+docker compose $COMPOSE_FILES config --quiet
 docker inspect st-imagen-app --format 'CPU={{.HostConfig.NanoCpus}} Memory={{.HostConfig.Memory}}'
 ```
 
@@ -516,8 +535,10 @@ docker inspect st-imagen-app --format 'CPU={{.HostConfig.NanoCpus}} Memory={{.Ho
 应用更新失败：
 
 ```bash
+cd /opt/st-imagen
+export COMPOSE_FILES='-f compose.prod.yml -f compose.cloudflare.yml'
 git checkout <上一个已验证 commit>
-docker compose -f compose.prod.yml -f compose.cloudflare.yml up -d --build
+docker compose $COMPOSE_FILES up -d --build
 ```
 
 迁移失败：把 Cloudflare A 记录切回旧服务器 IP，并用相同的两个 Compose 文件重新启动旧机。不要让新旧两台同时接受写入后再合并 SQLite。
@@ -529,8 +550,7 @@ docker compose -f compose.prod.yml -f compose.cloudflare.yml up -d --build
 ### 12.1 SSH 握手成功但 root 密码失败
 
 新建 VPS 应使用第 1 节 SSH key 流程。旧密码机出现 `Authentication failed (password)` 时，
-22 端口和 sshd 已经可达；通过 DigitalOcean **Access → Reset Root Password** 或 Recovery
-Console/ISO 恢复。恢复后检查：
+22 端口和 sshd 已经可达；通过云厂商控制台的“重置密码”或 VNC/串口/救援模式恢复。恢复后检查：
 
 ```bash
 passwd -S root
@@ -541,7 +561,7 @@ sshd -T -C user=root,host="$(hostname)",addr="你的当前公网IP" \
 
 只有 root 密码时不要跳过 2.3 和 2.4 后又执行禁用 root/password 的命令。紧急临时文件可用
 `00-emergency-recovery.conf` 设置 `PermitRootLogin yes`、`PasswordAuthentication yes`，但
-验证 deploy key 后必须删除。若存在陌生登录/公钥或密码自行变化，把 Droplet 视为已失陷并
+验证 deploy key 后必须删除。若存在陌生登录/公钥或密码自行变化，把该 VPS 视为已失陷并
 重建、轮换所有密钥。不要长期退回密码部署。
 
 ### 12.2 deploy 报 `Permission denied (publickey)`
@@ -573,7 +593,7 @@ ssh -vvv -o IdentitiesOnly=yes -i ~/.ssh/id_ed25519 deploy@"$VPS_IP"
 ```
 
 不要把 `id_ed25519` 私钥复制到服务器。仍失败时检查 Termius 选择的 Keychain 条目是否就是
-创建 Droplet 时绑定公钥所对应的私钥，而不是另一个同名或旧密钥。
+创建 VPS 时绑定公钥所对应的私钥，而不是另一个同名或旧密钥。
 
 ### 12.3 仓库目录错误
 
@@ -607,12 +627,13 @@ sudo setpriv --reuid=10001 --regid=10001 --clear-groups \
 
 ```bash
 cd /opt/st-imagen
+export COMPOSE_FILES='-f compose.prod.yml -f compose.cloudflare.yml'
 sudo chown -R 10001:10001 data
 sudo chmod 750 data
 sudo find data/uploads -type d -exec chmod 755 {} +
 sudo find data/uploads -type f -exec chmod 644 {} +
 IMAGE=$(sudo find data/uploads/generated -maxdepth 1 -type f -printf '%f\n' | head -n 1)
-docker compose -f compose.prod.yml -f compose.cloudflare.yml exec --user 101 nginx test -r "/srv/uploads/generated/$IMAGE"
+docker compose $COMPOSE_FILES exec --user 101 nginx test -r "/srv/uploads/generated/$IMAGE"
 ```
 
 不要对整个 `data` 执行 `chmod -R 755`；数据库仍需保护。权限立即生效，无需重启容器。
@@ -624,7 +645,9 @@ docker compose -f compose.prod.yml -f compose.cloudflare.yml exec --user 101 ngi
 以下检查不会输出 API key：
 
 ```bash
-docker compose -f compose.prod.yml -f compose.cloudflare.yml exec app python - <<'UPSTREAMPY'
+cd /opt/st-imagen
+export COMPOSE_FILES='-f compose.prod.yml -f compose.cloudflare.yml'
+docker compose $COMPOSE_FILES exec app python - <<'UPSTREAMPY'
 import os
 from urllib.parse import urlsplit
 value = os.environ.get("ST_BASE_URL", "")
@@ -640,10 +663,12 @@ UPSTREAMPY
 `cannot load certificate ... Permission denied`：
 
 ```bash
+cd /opt/st-imagen
+export COMPOSE_FILES='-f compose.prod.yml -f compose.cloudflare.yml'
 sudo chown root:root deploy/certs/origin.pem deploy/certs/origin.key
 sudo chmod 644 deploy/certs/origin.pem
 sudo chmod 600 deploy/certs/origin.key
-docker compose -f compose.prod.yml -f compose.cloudflare.yml run --rm --no-deps nginx nginx -t
+docker compose $COMPOSE_FILES run --rm --no-deps nginx nginx -t
 ```
 
 ### 12.7 nginx 临时目录不能 chown
@@ -652,18 +677,18 @@ docker compose -f compose.prod.yml -f compose.cloudflare.yml run --rm --no-deps 
 确认 `compose.prod.yml` 的 `cap_add` 包含 `CHOWN`、`NET_BIND_SERVICE`、`SETGID`、`SETUID`，然后：
 
 ```bash
+cd /opt/st-imagen
+export COMPOSE_FILES='-f compose.prod.yml -f compose.cloudflare.yml'
 git fetch origin --prune
 git switch main
 git pull --ff-only origin main
-docker compose -f compose.prod.yml -f compose.cloudflare.yml up -d --force-recreate nginx
+docker compose $COMPOSE_FILES up -d --force-recreate nginx
 ```
 
 不要使用 `chmod 777` 或 `privileged: true`。
 
 ## 官方参考
 
-- DigitalOcean Droplet 创建与基础操作：<https://docs.digitalocean.com/products/droplets/how-to/create/>
-- DigitalOcean Cloud Firewalls：<https://docs.digitalocean.com/products/networking/firewalls/how-to/configure-rules/>
 - Docker Engine on Ubuntu：<https://docs.docker.com/engine/install/ubuntu/>
 - Docker Linux post-install：<https://docs.docker.com/engine/install/linux-postinstall/>
 - Cloudflare 代理状态：<https://developers.cloudflare.com/dns/proxy-status/>
