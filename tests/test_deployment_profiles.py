@@ -57,49 +57,49 @@ def test_production_image_contains_migration_and_backup_tools():
     assert "COPY scripts ./scripts" in dockerfile
 
 
-def test_runbook_uses_ssh_key_as_the_only_normal_deployment_path():
-    runbook = (ROOT / "docs" / "deploy-digitalocean-cloudflare.md").read_text(
+def test_runbook_uses_provider_neutral_ssh_key_deployment_path():
+    runbook = (ROOT / "docs" / "deploy-vps-cloudflare.md").read_text(
         encoding="utf-8"
     )
 
     normal_path = runbook[: runbook.index("## 12. 集中故障排查")]
-    assert "创建 DigitalOcean Droplet（使用 SSH key）" in normal_path
-    assert "Authentication Method" in normal_path
-    assert "不选择 Password" in normal_path
+    assert "创建通用 Ubuntu VPS（使用 SSH 密钥）" in normal_path
+    assert "SSH 密钥/密钥对" in normal_path
+    assert "不要选择弱密码" in normal_path
     assert "PreferredAuthentications=publickey" in normal_path
     assert "00-st-imagen-hardening.conf" in normal_path
     assert "PermitRootLogin no" in normal_path
     assert "PasswordAuthentication no" in normal_path
-    assert "不要在 `root@ubuntu...#` 后运行 ssh" in normal_path
+    assert "顺序不能颠倒" in normal_path
     assert "IdentitiesOnly=yes" in normal_path
-    assert "绝不能为了测试把私钥上传" in normal_path
-    assert normal_path.index("独立窗口验证 deploy key") < normal_path.index(
-        "最后才关闭 root/password SSH"
+    assert "不要把私钥上传到 VPS" in normal_path
+    assert normal_path.index("在独立窗口验证 deploy 和 sudo") < normal_path.index(
+        "最后关闭 root 和密码 SSH 登录"
     )
 
 
 def test_runbook_moves_password_recovery_out_of_the_normal_path():
-    runbook = (ROOT / "docs" / "deploy-digitalocean-cloudflare.md").read_text(
+    runbook = (ROOT / "docs" / "deploy-vps-cloudflare.md").read_text(
         encoding="utf-8"
     )
 
     troubleshooting = runbook[runbook.index("## 12. 集中故障排查") :]
-    assert "Access → Reset Root Password" in troubleshooting
+    assert "重置密钥、VNC/串口或救援模式" in troubleshooting
     assert "sshd -T -C user=root" in troubleshooting
     assert "00-emergency-recovery.conf" in troubleshooting
     assert "PermitRootLogin yes" in troubleshooting
     assert "passwd -S root" in troubleshooting
-    assert "Droplet 视为已失陷" in troubleshooting
+    assert "服务器视为已失陷" in troubleshooting
 
 
 def test_runbook_explains_firewall_layers_and_port_purposes():
-    runbook = (ROOT / "docs" / "deploy-digitalocean-cloudflare.md").read_text(
+    runbook = (ROOT / "docs" / "deploy-vps-cloudflare.md").read_text(
         encoding="utf-8"
     )
 
-    assert "DigitalOcean Cloud Firewall（云防火墙）" in runbook
-    assert "Inbound（入站）" in runbook
-    assert "Outbound（出站）" in runbook
+    assert "配置云防火墙/安全组" in runbook
+    assert "入站规则" in runbook
+    assert "出站规则" in runbook
     assert "TCP 22" in runbook
     assert "TCP 80" in runbook
     assert "TCP 443" in runbook
@@ -107,7 +107,7 @@ def test_runbook_explains_firewall_layers_and_port_purposes():
 
 
 def test_runbook_prevents_nested_clone_and_repairs_data_permissions():
-    runbook = (ROOT / "docs" / "deploy-digitalocean-cloudflare.md").read_text(
+    runbook = (ROOT / "docs" / "deploy-vps-cloudflare.md").read_text(
         encoding="utf-8"
     )
 
@@ -127,7 +127,7 @@ def test_runbook_prevents_nested_clone_and_repairs_data_permissions():
 
 
 def test_runbook_secures_and_repairs_cloudflare_certificate_permissions():
-    runbook = (ROOT / "docs" / "deploy-digitalocean-cloudflare.md").read_text(
+    runbook = (ROOT / "docs" / "deploy-vps-cloudflare.md").read_text(
         encoding="utf-8"
     )
     cert_readme = (ROOT / "deploy" / "certs" / "README.md").read_text(
@@ -147,7 +147,7 @@ def test_runbook_secures_and_repairs_cloudflare_certificate_permissions():
     assert "cannot load certificate" in runbook
     assert "Permission denied" in runbook
     assert (
-        "docker compose -f compose.prod.yml -f compose.cloudflare.yml run --rm --no-deps nginx nginx -t"
+        "docker compose $COMPOSE_FILES run --rm --no-deps nginx nginx -t"
         in runbook
     )
     assert "root:root" in cert_readme
@@ -156,7 +156,7 @@ def test_runbook_secures_and_repairs_cloudflare_certificate_permissions():
 
 
 def test_runbook_repairs_nginx_temp_directory_capability_failure():
-    runbook = (ROOT / "docs" / "deploy-digitalocean-cloudflare.md").read_text(
+    runbook = (ROOT / "docs" / "deploy-vps-cloudflare.md").read_text(
         encoding="utf-8"
     )
 
@@ -166,13 +166,13 @@ def test_runbook_repairs_nginx_temp_directory_capability_failure():
     assert "SETUID" in runbook
     assert "chmod 777" in runbook
     assert (
-        "docker compose -f compose.prod.yml -f compose.cloudflare.yml up -d --force-recreate nginx"
+        "docker compose $COMPOSE_FILES up -d --force-recreate nginx"
         in runbook
     )
 
 
 def test_runbook_diagnoses_non_json_upstream_responses_without_printing_keys():
-    runbook = (ROOT / "docs" / "deploy-digitalocean-cloudflare.md").read_text(
+    runbook = (ROOT / "docs" / "deploy-vps-cloudflare.md").read_text(
         encoding="utf-8"
     )
 
@@ -186,14 +186,14 @@ def test_runbook_diagnoses_non_json_upstream_responses_without_printing_keys():
 
 
 def test_runbook_recreates_app_after_env_changes():
-    runbook = (ROOT / "docs" / "deploy-digitalocean-cloudflare.md").read_text(
+    runbook = (ROOT / "docs" / "deploy-vps-cloudflare.md").read_text(
         encoding="utf-8"
     )
 
     assert "后续修改 `.env` 后应用新参数" in runbook
     assert "docker compose restart" in runbook
     assert (
-        "docker compose -f compose.prod.yml -f compose.cloudflare.yml up -d --force-recreate app"
+        "docker compose $COMPOSE_FILES up -d --force-recreate app"
         in runbook
     )
     assert "ACCOUNT_MAX_INFLIGHT=10" in runbook
@@ -201,7 +201,7 @@ def test_runbook_recreates_app_after_env_changes():
 
 
 def test_runbook_uses_reproducible_2c2g_update_commands():
-    runbook = (ROOT / "docs" / "deploy-digitalocean-cloudflare.md").read_text(
+    runbook = (ROOT / "docs" / "deploy-vps-cloudflare.md").read_text(
         encoding="utf-8"
     )
 
@@ -211,8 +211,7 @@ def test_runbook_uses_reproducible_2c2g_update_commands():
         )
     ]
     assert "compose.4c8g.yml" not in update_section
-    assert "COMPOSE_FILES" in update_section  # explains why the old export is fragile
-    assert "export COMPOSE_FILES" not in update_section
+    assert "export COMPOSE_FILES='-f compose.prod.yml -f compose.cloudflare.yml'" in update_section
     assert "git pull --ff-only origin main" in update_section
     assert "build --pull app" in update_section
     assert "run --rm --no-deps app" in update_section
@@ -221,7 +220,7 @@ def test_runbook_uses_reproducible_2c2g_update_commands():
 
 
 def test_runbook_repairs_public_upload_permissions_without_exposing_database():
-    runbook = (ROOT / "docs" / "deploy-digitalocean-cloudflare.md").read_text(
+    runbook = (ROOT / "docs" / "deploy-vps-cloudflare.md").read_text(
         encoding="utf-8"
     )
 
@@ -234,7 +233,7 @@ def test_runbook_repairs_public_upload_permissions_without_exposing_database():
 
 
 def test_runbook_keeps_known_failures_in_one_troubleshooting_section():
-    runbook = (ROOT / "docs" / "deploy-digitalocean-cloudflare.md").read_text(
+    runbook = (ROOT / "docs" / "deploy-vps-cloudflare.md").read_text(
         encoding="utf-8"
     )
 
@@ -251,7 +250,7 @@ def test_runbook_keeps_known_failures_in_one_troubleshooting_section():
 
 
 def test_runbook_diagnoses_deploy_public_key_from_the_local_machine():
-    runbook = (ROOT / "docs" / "deploy-digitalocean-cloudflare.md").read_text(
+    runbook = (ROOT / "docs" / "deploy-vps-cloudflare.md").read_text(
         encoding="utf-8"
     )
     troubleshooting = runbook[runbook.index("## 12. 集中故障排查") :]
