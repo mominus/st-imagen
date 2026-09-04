@@ -753,14 +753,24 @@ class UserAuthService:
         await session.flush()
         return user, raw_token
 
-    async def _generate_linuxdo_username(self, session: AsyncSession, profile: dict) -> str:
-        """LINUX DO 用户名直接使用论坛用户 id（唯一且不可变）；极少数撞名时追加随机后缀。"""
-        base = str(profile.get("id") or "").strip() or "ldo_user"
+    async def _generate_linuxdo_username(
+        self,
+        session: AsyncSession,
+        profile: dict,
+        *,
+        current_user_id: Optional[str] = None,
+    ) -> str:
+        """Use the forum username, adding a suffix only when it is already occupied."""
+        linuxdo_id = str(profile.get("id") or "").strip()
+        base = str(profile.get("username") or "").strip() or f"linuxdo-{linuxdo_id}"
+        base = base[:64]
         for attempt in range(32):
-            candidate = base if attempt == 0 else f"{base[:31]}_{secrets.token_hex(2)}"
-            row = await session.execute(
-                select(User.username).where(User.username == candidate)
-            )
+            suffix = "" if attempt == 0 else f"_{secrets.token_hex(2)}"
+            candidate = f"{base[: 64 - len(suffix)]}{suffix}"
+            query = select(User.username).where(User.username == candidate)
+            if current_user_id:
+                query = query.where(User.id != current_user_id)
+            row = await session.execute(query)
             if row.scalar_one_or_none() is None:
                 return candidate
         raise RuntimeError("生成 LINUX DO 用户名失败，请重试")
@@ -791,10 +801,19 @@ class UserAuthService:
             row = await session.execute(select(User).where(User.linuxdo_id == linuxdo_id))
             user = row.scalar_one_or_none()
             if user is not None:
+                # Clear invitation-derived expiry before access validation so
+                # legacy LINUX DO users are not locked out when that invite
+                # reaches its old deadline. Manual disabled status still wins.
+                user.expires_at = None
                 self._ensure_user_can_access(user, now=now)
                 user.auth_kind = "linuxdo"
                 if linuxdo_username:
                     user.linuxdo_username = linuxdo_username
+                    # Repair legacy records whose public username was the
+                    # numeric forum id, and keep it aligned with the forum.
+                    user.username = await self._generate_linuxdo_username(
+                        session, profile, current_user_id=user.id
+                    )
                 if trust_level is not None:
                     user.linuxdo_trust_level = int(trust_level)
                 user.last_login_at = now
@@ -837,13 +856,16 @@ class UserAuthService:
                 linuxdo_id=linuxdo_id,
                 linuxdo_username=linuxdo_username,
                 linuxdo_trust_level=None if trust_level is None else int(trust_level),
-                daily_quota=max(0, int(invite.daily_quota or 0)),
+                # The invitation is only an admission credential. LINUX DO
+                # users receive the normal daily quota rather than its
+                # temporary/one-time quota.
+                daily_quota=self._default_user_daily_quota,
                 daily_used=0,
                 total_requests=0,
                 last_login_at=now,
                 in_flight=0,
                 max_inflight=max(1, int(invite.max_inflight or self._default_user_max_inflight)),
-                expires_at=self._normalize_expiry(invite.expires_at),
+                expires_at=None,
             )
             session.add(user)
             invite.used_count += 1

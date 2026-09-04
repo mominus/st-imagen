@@ -87,14 +87,37 @@ class ServiceTestCase(unittest.IsolatedAsyncioTestCase):
             await session.commit()
             assert token
             assert user.linuxdo_id == "4242"
-            assert user.username == "4242"
+            assert user.username == "Neo.User"
             assert user.linuxdo_username == "Neo.User"
             assert user.linuxdo_trust_level == 2
             assert user.auth_kind == "linuxdo"
-            assert user.daily_quota == 7
+            assert user.daily_quota == self._service._default_user_daily_quota
             assert user.max_inflight == 3
+            assert user.expires_at is None
             invite = await session.get(InviteCode, user.invite_code_id)
             assert invite.used_count == 1
+
+    async def test_linuxdo_registration_does_not_inherit_invite_expiry_or_quota(self) -> None:
+        code = await self._make_invite(max_uses=1, daily_quota=2)
+        async with self._factory() as session:
+            row = await session.execute(select(InviteCode))
+            invite = row.scalars().one()
+            invite.expires_at = utcnow_naive() + timedelta(days=1)
+            await session.commit()
+
+        async with self._factory() as session:
+            user, _ = await self._service.login_with_linuxdo(
+                session,
+                profile={"id": "9001", "username": "forum-user", "trust_level": 2},
+                invite_code=code,
+                ip_address=None,
+                user_agent=None,
+            )
+
+            assert user.username == "forum-user"
+            assert user.auth_kind == "linuxdo"
+            assert user.expires_at is None
+            assert user.daily_quota == self._service._default_user_daily_quota
 
     async def test_second_login_reuses_account_without_consuming_invite(self) -> None:
         code = await self._make_invite(max_uses=3)
@@ -117,6 +140,7 @@ class ServiceTestCase(unittest.IsolatedAsyncioTestCase):
             )
             await session.commit()
             assert second.id == first.id
+            assert second.username == "renamed"
             assert second.linuxdo_username == "renamed"
             assert second.linuxdo_trust_level == 3
             invite = await session.get(InviteCode, second.invite_code_id)
@@ -138,7 +162,7 @@ class ServiceTestCase(unittest.IsolatedAsyncioTestCase):
             session.add(
                 User(
                     id="occupied",
-                    username="4242",
+                    username="Neo.User",
                     password_hash="x",
                     status="active",
                 )
@@ -154,8 +178,8 @@ class ServiceTestCase(unittest.IsolatedAsyncioTestCase):
                 user_agent=None,
             )
             await session.commit()
-            assert user.username.startswith("4242_")
-            assert len(user.username) <= 36
+            assert user.username.startswith("Neo.User_")
+            assert len(user.username) <= 64
 
     async def test_disabled_bound_user_cannot_login(self) -> None:
         code = await self._make_invite()
@@ -318,7 +342,7 @@ class RouteTestCase(unittest.IsolatedAsyncioTestCase):
             row = await session.execute(select(User).where(User.auth_kind == "linuxdo"))
             user = row.scalars().one()
             assert user.linuxdo_id == "4242"
-            assert user.username == "4242"
+            assert user.username == "Neo.User"
             invite = await session.get(InviteCode, user.invite_code_id)
             assert invite.used_count == 1
 
