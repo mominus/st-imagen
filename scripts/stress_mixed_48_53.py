@@ -431,7 +431,6 @@ class StageRunner:
         stage_finished_wall = iso_utc()
         report = build_stage_report(self.stage, self.count, stage_started_wall, stage_finished_wall, stage_started_mono, results, self.snapshots, self.system_samples)
         report["database_generation_logs"] = query_generation_logs(self.db_path, self.stage_start_db, self.stage_end_db)
-        stamp = utc_stamp()
         (self.out_dir / f"stage_{self.stage}_{self.count}_tasks.json").write_text(json.dumps(results, ensure_ascii=False, indent=1), encoding="utf-8")
         (self.out_dir / f"stage_{self.stage}_{self.count}_runtime.json").write_text(json.dumps({"snapshots": self.snapshots, "system_samples": self.system_samples}, ensure_ascii=False, indent=1), encoding="utf-8")
         (self.out_dir / f"stage_{self.stage}_{self.count}_summary.json").write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")

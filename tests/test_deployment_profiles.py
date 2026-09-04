@@ -10,20 +10,22 @@ def _yaml(name: str) -> dict:
     return yaml.safe_load((ROOT / name).read_text(encoding="utf-8"))
 
 
-def test_4c8g_profile_relaxes_resources_without_adding_workers():
-    production_app = _yaml("compose.prod.yml")["services"]["app"]
-    services = _yaml("compose.4c8g.yml")["services"]
+def test_production_profile_matches_2c2g_resources_without_extra_override():
+    services = _yaml("compose.prod.yml")["services"]
     app = services["app"]
     nginx = services["nginx"]
 
+    assert not (ROOT / "compose.4c8g.yml").exists()
     assert app["environment"]["UVICORN_WORKERS"] == "1"
-    assert app["cpus"] == 3.2
-    assert app["mem_limit"] == "6g"
-    assert app["environment"]["HTTP_MAX_CONNECTIONS"] == "256"
-    assert app["environment"]["GENERATED_IMAGE_DOWNLOAD_CONCURRENCY"] == "64"
-    assert nginx["cpus"] == 0.6
-    assert nginx["mem_limit"] == "512m"
-    assert production_app["environment"]["ACCOUNT_MAX_INFLIGHT"] == "${ACCOUNT_MAX_INFLIGHT:-10}"
+    assert app["cpus"] == 1.6
+    assert app["mem_limit"] == "1400m"
+    assert app["memswap_limit"] == "1400m"
+    assert app["environment"]["HTTP_MAX_CONNECTIONS"] == "128"
+    assert app["environment"]["GENERATED_IMAGE_DOWNLOAD_CONCURRENCY"] == "32"
+    assert app["environment"]["DB_POOL_SIZE"] == "4"
+    assert app["environment"]["ACCOUNT_MAX_INFLIGHT"] == "${ACCOUNT_MAX_INFLIGHT:-10}"
+    assert nginx["cpus"] == 0.4
+    assert nginx["mem_limit"] == "300m"
 
 
 def test_cloudflare_profile_mounts_origin_certificate_and_https_proxy():
@@ -144,7 +146,10 @@ def test_runbook_secures_and_repairs_cloudflare_certificate_permissions():
     assert "sudo test -s deploy/certs/origin.key" in runbook
     assert "cannot load certificate" in runbook
     assert "Permission denied" in runbook
-    assert "docker compose $COMPOSE_FILES run --rm --no-deps nginx nginx -t" in runbook
+    assert (
+        "docker compose -f compose.prod.yml -f compose.cloudflare.yml run --rm --no-deps nginx nginx -t"
+        in runbook
+    )
     assert "root:root" in cert_readme
     assert "0644" in cert_readme
     assert "0600" in cert_readme
@@ -160,7 +165,10 @@ def test_runbook_repairs_nginx_temp_directory_capability_failure():
     assert "SETGID" in runbook
     assert "SETUID" in runbook
     assert "chmod 777" in runbook
-    assert "docker compose $COMPOSE_FILES up -d --force-recreate nginx" in runbook
+    assert (
+        "docker compose -f compose.prod.yml -f compose.cloudflare.yml up -d --force-recreate nginx"
+        in runbook
+    )
 
 
 def test_runbook_diagnoses_non_json_upstream_responses_without_printing_keys():
@@ -184,9 +192,32 @@ def test_runbook_recreates_app_after_env_changes():
 
     assert "后续修改 `.env` 后应用新参数" in runbook
     assert "docker compose restart" in runbook
-    assert "docker compose $COMPOSE_FILES up -d --force-recreate app" in runbook
+    assert (
+        "docker compose -f compose.prod.yml -f compose.cloudflare.yml up -d --force-recreate app"
+        in runbook
+    )
     assert "ACCOUNT_MAX_INFLIGHT=10" in runbook
     assert "已经存在且并发为 2 的账号不会" in runbook
+
+
+def test_runbook_uses_reproducible_2c2g_update_commands():
+    runbook = (ROOT / "docs" / "deploy-digitalocean-cloudflare.md").read_text(
+        encoding="utf-8"
+    )
+
+    update_section = runbook[
+        runbook.index("## 9. 日常更新、监控与备份") : runbook.index(
+            "## 10. 2C2G 资源确认与迁移恢复"
+        )
+    ]
+    assert "compose.4c8g.yml" not in update_section
+    assert "COMPOSE_FILES" in update_section  # explains why the old export is fragile
+    assert "export COMPOSE_FILES" not in update_section
+    assert "git pull --ff-only origin main" in update_section
+    assert "build --pull app" in update_section
+    assert "run --rm --no-deps app" in update_section
+    assert "alembic upgrade head" in update_section
+    assert "--force-recreate --remove-orphans app nginx" in update_section
 
 
 def test_runbook_repairs_public_upload_permissions_without_exposing_database():

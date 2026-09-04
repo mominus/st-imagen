@@ -102,6 +102,15 @@ class LoginThrottleTests(unittest.TestCase):
         throttle.record_failure("admin", now=2.0)
         self.assertEqual(throttle.check_locked("admin", now=3.0), 0.0)
 
+    def test_random_identity_tracking_is_bounded(self) -> None:
+        throttle = LoginThrottle(max_failures=2, lockout_seconds=60.0)
+        throttle.MAX_TRACKED_KEYS = 3
+
+        for index in range(10):
+            throttle.record_failure(f"user-{index}", now=1.0)
+
+        self.assertEqual(len(throttle._failures), 3)
+
 
 class ImmediateAdmissionTests(unittest.IsolatedAsyncioTestCase):
   async def test_gate_limits_true_concurrency(self) -> None:

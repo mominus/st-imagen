@@ -42,7 +42,7 @@ BASE_ENV = {
     "LINUXDO_OAUTH_ENABLED": "true",
     "USER_SESSION_SECURE": "false",
     "USER_SESSION_SAMESITE": "lax",
-    "USER_SESSION_COOKIE_NAME": "st_imagen_session",
+    "USER_SESSION_COOKIE_NAME": "imagen_session",
 }
 
 
@@ -312,7 +312,7 @@ class RouteTestCase(unittest.IsolatedAsyncioTestCase):
         )
         assert callback.status_code == 303
         assert callback.headers["location"] == "/"
-        assert "st_imagen_session=" in callback.headers["set-cookie"]
+        assert "imagen_session=" in callback.headers["set-cookie"]
 
         async with self._factory() as session:
             row = await session.execute(select(User).where(User.auth_kind == "linuxdo"))

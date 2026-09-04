@@ -32,7 +32,7 @@ USER_INFO_URL = "https://connect.linux.do/api/user"
 
 SETTING_LINUXDO_OAUTH_ENABLED = app_settings.SETTING_LINUXDO_OAUTH_ENABLED
 
-STATE_COOKIE_NAME = "st_imagen_oauth_state"
+STATE_COOKIE_NAME = "imagen_oauth_state"
 # 用户必须在 10 分钟内完成 connect.linux.do 的授权跳转，超时重新发起
 STATE_COOKIE_MAX_AGE = 600
 _UPSTREAM_TIMEOUT = httpx.Timeout(15.0, connect=10.0)
@@ -146,10 +146,16 @@ def decode_state_payload(raw: Optional[str]) -> Optional[Dict[str, str]]:
 
 
 def _cookie_common_kwargs() -> Dict[str, Any]:
+    same_site = (os.getenv("USER_SESSION_SAMESITE") or "lax").strip().lower() or "lax"
+    if same_site not in {"lax", "strict"}:
+        raise RuntimeError("USER_SESSION_SAMESITE 仅允许设置为 lax 或 strict")
+    secure_value = (os.getenv("USER_SESSION_SECURE") or "true").strip().lower()
+    if secure_value not in {"1", "true", "yes", "on", "0", "false", "no", "off"}:
+        raise RuntimeError("USER_SESSION_SECURE 必须是明确的布尔值")
     return {
         "httponly": True,
-        "secure": _env_flag("USER_SESSION_SECURE", "true"),
-        "samesite": (os.getenv("USER_SESSION_SAMESITE") or "lax").strip().lower() or "lax",
+        "secure": secure_value in {"1", "true", "yes", "on"},
+        "samesite": same_site,
         "domain": (os.getenv("USER_SESSION_DOMAIN") or "").strip() or None,
     }
 
