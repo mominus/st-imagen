@@ -224,6 +224,13 @@ _request_counts: Counter[tuple[str, str, int]] = Counter()
 _request_duration_seconds: Counter[tuple[str, str]] = Counter()
 
 
+def _metric_path(request: Request) -> str:
+    """Return a bounded-cardinality route label for request metrics."""
+    route = request.scope.get("route")
+    route_path = getattr(route, "path", None)
+    return str(route_path) if route_path else "__unmatched__"
+
+
 @app.middleware("http")
 async def cache_control_middleware(request: Request, call_next):
     started = time.monotonic()
@@ -249,8 +256,7 @@ async def cache_control_middleware(request: Request, call_next):
         "frame-ancestors 'none'; base-uri 'self'",
     )
     method = request.method
-    route = request.scope.get("route")
-    path = getattr(route, "path", request.url.path)
+    path = _metric_path(request)
     _request_counts[(method, path, response.status_code)] += 1
     _request_duration_seconds[(method, path)] += time.monotonic() - started
     return response

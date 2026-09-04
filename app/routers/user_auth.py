@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.database import User, get_session
 from app.services.deps import get_optional_user, require_user
+from app.services.guard import get_user_login_throttle
 from app.services.user_auth import (
     InvalidInviteCodeError,
     InvalidPasswordError,
@@ -188,6 +189,20 @@ async def login(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ):
+    throttle = get_user_login_throttle()
+    username_key = f"username:{get_user_auth_service().normalize_username(req.username)}"
+    ip_key = f"ip:{_client_ip(request) or 'unknown'}"
+    locked_remaining = max(
+        throttle.check_locked(username_key),
+        throttle.check_locked(ip_key),
+    )
+    if locked_remaining > 0:
+        retry_after = int(locked_remaining) + 1
+        return JSONResponse(
+            {"success": False, "message": f"失败次数过多，请 {retry_after} 秒后再试"},
+            status_code=429,
+            headers={"Retry-After": str(retry_after)},
+        )
     auth = get_user_auth_service()
     try:
         user, raw_token = await auth.authenticate(
@@ -198,8 +213,12 @@ async def login(
             user_agent=request.headers.get("user-agent"),
         )
     except (InvalidUserCredentialsError, UserDisabledError, UserExpiredError) as exc:
+        throttle.record_failure(username_key)
+        throttle.record_failure(ip_key)
         return JSONResponse({"success": False, "message": str(exc)}, status_code=401)
 
+    throttle.record_success(username_key)
+    throttle.record_success(ip_key)
     await session.commit()
     resp = JSONResponse({"success": True, "user": _user_to_dict(user)})
     auth.set_session_cookie(resp, raw_token)
