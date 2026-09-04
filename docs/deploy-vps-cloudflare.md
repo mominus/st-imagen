@@ -428,24 +428,42 @@ Cloudflare → **SSL/TLS → Overview** 设置为 **Full (strict)**，不要使�
 
 ## 7. 校验并启动 2C2G 部署
 
+不能在 app 启动前使用 `run --no-deps nginx nginx -t`：Nginx 解析配置时会立即解析
+`app:8001`，而 `--no-deps` 既不启动 app，也不会为一次性容器提供可解析的 app 服务，因而会报
+`host not found in upstream "app:8001"`。正确顺序是先构建和迁移，再启动 app，最后让 Compose
+带上依赖执行 Nginx 校验并启动正式 Nginx：
+
 ```bash
 cd /opt/st-imagen
 export COMPOSE_FILES='-f compose.prod.yml -f compose.cloudflare.yml'
+
+# 1. 检查 Compose 合并配置与证书权限
 docker compose $COMPOSE_FILES config --quiet
 docker compose $COMPOSE_FILES config > /tmp/st-imagen.compose.yml
 sudo stat -c '%U:%G %a %n' deploy/certs/origin.pem deploy/certs/origin.key
-docker compose $COMPOSE_FILES run --rm --no-deps nginx nginx -t
+
+# 2. 构建 app
 docker compose $COMPOSE_FILES build --pull app
+
+# 3. 在一次性 app 容器中执行数据库迁移
 docker compose $COMPOSE_FILES run --rm --no-deps app alembic upgrade head
-docker compose $COMPOSE_FILES up -d --force-recreate --remove-orphans app nginx
+
+# 4. 先启动 app；Nginx 校验需要通过 Compose 网络解析 app
+docker compose $COMPOSE_FILES up -d --force-recreate app
+
+# 5. 不加 --no-deps，让 Compose 确认 app 已健康后再校验 Nginx
+docker compose $COMPOSE_FILES run --rm nginx nginx -t
+
+# 6. 启动正式 Nginx，并清理已经从 Compose 删除的孤儿容器
+docker compose $COMPOSE_FILES up -d --force-recreate --remove-orphans nginx
+
 docker compose $COMPOSE_FILES ps
 docker compose $COMPOSE_FILES logs --tail=200 app nginx
 ```
 
-这组命令中，`config --quiet` 检查 Compose 合并结果，第二个 `config` 保存最终配置便于排查；
-`nginx -t` 在启动前检查 HTTPS 配置和证书；`build --pull app` 用最新基础镜像构建应用；
-`alembic upgrade head` 把数据库升级到当前代码需要的版本；`up` 重建 app/nginx 并清理已经从
-Compose 删除的孤儿容器；`ps` 和 `logs` 用于确认容器健康状态及启动错误。
+`run --rm nginx nginx -t` 不发布正式 Nginx 的 80/443 端口，只创建校验用的一次性容器；因为没有
+`--no-deps`，Compose 会按 `depends_on` 等待 app 健康并把校验容器接入同一网络。校验通过后才启动
+正式 Nginx。`ps` 和 `logs` 用于确认最终容器健康状态及启动错误。
 
 证书预期 `root:root 644`，私钥预期 `root:root 600`。Alembic 命令对新数据库和已有数据库都可重复安全执行，不要等容器启动后才补做迁移。
 
@@ -525,15 +543,22 @@ git pull --ff-only origin main
 docker compose $COMPOSE_FILES config --quiet
 docker compose $COMPOSE_FILES pull nginx
 docker compose $COMPOSE_FILES build --pull app
+
+# 迁移期间停止入口和旧 app，避免 SQLite 继续写入
+docker compose $COMPOSE_FILES stop nginx app
 docker compose $COMPOSE_FILES run --rm --no-deps app \
   alembic upgrade head
-docker compose $COMPOSE_FILES up -d --force-recreate --remove-orphans app nginx
+
+# 与首次部署相同：先启动 app，再校验并启动 Nginx
+docker compose $COMPOSE_FILES up -d --force-recreate app
+docker compose $COMPOSE_FILES run --rm nginx nginx -t
+docker compose $COMPOSE_FILES up -d --force-recreate --remove-orphans nginx
 docker compose $COMPOSE_FILES ps
 docker compose $COMPOSE_FILES logs --tail=100 app nginx
 curl -fsS "https://$DOMAIN/health/ready"
 ```
 
-这里显式写 `origin main`，避免本地分支没有 upstream、错误跟踪功能分支或远程默认分支变化时，裸 `git pull --ff-only` 拉错目标。各 Compose 命令的作用依次是：校验两份配置、更新 nginx 镜像、重新构建 app、在不启动依赖的临时 app 容器中迁移数据库、重建正式 app/nginx、检查状态与最近日志。迁移成功后才重建正式服务；nginx 配置或镜像有更新时也不会被漏掉。
+这里显式写 `origin main`，避免本地分支没有 upstream、错误跟踪功能分支或远程默认分支变化时，裸 `git pull --ff-only` 拉错目标。更新流程先完成配置检查、镜像拉取和构建，再停止入口与旧 app；因此构建失败不会造成停机。停止服务后迁移 SQLite，避免旧 app 并发写库；随后严格按“app → Nginx 校验 → 正式 Nginx”的顺序恢复服务，避免再次出现 upstream 域名无法解析的问题。
 
 常用排障：
 

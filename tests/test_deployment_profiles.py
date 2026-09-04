@@ -216,7 +216,34 @@ def test_runbook_uses_reproducible_2c2g_update_commands():
     assert "build --pull app" in update_section
     assert "run --rm --no-deps app" in update_section
     assert "alembic upgrade head" in update_section
-    assert "--force-recreate --remove-orphans app nginx" in update_section
+    assert "stop nginx app" in update_section
+    assert "up -d --force-recreate app" in update_section
+    assert "run --rm nginx nginx -t" in update_section
+    assert "up -d --force-recreate --remove-orphans nginx" in update_section
+    assert update_section.index("stop nginx app") < update_section.index("alembic upgrade head")
+    assert update_section.index("alembic upgrade head") < update_section.index(
+        "up -d --force-recreate app"
+    )
+    assert update_section.index("up -d --force-recreate app") < update_section.index(
+        "run --rm nginx nginx -t"
+    )
+
+
+def test_runbook_starts_app_before_testing_nginx_upstream_resolution():
+    runbook = (ROOT / "docs" / "deploy-vps-cloudflare.md").read_text(
+        encoding="utf-8"
+    )
+    startup = runbook[
+        runbook.index("## 7. 校验并启动 2C2G 部署") : runbook.index("## 8. 分层验收")
+    ]
+
+    assert 'host not found in upstream "app:8001"' in startup
+    assert "run --rm --no-deps nginx nginx -t" not in startup
+    assert "up -d --force-recreate app" in startup
+    assert "run --rm nginx nginx -t" in startup
+    assert startup.index("up -d --force-recreate app") < startup.index(
+        "run --rm nginx nginx -t"
+    )
 
 
 def test_runbook_repairs_public_upload_permissions_without_exposing_database():
