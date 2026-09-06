@@ -2802,6 +2802,22 @@ kbd {
   padding: 0;
 }
 
+.table-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 14px 18px;
+  border-top: 1px solid var(--admin-line);
+  color: var(--admin-ink-faint);
+  font-size: 13px;
+}
+
+.table-pagination .btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 /* —— 后台设置页表单 —— */
 .settings-form {
   display: grid;

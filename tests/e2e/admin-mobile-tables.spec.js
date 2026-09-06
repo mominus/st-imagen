@@ -148,7 +148,9 @@ async function stubAdminApi(page) {
   await page.route("**/api/admin/accounts", (route) => route.fulfill({ json: { items: ACCOUNTS } }));
   await page.route("**/api/admin/users", (route) => route.fulfill({ json: { items: USERS } }));
   await page.route("**/api/admin/invite-codes", (route) => route.fulfill({ json: { items: INVITES } }));
-  await page.route("**/api/admin/logs**", (route) => route.fulfill({ json: { items: LOGS } }));
+  await page.route("**/api/admin/logs**", (route) => route.fulfill({
+    json: { items: LOGS, total: LOGS.length, page: 1, page_size: 100, total_pages: 1 },
+  }));
   await page.route("**/api/admin/stats/overview", (route) => route.fulfill({ json: {} }));
   // 让驾驶舱聚合快照失败,走逐接口兜底路径,四张表各自渲染。
   await page.route("**/api/admin/dashboard/snapshot**", (route) =>

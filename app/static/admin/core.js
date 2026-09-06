@@ -46,6 +46,15 @@ const state = {
   users: [],
   invites: [],
   logs: [],
+  recentLogs: [],
+  logPagination: {
+    page: 1,
+    pageSize: 100,
+    total: 0,
+    totalPages: 1,
+    loading: false,
+    requestId: 0,
+  },
   refreshing: false,
   lastUpdatedAt: null,
   sync: {
@@ -647,7 +656,10 @@ function rerenderByFilterGroup(group) {
     renderInvitesTable();
     return;
   }
-  if (group === "logs") renderLogsTable();
+  if (group === "logs") {
+    state.logPagination.page = 1;
+    void refreshLogs({ page: 1 });
+  }
 }
 
 function resetFilterGroup(group) {

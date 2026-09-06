@@ -53,3 +53,19 @@ def test_admin_has_specified_invites_dated_log_cleanup_and_branded_confirm():
     assert "confirmAction(" in scripts
     assert "confirm(" not in scripts
     assert 'badgeHtml("exhausted", "warning")' in scripts
+
+
+def test_logs_use_server_side_filters_and_fixed_size_pagination():
+    html = ADMIN_HTML.read_text(encoding="utf-8")
+    resources = (STATIC_ROOT / "admin" / "resources.js").read_text(encoding="utf-8")
+
+    assert 'id="logsPrevPage"' in html
+    assert 'id="logsNextPage"' in html
+    assert 'id="logsPageSummary"' in html
+    assert "pageSize: 100" in (STATIC_ROOT / "admin" / "core.js").read_text(encoding="utf-8")
+    assert 'params.set("query"' in resources
+    assert 'params.set("status"' in resources
+    assert 'params.set("mode"' in resources
+    assert 'params.set("failure_category"' in resources
+    assert "filteredLogs" not in resources
+    assert "limit=200" not in resources

@@ -1459,19 +1459,68 @@ async def dashboard_snapshot(
 
 
 async def _recent_logs_payload(
-    session: AsyncSession, limit: int = 50, *, offset: int = 0, status: Optional[str] = None
+    session: AsyncSession,
+    limit: int = 50,
+    *,
+    offset: int = 0,
+    status: Optional[str] = None,
+    mode: Optional[str] = None,
+    failure_category: Optional[str] = None,
+    query: Optional[str] = None,
 ) -> dict:
     limit = max(1, min(500, int(limit)))
     offset = max(0, int(offset))
-    conditions = [GenerationLog.status == status] if status in {"success", "error"} else []
-    total = (await session.execute(select(func.count(GenerationLog.id)).where(*conditions))).scalar() or 0
-    # 左连接 Account 表以拿到账号名
-    rows = await session.execute(
+    conditions = []
+    if status in {"success", "error"}:
+        conditions.append(GenerationLog.status == status)
+    if mode in {"text2img", "img2img"}:
+        conditions.append(GenerationLog.mode == mode)
+    if failure_category in {
+        "capacity",
+        "account_config",
+        "reference_input",
+        "upstream",
+        "storage",
+        "other",
+    }:
+        conditions.append(GenerationLog.failure_category == failure_category)
+
+    normalized_query = str(query or "").strip()
+    if normalized_query:
+        # Treat %, _ and backslash as literal search text rather than allowing
+        # callers to turn them into SQL wildcard operators.
+        escaped = (
+            normalized_query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        )
+        pattern = f"%{escaped}%"
+        conditions.append(
+            or_(
+                GenerationLog.prompt_preview.ilike(pattern, escape="\\"),
+                User.username.ilike(pattern, escape="\\"),
+                Account.name.ilike(pattern, escape="\\"),
+                GenerationLog.model.ilike(pattern, escape="\\"),
+                GenerationLog.error_message.ilike(pattern, escape="\\"),
+            )
+        )
+
+    joined = (
         select(GenerationLog, Account.name, User.username)
         .outerjoin(Account, Account.id == GenerationLog.account_id)
         .outerjoin(User, User.id == GenerationLog.user_id)
         .where(*conditions)
-        .order_by(GenerationLog.timestamp.desc())
+    )
+    total_query = select(func.count(GenerationLog.id)).select_from(GenerationLog)
+    # The joined tables are only needed by free-text search. Avoid those
+    # lookups for ordinary page/status/mode/category counts on large tables.
+    if normalized_query:
+        total_query = total_query.outerjoin(
+            Account, Account.id == GenerationLog.account_id
+        ).outerjoin(User, User.id == GenerationLog.user_id)
+    total_query = total_query.where(*conditions)
+    total = (await session.execute(total_query)).scalar() or 0
+    rows = await session.execute(
+        joined
+        .order_by(GenerationLog.timestamp.desc(), GenerationLog.id.desc())
         .offset(offset)
         .limit(limit)
     )
@@ -1512,12 +1561,34 @@ async def _recent_logs_payload(
 async def recent_logs(
     payload=Depends(require_admin),
     session: AsyncSession = Depends(get_session),
-    limit: int = 50,
-    offset: int = Query(default=0, ge=0),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=100, ge=1, le=100),
     status: Optional[str] = Query(default=None, pattern="^(success|error)$"),
+    mode: Optional[str] = Query(default=None, pattern="^(text2img|img2img)$"),
+    failure_category: Optional[str] = Query(
+        default=None,
+        pattern="^(capacity|account_config|reference_input|upstream|storage|other)$",
+    ),
+    query: Optional[str] = Query(default=None, max_length=200),
 ):
     del payload
-    return await _recent_logs_payload(session, limit, offset=offset, status=status)
+    offset = (page - 1) * page_size
+    result = await _recent_logs_payload(
+        session,
+        page_size,
+        offset=offset,
+        status=status,
+        mode=mode,
+        failure_category=failure_category,
+        query=query,
+    )
+    total_pages = max(1, (result["total"] + page_size - 1) // page_size)
+    return {
+        **result,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
+    }
 
 
 @router.delete("/logs")

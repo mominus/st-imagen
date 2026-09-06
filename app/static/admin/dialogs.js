@@ -457,6 +457,7 @@ async function copyInviteResults() {
 }
 
 function bindFilters() {
+  let logSearchTimer = null;
   $("#accountSearchInput").addEventListener("input", (event) => {
     state.filters.accounts.query = event.currentTarget.value;
     renderAccountsTable();
@@ -494,19 +495,23 @@ function bindFilters() {
 
   $("#logSearchInput").addEventListener("input", (event) => {
     state.filters.logs.query = event.currentTarget.value;
-    renderLogsTable();
+    window.clearTimeout(logSearchTimer);
+    logSearchTimer = window.setTimeout(() => refreshLogs({ page: 1 }), 300);
   });
   $("#logStatusFilter").addEventListener("change", (event) => {
     state.filters.logs.status = event.currentTarget.value;
-    renderLogsTable();
+    refreshLogs({ page: 1 });
   });
   $("#logModeFilter").addEventListener("change", (event) => {
     state.filters.logs.mode = event.currentTarget.value;
-    renderLogsTable();
+    refreshLogs({ page: 1 });
   });
   $("#logFailureCategoryFilter").addEventListener("change", (event) => {
     state.filters.logs.category = event.currentTarget.value;
-    if (event.currentTarget.value !== "all") state.filters.logs.status = "error";
-    renderLogsTable();
+    if (event.currentTarget.value !== "all") {
+      state.filters.logs.status = "error";
+      $("#logStatusFilter").value = "error";
+    }
+    refreshLogs({ page: 1 });
   });
 }

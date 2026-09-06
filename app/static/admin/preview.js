@@ -187,7 +187,7 @@ async function refreshDashboardSnapshot(period = state.dashboardPeriod) {
     state.runtimeStatus = data.runtime_status || null;
     state.runtimeConfig = data.runtime_config || state.runtimeConfig;
     state.runtimeMetricsUpdatedAt = new Date();
-    state.logs = Array.isArray(data.recent_logs) ? data.recent_logs : [];
+    state.recentLogs = Array.isArray(data.recent_logs) ? data.recent_logs : [];
     return true;
   } catch (err) {
     if (requestId !== state.dashboardAnalyticsRequestId || err?.name === "AbortError") return false;
@@ -291,6 +291,7 @@ async function refreshAll() {
           refreshAccounts(),
           refreshUsers(),
           refreshInvites(),
+          refreshLogs(),
           refreshSettings(),
         ])),
       ];
