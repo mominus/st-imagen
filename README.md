@@ -173,7 +173,7 @@ docker compose -f compose.prod.yml up -d --build
 docker compose -f compose.prod.yml ps
 ```
 
-`data/` 是唯一需要持久化的目录，包含 SQLite 数据库和上传/生成图片；压测报告、临时图片、Python 缓存和本地虚拟环境不属于部署内容。生产环境不要使用 `compose.vps-stress.yml`，该文件只用于受限容器压测。当前 Compose 暴露 HTTP `80` 端口，HTTPS 证书应由云 LB 或外层反向代理负责；启用 `USER_SESSION_SECURE=true` 时，生产访问必须经过 HTTPS。
+`data/` 是唯一需要持久化的目录，包含 SQLite 数据库和上传/生成图片。它由部署命令创建并被 Git 整体忽略，仓库不会跟踪其中的占位文件或运行数据，因此生产环境可安全保持 `10001:10001`、mode `750`。压测报告、临时图片、Python 缓存和本地虚拟环境不属于部署内容。生产环境不要使用 `compose.vps-stress.yml`，该文件只用于受限容器压测。当前 Compose 暴露 HTTP `80` 端口，HTTPS 证书应由云 LB 或外层反向代理负责；启用 `USER_SESSION_SECURE=true` 时，生产访问必须经过 HTTPS。
 
 ### 数据库迁移与备份
 

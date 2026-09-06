@@ -5,13 +5,9 @@ __pycache__/
 venv/
 node_modules/
 .env
-data/*.db
-data/*.db-journal
-data/*.db-wal
-data/*.db-shm
-data/backups/
-data/stress_reports/
-data/uploads/
+# Runtime state is created by deployment/startup and must never be traversed by
+# Git. Production deliberately makes this directory inaccessible to deploy.
+data/
 *.log
 .pytest_cache/
 .DS_Store

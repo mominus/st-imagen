@@ -57,6 +57,13 @@ def test_production_image_contains_migration_and_backup_tools():
     assert "COPY scripts ./scripts" in dockerfile
 
 
+def test_runtime_data_directory_is_fully_untracked():
+    ignore_lines = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+
+    assert "data/" in ignore_lines
+    assert not (ROOT / "data" / ".gitkeep").exists()
+
+
 def test_runbook_uses_ssh_key_as_the_only_normal_deployment_path():
     runbook = (ROOT / "docs" / "deploy-vps-cloudflare.md").read_text(
         encoding="utf-8"
@@ -257,6 +264,10 @@ def test_runbook_repairs_public_upload_permissions_without_exposing_database():
     assert "sudo find data/uploads -type f -exec chmod 644 {} +" in runbook
     assert "exec --user 101 nginx" in runbook
     assert "不要对整个 `data` 执行 `chmod -R 755`" in runbook
+    assert "data/.gitkeep: Permission denied" in runbook
+    assert "git ls-files data" in runbook
+    assert "sudo chown deploy:deploy data" in runbook
+    assert "sudo chown -R 10001:10001 data" in runbook
 
 
 def test_runbook_keeps_known_failures_in_one_troubleshooting_section():

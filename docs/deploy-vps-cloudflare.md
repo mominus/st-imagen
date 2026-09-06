@@ -236,6 +236,8 @@ git pull --ff-only origin main
 ```
 
 创建目录时一次使用最终正确权限：`data` 保护数据库，只有公开 uploads 允许 nginx 读取。
+仓库通过 `.gitignore` 忽略整个 `data/`，不再跟踪 `data/.gitkeep` 或任何运行数据；因此后续
+`git status`、`git fetch` 和 `git pull` 不需要进入这个受保护目录。
 
 ```bash
 mkdir -p data/uploads/generated data/backups deploy/certs
@@ -664,6 +666,35 @@ find /opt/st-imagen -maxdepth 3 -type d -name .git -print
 第 4 节重新克隆。已有 `.env`、证书或数据时先备份，不能直接 `rm -rf`。
 
 ### 12.4 `data` 权限或图片 `Permission denied`
+
+#### 从仍跟踪 `data/.gitkeep` 的旧版本执行第一次更新
+
+旧版本把 `data/.gitkeep` 纳入 Git，同时又把 `data/` 设为 `10001:10001`、mode `750`；这会让
+deploy 无法检查被跟踪文件，导致 `data/.gitkeep: Permission denied` 或
+`warning: could not open directory 'data/': Permission denied`。仅这一次，先把目录和占位文件临时
+交给 deploy，拉取删除 `.gitkeep` 的新版本，再立即恢复生产权限：
+
+```bash
+cd /opt/st-imagen
+export COMPOSE_FILES='-f compose.prod.yml -f compose.cloudflare.yml'
+docker compose $COMPOSE_FILES stop nginx app
+sudo chown deploy:deploy data
+sudo chmod 755 data
+sudo chown deploy:deploy data/.gitkeep 2>/dev/null || true
+git fetch origin --prune
+git switch main
+git pull --ff-only origin main
+sudo chown -R 10001:10001 data
+sudo chmod 750 data
+sudo find data/uploads -type d -exec chmod 755 {} +
+sudo find data/uploads -type f -exec chmod 644 {} +
+docker compose $COMPOSE_FILES up -d --force-recreate app
+docker compose $COMPOSE_FILES run --rm nginx nginx -t
+docker compose $COMPOSE_FILES up -d --force-recreate nginx
+```
+
+更新后用 `git ls-files data` 检查，预期没有输出。以后不要再临时修改权限；Git 已完全忽略
+`data/`，可永久保持 app UID 10001 所有和 mode `750`。
 
 如果仅在 deploy Shell 执行普通
 `ls -ldn data data/uploads data/uploads/generated` 时看到
