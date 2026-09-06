@@ -219,6 +219,9 @@ class GenerationLog(Base):
     __table_args__ = (
         Index("ix_generation_logs_timestamp_status", "timestamp", "status"),
         Index("ix_generation_logs_timestamp_model", "timestamp", "model"),
+        Index("ix_generation_logs_status_timestamp", "status", "timestamp"),
+        Index("ix_generation_logs_mode_timestamp", "mode", "timestamp"),
+        Index("ix_generation_logs_failure_category_timestamp", "failure_category", "timestamp"),
     )
 
     id = Column(String(36), primary_key=True)
@@ -399,6 +402,12 @@ async def _ensure_indexes(conn) -> None:
         "ON generation_logs (timestamp, status)",
         "CREATE INDEX IF NOT EXISTS ix_generation_logs_timestamp_model "
         "ON generation_logs (timestamp, model)",
+        "CREATE INDEX IF NOT EXISTS ix_generation_logs_status_timestamp "
+        "ON generation_logs (status, timestamp)",
+        "CREATE INDEX IF NOT EXISTS ix_generation_logs_mode_timestamp "
+        "ON generation_logs (mode, timestamp)",
+        "CREATE INDEX IF NOT EXISTS ix_generation_logs_failure_category_timestamp "
+        "ON generation_logs (failure_category, timestamp)",
         # 老库补建的 users.linuxdo_id 唯一索引；SQLite 唯一索引允许多个 NULL，
         # 未绑定 LINUX DO 的账号不受影响。新库由模型 unique=True 建同名唯一索引。
         "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_linuxdo_id "

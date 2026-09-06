@@ -90,6 +90,12 @@ document.addEventListener("DOMContentLoaded", () => {
     await refreshLogs();
     renderInsightPanels();
   });
+  $("#logsPrevPage").addEventListener("click", () => {
+    if (state.logPagination.page > 1) refreshLogs({ page: state.logPagination.page - 1 });
+  });
+  $("#logsNextPage").addEventListener("click", () => {
+    if (state.logPagination.page < state.logPagination.totalPages) refreshLogs({ page: state.logPagination.page + 1 });
+  });
   $("#deleteLogsBeforeBtn").addEventListener("click", (event) => deleteLogsBefore(event.currentTarget));
 
   $("#accountModalCancel").addEventListener("click", closeAccountModal);

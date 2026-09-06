@@ -942,21 +942,6 @@ async function deleteAllInvites(button) {
   }
 }
 
-function filteredLogs() {
-  const query = state.filters.logs.query.trim().toLowerCase();
-  return state.logs.filter((log) => {
-    const matchesQuery =
-      !query ||
-      [log.prompt_preview, log.username, log.account_name, log.model, log.error_message]
-        .filter(Boolean)
-        .some((value) => String(value).toLowerCase().includes(query));
-    const matchesStatus = state.filters.logs.status === "all" || log.status === state.filters.logs.status;
-    const matchesMode = state.filters.logs.mode === "all" || log.mode === state.filters.logs.mode;
-    const matchesCategory = state.filters.logs.category === "all" || log.failure_category === state.filters.logs.category;
-    return matchesQuery && matchesStatus && matchesMode && matchesCategory;
-  });
-}
-
 function renderLogRow(log) {
   const statusBadge = log.status === "success"
     ? badgeHtml("成功", "success", "badge-compact")
@@ -1025,45 +1010,78 @@ function bindLogActions(items) {
 function renderLogsTable() {
   const tbody = $("#logsTable tbody");
   const summary = $("#logsSummary");
-  const items = filteredLogs();
-  const success = state.logs.filter((item) => item.status === "success").length;
-  const error = state.logs.filter((item) => item.status === "error").length;
+  const items = state.logs;
+  const pagination = state.logPagination;
+  const hasFilters = logFilterChips().length > 0;
   renderToolbarMeta(
     "logsFilterMeta",
     "日志",
     items.length,
-    state.logs.length,
+    pagination.total,
     logFilterChips(),
     "logs",
     "支持搜索与筛选。",
   );
   if (summary) {
-    summary.textContent = `当前缓存 ${fmtNumber(state.logs.length)} 条日志，成功 ${fmtNumber(success)}，失败 ${fmtNumber(error)}。`;
+    summary.textContent = `共 ${fmtNumber(pagination.total)} 条 · 第 ${fmtNumber(pagination.page)}/${fmtNumber(pagination.totalPages)} 页`;
   }
+  const pageSummary = $("#logsPageSummary");
+  if (pageSummary) pageSummary.textContent = `共 ${fmtNumber(pagination.total)} 条 · 第 ${fmtNumber(pagination.page)}/${fmtNumber(pagination.totalPages)} 页`;
+  const previous = $("#logsPrevPage");
+  const next = $("#logsNextPage");
+  if (previous) previous.disabled = pagination.loading || pagination.page <= 1;
+  if (next) next.disabled = pagination.loading || pagination.page >= pagination.totalPages;
 
-  if (!state.logs.length) {
-    tbody.innerHTML = renderEmptyRow(7, "暂无日志。", "生成完成后，这里会显示最近请求。");
-    return;
-  }
   if (!items.length) {
-    tbody.innerHTML = renderEmptyRow(7, "没有匹配结果。", "尝试放宽筛选条件。");
+    tbody.innerHTML = hasFilters
+      ? renderEmptyRow(7, "没有匹配结果。", "尝试放宽筛选条件。")
+      : renderEmptyRow(7, "暂无日志。", "生成完成后，这里会显示请求记录。");
     return;
   }
   tbody.innerHTML = items.map(renderLogRow).join("");
   bindLogActions(items);
 }
 
-async function refreshLogs() {
+async function refreshLogs({ page = state.logPagination.page } = {}) {
   const tbody = $("#logsTable tbody");
-  tbody.innerHTML = renderEmptyRow(7, "日志加载中…", "正在同步最近生成记录。");
+  const requestId = state.logPagination.requestId + 1;
+  state.logPagination.requestId = requestId;
+  state.logPagination.loading = true;
+  renderLogsTable();
+  tbody.innerHTML = renderEmptyRow(7, "日志加载中…", "正在同步生成记录。");
   try {
-    const data = await api("/api/admin/logs?limit=200");
+    const filters = state.filters.logs;
+    const params = new URLSearchParams({
+      page: String(Math.max(1, Number(page) || 1)),
+      page_size: String(state.logPagination.pageSize),
+    });
+    if (filters.query.trim()) params.set("query", filters.query.trim());
+    if (filters.status !== "all") params.set("status", filters.status);
+    if (filters.mode !== "all") params.set("mode", filters.mode);
+    if (filters.category !== "all") params.set("failure_category", filters.category);
+    const data = await api(`/api/admin/logs?${params.toString()}`);
+    if (requestId !== state.logPagination.requestId) return false;
+    const total = Math.max(0, Number(data.total) || 0);
+    const totalPages = Math.max(1, Number(data.total_pages) || Math.ceil(total / state.logPagination.pageSize));
+    if (page > totalPages) {
+      state.logPagination.loading = false;
+      return refreshLogs({ page: totalPages });
+    }
     state.logs = Array.isArray(data.items) ? data.items : [];
+    state.logPagination.page = Math.max(1, Number(data.page) || Number(page) || 1);
+    state.logPagination.total = total;
+    state.logPagination.totalPages = totalPages;
+    state.logPagination.loading = false;
+    if (state.logPagination.page === 1 && logFilterChips().length === 0) {
+      state.recentLogs = state.logs.slice(0, 20);
+    }
     renderLogsTable();
     renderInsightPanels();
     return true;
   } catch (err) {
+    if (requestId !== state.logPagination.requestId) return false;
     state.logs = [];
+    state.logPagination.loading = false;
     renderToolbarMeta(
       "logsFilterMeta",
       "日志",

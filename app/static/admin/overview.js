@@ -3,7 +3,7 @@ function deriveMetrics() {
   const accounts = state.accounts;
   const users = state.users;
   const invites = state.invites;
-  const logs = state.logs;
+  const logs = state.recentLogs;
   const overview = state.overview || {};
 
   const totalAccounts = accounts.length || overview.accounts?.total || 0;
@@ -361,7 +361,7 @@ function renderDashboardPanels(metrics) {
       activeUsers: metrics.activeUsers,
       totalUsers: metrics.totalUsers,
     },
-    recentActivity: [...state.logs].sort((a, b) => (parseApiDate(b.timestamp)?.getTime() || 0) - (parseApiDate(a.timestamp)?.getTime() || 0)).slice(0, 6),
+    recentActivity: [...state.recentLogs].sort((a, b) => (parseApiDate(b.timestamp)?.getTime() || 0) - (parseApiDate(a.timestamp)?.getTime() || 0)).slice(0, 6),
   };
   state.dashboardMetrics = dashboard;
   renderDashboardKpis(dashboard);
