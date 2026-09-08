@@ -45,8 +45,8 @@ class STError(Exception):
         request_id: Optional[str] = None,
         upstream_started: bool = False,
     ) -> None:
-        # Error messages are public API data; remove arbitrary image/CDN URLs
-        # as well as the upstream brand/domain before exposing them.
+        # Error messages are public API data. Preserve useful third-party URLs,
+        # but remove the upstream provider's brand/domain before exposing them.
         self.message = redact_upstream_event_text(message)
         super().__init__(self.message)
         self.status_code = status_code
