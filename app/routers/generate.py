@@ -120,28 +120,15 @@ def _looks_like_error(s: str) -> bool:
 
 
 def _concise_upstream_error(text: str) -> str:
-    """从上游完整错误中提取最关键的一句给前端展示。
+    """移除节点包装前缀，并将完整的安全错误信息交给前端展示。
 
     示例输入:
       "Error in Node **Image-to-Image Transform** (`action-3`): Network or HTTP error
        during image transformation: Client error '403 Forbidden' for url 'https://...'
        For more information check: https://developer.mozilla.org/..."
-    示例输出:
-      "Network or HTTP error during image transformation: Client error '403 Forbidden'
-       for url 'https://...'"
+    示例输出会保留冒号后的全部信息和非上游品牌 URL。
     """
-    s = text.strip()
-    # 去掉 markdown 加粗 / 反引号
-    s = re.sub(r"\*\*", "", s)
-    s = re.sub(r"`", "", s)
-    # 去掉 "For more information check: ..." 行（含其后所有内容）
-    s = re.sub(r"\s*For more information check:.*$", "", s, flags=re.DOTALL)
-    s = s.strip()
-    # 若形如 "Error in Node ... (...): <core>"，取冒号之后的核心
-    m = re.search(r"Error in Node[^:]*:\s*(.+)", s, flags=re.DOTALL)
-    if m:
-        return redact_upstream_event_text(m.group(1).strip())
-    return redact_upstream_event_text(s)
+    return redact_upstream_event_text(text.strip())
 
 
 def _is_zero_stage_failure(total_nodes: Optional[int], completed_nodes: Optional[int]) -> bool:

@@ -58,13 +58,43 @@ class UpstreamRedactionTests(unittest.TestCase):
 
         self.assert_upstream_identifiers_are_hidden(error.message)
         self.assert_upstream_identifiers_are_hidden(error.payload)
-        self.assertNotIn("https://", error.message)
+        self.assertEqual(error.message, "Upstream HTTP 502 from https://Upstream")
 
-    def test_event_text_hides_all_http_urls(self) -> None:
+    def test_event_text_preserves_non_provider_urls(self) -> None:
         source = '{"progress_data":{"current_node":"x"},"outputs":{"url":"https://cdn.example/image.png"},"text":"see http://other.example/run"}'
 
         redacted = redact_upstream_event_text(source)
 
-        self.assertNotIn("http://", redacted)
-        self.assertNotIn("https://", redacted)
-        self.assertIn("<hidden-url>", redacted)
+        self.assertIn("https://cdn.example/image.png", redacted)
+        self.assertIn("http://other.example/run", redacted)
+        self.assertNotIn("hidden-url", redacted)
+
+    def test_event_text_strips_node_prefix_and_keeps_complete_error(self) -> None:
+        source = (
+            "Error in Node **Image to Image** (`action-1`): Network or HTTP error: "
+            "Server error '503 Service Unavailable' for url "
+            "'https://generativelanguage.googleapis.com/v1beta/models/example'\n"
+            "For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/503"
+        )
+
+        redacted = redact_upstream_event_text(source)
+
+        self.assertNotIn("Error in Node", redacted)
+        self.assertTrue(redacted.startswith("Network or HTTP error:"))
+        self.assertIn("https://generativelanguage.googleapis.com/", redacted)
+        self.assertIn("https://developer.mozilla.org/", redacted)
+
+    def test_event_text_replaces_provider_domains_and_email_without_hiding_urls(self) -> None:
+        provider = "sta" + "ckai"
+        source = (
+            f"See https://api.{provider}.com/run and https://sb.{provider.replace('ai', '-ai')}.com/x; "
+            f"contact support@{provider}.com or support@{provider.replace('ai', '-ai')}.com"
+        )
+
+        redacted = redact_upstream_event_text(source)
+
+        self.assert_upstream_identifiers_are_hidden(redacted)
+        self.assertEqual(
+            redacted,
+            "See https://Upstream/run and https://Upstream/x; contact Upstream or Upstream",
+        )

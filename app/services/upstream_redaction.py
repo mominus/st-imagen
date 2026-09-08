@@ -17,7 +17,7 @@ _UPSTREAM_SHORT_NAME_RE = re.compile(r"(?i)(?<![a-z0-9])st(?=$|[^a-z0-9])")
 _UPSTREAM_SUPPORT_EMAIL_RE = re.compile(
     r"(?i)\bsupport@" + "sta" + r"ck-?ai\.com\b"
 )
-_HTTP_URL_RE = re.compile(r"(?i)https?://[^\s\"'<>]+")
+_NODE_ERROR_PREFIX_RE = re.compile(r"(?is)^\s*Error\s+in\s+Node\b[^:]*:\s*")
 
 
 def redact_upstream_text(value: Any) -> str:
@@ -27,6 +27,13 @@ def redact_upstream_text(value: Any) -> str:
     text = _UPSTREAM_DOMAIN_RE.sub("Upstream", text)
     text = _UPSTREAM_NAME_RE.sub("Upstream", text)
     return _UPSTREAM_SHORT_NAME_RE.sub("Upstream", text)
+
+
+def _redact_public_event_text(value: Any) -> str:
+    """清理事件文本中的节点包装前缀和上游品牌，但保留诊断信息。"""
+    text = str(value or "")
+    text = _NODE_ERROR_PREFIX_RE.sub("", text, count=1)
+    return redact_upstream_text(text)
 
 
 def redact_upstream_data(value: Any) -> Any:
@@ -46,15 +53,9 @@ def redact_upstream_data(value: Any) -> Any:
 
 
 def redact_upstream_event_data(value: Any) -> Any:
-    """脱敏可发送给浏览器的上游事件，并移除所有 HTTP(S) URL。
-
-    普通错误日志仍保留脱敏后的 URL 结构，便于排障；SSE 进度事件则不应
-    把图片 CDN、运行详情或其他上游链接交给用户，因此这里统一替换为
-    ``<hidden-url>``。
-    """
+    """递归脱敏浏览器事件，同时保留不含上游品牌的完整诊断信息。"""
     if isinstance(value, str):
-        text = redact_upstream_text(value)
-        return _HTTP_URL_RE.sub("<hidden-url>", text)
+        return _redact_public_event_text(value)
     if isinstance(value, dict):
         return {
             redact_upstream_event_data(key) if isinstance(key, str) else key: redact_upstream_event_data(item)
@@ -68,7 +69,7 @@ def redact_upstream_event_data(value: Any) -> Any:
 
 
 def redact_upstream_event_text(value: Any) -> str:
-    """返回不含任何 HTTP(S) URL 的 SSE 上游事件文本。"""
+    """返回不含上游品牌、且保留第三方 URL 的 SSE 上游事件文本。"""
     text = str(value or "")
     try:
         parsed = json.loads(text)
