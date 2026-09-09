@@ -69,3 +69,14 @@ def test_logs_use_server_side_filters_and_fixed_size_pagination():
     assert 'params.set("failure_category"' in resources
     assert "filteredLogs" not in resources
     assert "limit=200" not in resources
+
+
+def test_users_default_to_generation_count_sort_and_announcements_have_management_ui():
+    html = ADMIN_HTML.read_text(encoding="utf-8")
+    resources = (STATIC_ROOT / "admin" / "resources.js").read_text(encoding="utf-8")
+    settings = (STATIC_ROOT / "admin" / "settings.js").read_text(encoding="utf-8")
+
+    assert "Number(b.total_requests || 0) - Number(a.total_requests || 0)" in resources
+    assert 'id="announcementTitleInput"' in html
+    assert 'id="adminAnnouncementList"' in html
+    assert 'api("/api/admin/announcements")' in settings

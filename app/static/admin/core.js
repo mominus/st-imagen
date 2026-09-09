@@ -46,6 +46,8 @@ const state = {
   users: [],
   invites: [],
   logs: [],
+  announcements: [],
+  announcementEditingId: null,
   recentLogs: [],
   logPagination: {
     page: 1,
