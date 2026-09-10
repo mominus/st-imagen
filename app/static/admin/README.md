@@ -9,8 +9,9 @@ routes. `admin.html` is the single source of truth for load order:
 3. `resources.js` — account, user, invite, and generation-log tables.
 4. `preview.js` — log preview plus dashboard/resource refresh orchestration.
 5. `settings.js` — retention, storage, and runtime settings.
-6. `dialogs.js` — account, user, invite dialogs, imports, and table filters.
-7. `bootstrap.js` — DOM event binding and application startup.
+6. `announcements.js` — announcement publishing, editing, and deletion.
+7. `dialogs.js` — account, user, invite dialogs, imports, and table filters.
+8. `bootstrap.js` — DOM event binding and application startup.
 
 Keep declarations at top level and preserve this dependency order unless the
 console is migrated to native modules or a bundled module graph. New behavior

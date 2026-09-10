@@ -10,6 +10,7 @@ EXPECTED_ADMIN_SCRIPTS = [
     "/static/admin/resources.js",
     "/static/admin/preview.js",
     "/static/admin/settings.js",
+    "/static/admin/announcements.js",
     "/static/admin/dialogs.js",
     "/static/admin/bootstrap.js",
 ]
@@ -74,12 +75,14 @@ def test_logs_use_server_side_filters_and_fixed_size_pagination():
 def test_users_default_to_generation_count_sort_and_announcements_have_management_ui():
     html = ADMIN_HTML.read_text(encoding="utf-8")
     resources = (STATIC_ROOT / "admin" / "resources.js").read_text(encoding="utf-8")
-    settings = (STATIC_ROOT / "admin" / "settings.js").read_text(encoding="utf-8")
+    announcements = (STATIC_ROOT / "admin" / "announcements.js").read_text(encoding="utf-8")
 
     assert "Number(b.total_requests || 0) - Number(a.total_requests || 0)" in resources
     assert 'id="announcementTitleInput"' in html
     assert 'id="adminAnnouncementList"' in html
-    assert 'api("/api/admin/announcements")' in settings
+    assert 'id="announcementsPage"' in html
+    assert 'data-page-link="announcements"' in html
+    assert 'api("/api/admin/announcements")' in announcements
 
 
 def test_public_announcements_require_explicit_read_confirmation_without_polling():
@@ -94,3 +97,17 @@ def test_public_announcements_require_explicit_read_confirmation_without_polling
     assert "setInterval(loadAnnouncements" not in app_js
     close_body = app_js.split("function closeAnnouncements()", 1)[1].split("}\n", 1)[0]
     assert "localStorage.setItem" not in close_body
+
+
+def test_announcement_page_and_public_account_menu_are_responsive_and_separate():
+    admin_html = ADMIN_HTML.read_text(encoding="utf-8")
+    public_html = (STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+    styles = (STATIC_ROOT / "style.css").read_text(encoding="utf-8")
+
+    assert admin_html.index('id="announcementsPage"') > admin_html.index('id="settingsPage"')
+    assert '/static/admin/announcements.js' in admin_html
+    assert "grid-auto-columns: minmax(58px, 1fr)" in styles
+    assert "#announcementModal .announcement-modal { width: min(820px, 100%)" in styles
+    assert 'id="userMenu"' in public_html
+    assert public_html.index('id="userMenu"') > public_html.index('id="themeToggle"')
+    assert 'id="userLogoutBtn"' in public_html.split('id="userMenu"', 1)[1].split("</details>", 1)[0]
