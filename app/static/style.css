@@ -274,6 +274,28 @@ button {
   gap: 10px;
 }
 
+.announcement-button { position: relative; display: grid; place-items: center; width: 38px; height: 38px; padding: 0; border: 1px solid var(--line); border-radius: 50%; color: var(--paper-dim); background: transparent; cursor: pointer; }
+.announcement-button svg { width: 18px; height: 18px; }
+.announcement-badge { position: absolute; top: -5px; right: -7px; min-width: 18px; height: 18px; padding: 0 5px; border: 2px solid var(--ink); border-radius: 10px; background: #e5484d; color: #fff; font: 600 10px/14px Inter, sans-serif; text-align: center; }
+.announcement-modal { width: min(680px, 100%); }
+.announcement-modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.announcement-timeline { display: grid; gap: 0; margin-top: 20px; }
+.announcement-item { position: relative; padding: 0 0 24px 24px; border-left: 1px solid var(--line-strong); }
+.announcement-item::before { content: ""; position: absolute; left: -5px; top: 5px; width: 9px; height: 9px; border-radius: 50%; background: var(--paper-muted); }
+.announcement-item.is-unread::before { background: var(--accent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 18%, transparent); }
+.announcement-item time { color: var(--paper-muted); font-size: 12px; }
+.announcement-item h4 { margin: 5px 0 8px; font-size: 18px; }
+.announcement-item p { margin: 0; color: var(--paper-dim); line-height: 1.7; overflow-wrap: anywhere; }
+.announcement-modal-actions { display: flex; justify-content: flex-end; padding-top: 4px; }
+.announcement-modal-actions .generate-btn { width: auto; min-width: 132px; padding: 11px 18px; }
+
+.announcement-admin-form { display: grid; gap: 12px; }
+.announcement-admin-form input[type="text"], .announcement-admin-form > input, .announcement-admin-form textarea { width: 100%; padding: 11px 12px; border: 1px solid var(--admin-line); border-radius: 7px; color: var(--admin-ink); background: var(--admin-surface); font: inherit; }
+.announcement-admin-list { display: grid; gap: 12px; margin-top: 22px; }
+.announcement-admin-item { padding: 16px; border: 1px solid var(--admin-line); border-radius: 10px; }
+.announcement-admin-item > div:first-child { display: flex; justify-content: space-between; gap: 12px; }
+.announcement-admin-item p { white-space: pre-wrap; overflow-wrap: anywhere; }
+
 .topbar-link {
   display: inline-flex;
   align-items: center;

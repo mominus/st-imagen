@@ -536,6 +536,24 @@
               </div>
             </section>
 
+            <section class="panel console-panel">
+              <header class="panel-head">
+                <div><p class="panel-kicker">Announcements</p><h2>公告管理</h2><p class="panel-summary">发布后，未读用户会在前台自动看到。</p></div>
+              </header>
+              <div class="panel-body">
+                <div class="announcement-admin-form">
+                  <input id="announcementTitleInput" maxlength="120" placeholder="公告标题" />
+                  <textarea id="announcementContentInput" maxlength="10000" rows="4" placeholder="公告内容（纯文本）"></textarea>
+                  <label><input id="announcementPublishedInput" type="checkbox" checked /> 立即发布</label>
+                  <div class="panel-actions">
+                    <button id="announcementCancelBtn" class="btn btn-ghost is-hidden" type="button">取消编辑</button>
+                    <button id="announcementSaveBtn" class="btn btn-primary" type="button">发布公告</button>
+                  </div>
+                </div>
+                <div id="adminAnnouncementList" class="announcement-admin-list"><p class="muted">加载中…</p></div>
+              </div>
+            </section>
+
             <section id="storageSection" class="panel console-panel">
               <header class="panel-head">
                 <div>

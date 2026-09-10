@@ -435,7 +435,10 @@ function filteredUsers() {
       (state.filters.users.lifecycle === "permanent" && !user.expires_at) ||
       (state.filters.users.lifecycle === "limited" && !!user.expires_at);
     return matchesQuery && matchesStatus && matchesLifecycle;
-  });
+  }).sort((a, b) =>
+    Number(b.total_requests || 0) - Number(a.total_requests || 0) ||
+    String(a.username || "").localeCompare(String(b.username || ""), "zh-CN")
+  );
 }
 
 function renderUserExpiry(user) {

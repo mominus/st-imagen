@@ -30,6 +30,8 @@ const state = {
   previewReturnFocus: null,
   previewCopyResetTimer: null,
   errorHideTimer: null,
+  announcements: [],
+  announcementVisible: false,
 };
 
 const MAX_REFERENCE_IMAGES = 5;
@@ -37,6 +39,7 @@ const REFERENCE_UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
 const REFERENCE_UPLOAD_DEFAULT_TEXT = "";
 const RECENT_IMAGES_LIMIT = 24;
 const OAUTH_ERROR_MIN_VISIBLE_MS = 3000;
+const ANNOUNCEMENT_READ_KEY = "imagen_read_announcements";
 // 服务端工作流允许 200s 无进度；浏览器再留 20s 保护余量。
 const GENERATE_STREAM_IDLE_TIMEOUT_MS = 220 * 1000;
 const IMG2IMG_PREVIEW_DEFAULT_ASPECT_RATIO = "";
@@ -113,7 +116,7 @@ function setProgress({ visible, label, fill }) {
 }
 
 function syncModalBodyState() {
-  document.body.classList.toggle("modal-open", state.authGateVisible || state.previewVisible);
+  document.body.classList.toggle("modal-open", state.authGateVisible || state.previewVisible || state.announcementVisible);
 }
 
 function showError(msg, { autoHide = true } = {}) {
@@ -330,6 +333,65 @@ function escapeHtml(s) {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+function readAnnouncementIds() {
+  try { return new Set(JSON.parse(localStorage.getItem(ANNOUNCEMENT_READ_KEY) || "[]")); }
+  catch (_) { return new Set(); }
+}
+
+function formatAnnouncementDate(value) {
+  const date = parseApiDate(value);
+  return date ? new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }).format(date) : "";
+}
+
+function renderAnnouncements() {
+  const readIds = readAnnouncementIds();
+  const unread = state.announcements.filter((item) => !readIds.has(item.id));
+  const badge = $("#announcementBadge");
+  badge.textContent = unread.length > 99 ? "99+" : String(unread.length);
+  badge.setAttribute("aria-label", `${unread.length} 条未读公告`);
+  badge.classList.toggle("is-hidden", unread.length === 0);
+  const readButton = $("#announcementReadBtn");
+  readButton.classList.toggle("is-hidden", unread.length === 0);
+  readButton.textContent = unread.length ? `确认已读（${unread.length}）` : "已全部阅读";
+  $("#announcementTimeline").innerHTML = state.announcements.length
+    ? state.announcements.map((item) => `<article class="announcement-item ${readIds.has(item.id) ? "" : "is-unread"}"><time>${escapeHtml(formatAnnouncementDate(item.published_at))}</time><h4>${escapeHtml(item.title)}</h4><p>${escapeHtml(item.content).replaceAll("\n", "<br>")}</p></article>`).join("")
+    : '<p class="muted">暂无公告。</p>';
+  return unread.length;
+}
+
+function openAnnouncements() {
+  state.announcementVisible = true;
+  renderAnnouncements();
+  $("#announcementModal").classList.add("show");
+  $("#announcementModal").setAttribute("aria-hidden", "false");
+  document.body.classList.add("modal-open");
+}
+
+function closeAnnouncements() {
+  state.announcementVisible = false;
+  $("#announcementModal").classList.remove("show");
+  $("#announcementModal").setAttribute("aria-hidden", "true");
+  syncModalBodyState();
+  renderAnnouncements();
+}
+
+function confirmAnnouncementsRead() {
+  const readIds = readAnnouncementIds();
+  state.announcements.forEach((item) => readIds.add(item.id));
+  localStorage.setItem(ANNOUNCEMENT_READ_KEY, JSON.stringify(Array.from(readIds).slice(-500)));
+  closeAnnouncements();
+}
+
+async function loadAnnouncements() {
+  try {
+    const response = await fetch("/api/announcements", { cache: "no-store" });
+    if (!response.ok) return;
+    const data = await response.json();
+    state.announcements = Array.isArray(data.items) ? data.items : [];
+    renderAnnouncements();
+  } catch (_) { /* 公告不可用不影响生图主流程。 */ }
 }
 
 function formatQuotaText(user) {
@@ -1722,6 +1784,10 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#authEntryBtn").addEventListener("click", () => {
     openAuthGate({ mode: "login", focus: true, animate: true });
   });
+  $("#announcementBtn").addEventListener("click", openAnnouncements);
+  $("#announcementReadBtn").addEventListener("click", confirmAnnouncementsRead);
+  $("#announcementCloseBtn").addEventListener("click", closeAnnouncements);
+  $("#announcementModal").addEventListener("click", (event) => { if (event.target === event.currentTarget) closeAnnouncements(); });
   $("#authModalClose").addEventListener("click", closeAuthGate);
   $("#authModal").addEventListener("click", (e) => {
     if (e.target === e.currentTarget) closeAuthGate();
@@ -1743,6 +1809,10 @@ document.addEventListener("DOMContentLoaded", () => {
     submitInviteRegistration();
   });
   document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && state.announcementVisible) {
+      closeAnnouncements();
+      return;
+    }
     if (e.key === "Escape" && state.previewVisible) {
       closePreview();
       return;
@@ -1771,6 +1841,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindPreviewModal();
   bindReferenceUpload();
   loadOptions();
+  loadAnnouncements();
   if (hasOauthError) {
     // loadAuthStatus() refreshes the auth modal and clears its message. Keep
     // OAuth registration failures readable for at least three seconds.

@@ -69,3 +69,28 @@ def test_logs_use_server_side_filters_and_fixed_size_pagination():
     assert 'params.set("failure_category"' in resources
     assert "filteredLogs" not in resources
     assert "limit=200" not in resources
+
+
+def test_users_default_to_generation_count_sort_and_announcements_have_management_ui():
+    html = ADMIN_HTML.read_text(encoding="utf-8")
+    resources = (STATIC_ROOT / "admin" / "resources.js").read_text(encoding="utf-8")
+    settings = (STATIC_ROOT / "admin" / "settings.js").read_text(encoding="utf-8")
+
+    assert "Number(b.total_requests || 0) - Number(a.total_requests || 0)" in resources
+    assert 'id="announcementTitleInput"' in html
+    assert 'id="adminAnnouncementList"' in html
+    assert 'api("/api/admin/announcements")' in settings
+
+
+def test_public_announcements_require_explicit_read_confirmation_without_polling():
+    html = (STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+    app_js = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="announcementBadge"' in html
+    assert 'badge.textContent = unread.length > 99 ? "99+" : String(unread.length)' in app_js
+    assert 'id="announcementReadBtn"' in html
+    assert "function confirmAnnouncementsRead()" in app_js
+    assert "localStorage.setItem(ANNOUNCEMENT_READ_KEY" in app_js
+    assert "setInterval(loadAnnouncements" not in app_js
+    close_body = app_js.split("function closeAnnouncements()", 1)[1].split("}\n", 1)[0]
+    assert "localStorage.setItem" not in close_body

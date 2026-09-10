@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import database as database_mod
 from app.models.database import (
     Account,
+    Announcement,
     AdminAuditLog,
     GenerationLog,
     InviteCode,
@@ -198,6 +199,24 @@ class UserUpdateRequest(BaseModel):
     # 留空表示不修改；密码长度由 user_auth service 统一校验，避免编辑用户时
     # 因空值/短值直接收到难以理解的 HTTP 422。
     new_password: Optional[str] = Field(default=None, max_length=128)
+
+
+class AnnouncementRequest(BaseModel):
+    title: str = Field(min_length=1, max_length=120)
+    content: str = Field(min_length=1, max_length=10000)
+    published: bool = True
+
+
+def _announcement_to_dict(item: Announcement) -> dict:
+    return {
+        "id": item.id,
+        "title": item.title,
+        "content": item.content,
+        "published": item.published_at is not None,
+        "published_at": item.published_at.isoformat() if item.published_at else None,
+        "created_at": item.created_at.isoformat() if item.created_at else None,
+        "updated_at": item.updated_at.isoformat() if item.updated_at else None,
+    }
 
 
 def _account_to_dict(acc: Account) -> dict:
@@ -1604,3 +1623,53 @@ async def delete_logs_before(
     )
     await session.commit()
     return {"success": True, "removed": max(0, int(result.rowcount or 0)), "before": before.isoformat()}
+
+
+@router.get("/announcements")
+async def list_announcements(payload=Depends(require_admin), session: AsyncSession = Depends(get_session)):
+    del payload
+    rows = (await session.execute(select(Announcement).order_by(Announcement.created_at.desc(), Announcement.id.desc()))).scalars().all()
+    return {"items": [_announcement_to_dict(item) for item in rows]}
+
+
+@router.post("/announcements")
+async def create_announcement(req: AnnouncementRequest, payload=Depends(require_admin), session: AsyncSession = Depends(get_session)):
+    del payload
+    title, content = req.title.strip(), req.content.strip()
+    if not title or not content:
+        raise HTTPException(status_code=400, detail="公告标题和内容不能为空")
+    item = Announcement(id=str(uuid4()), title=title, content=content, published_at=utcnow_naive() if req.published else None)
+    session.add(item)
+    await session.commit()
+    await session.refresh(item)
+    return _announcement_to_dict(item)
+
+
+@router.put("/announcements/{announcement_id}")
+async def update_announcement(announcement_id: str, req: AnnouncementRequest, payload=Depends(require_admin), session: AsyncSession = Depends(get_session)):
+    del payload
+    item = await session.get(Announcement, announcement_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="公告不存在")
+    title, content = req.title.strip(), req.content.strip()
+    if not title or not content:
+        raise HTTPException(status_code=400, detail="公告标题和内容不能为空")
+    item.title, item.content = title, content
+    if req.published and item.published_at is None:
+        item.published_at = utcnow_naive()
+    elif not req.published:
+        item.published_at = None
+    await session.commit()
+    await session.refresh(item)
+    return _announcement_to_dict(item)
+
+
+@router.delete("/announcements/{announcement_id}")
+async def delete_announcement(announcement_id: str, payload=Depends(require_admin), session: AsyncSession = Depends(get_session)):
+    del payload
+    item = await session.get(Announcement, announcement_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="公告不存在")
+    await session.delete(item)
+    await session.commit()
+    return {"removed": 1}

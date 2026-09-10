@@ -212,6 +212,18 @@ class AppSetting(Base):
     updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow, nullable=False)
 
 
+class Announcement(Base):
+    """面向前台用户的公告；published_at 为空时为草稿。"""
+
+    __tablename__ = "announcements"
+    id = Column(String(36), primary_key=True)
+    title = Column(String(120), nullable=False)
+    content = Column(Text, nullable=False)
+    published_at = Column(DateTime, nullable=True, index=True)
+    created_at = Column(DateTime, default=_utcnow, nullable=False)
+    updated_at = Column(DateTime, default=_utcnow, onupdate=_utcnow, nullable=False)
+
+
 class GenerationLog(Base):
     """生成日志（轻量记录，便于排查与统计）。"""
 
