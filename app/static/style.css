@@ -299,12 +299,15 @@ button {
 .announcement-admin-item > div:first-child { display: flex; justify-content: space-between; gap: 12px; }
 .announcement-admin-item p { white-space: pre-wrap; overflow-wrap: anywhere; }
 
-.user-menu { position: relative; }
-.user-menu > summary { list-style: none; }
+.user-menu { position: relative; padding-bottom: 8px; margin-bottom: -8px; }
+.user-menu > summary { list-style: none; cursor: default; }
 .user-menu > summary::-webkit-details-marker { display: none; }
-.user-menu > summary::after { content: "⌄"; margin-left: 3px; font-size: 11px; }
-.user-menu-popover { position: absolute; z-index: 90; top: calc(100% + 8px); right: 0; width: max-content; min-width: 132px; padding: 6px; border: 1px solid var(--line); border-radius: 12px; background: var(--ink-2); box-shadow: var(--shadow-pop); }
-.user-menu-popover button { width: 100%; padding: 9px 12px; border: 0; border-radius: 8px; color: var(--paper-dim); background: transparent; font: inherit; text-align: left; cursor: pointer; }
+.user-menu-chevron { width: 14px; height: 14px; margin-left: 2px; transition: transform .16s ease; }
+.user-menu[open] .user-menu-chevron { transform: rotate(180deg); }
+.user-menu-popover { position: absolute; z-index: 90; top: 100%; right: 0; width: max-content; min-width: 136px; padding: 6px; border: 1px solid var(--line); border-radius: 12px; background: var(--ink-2); box-shadow: var(--shadow-pop); }
+.user-menu-popover::before { content: ""; position: absolute; right: 18px; top: -5px; width: 9px; height: 9px; border-top: 1px solid var(--line); border-left: 1px solid var(--line); background: var(--ink-2); transform: rotate(45deg); }
+.user-menu-popover button { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 12px; border: 0; border-radius: 8px; color: var(--paper-dim); background: transparent; font: inherit; font-size: 15px; text-align: left; cursor: pointer; }
+.user-menu-popover button svg { width: 19px; height: 19px; flex: 0 0 auto; }
 .user-menu-popover button:hover { color: var(--paper); background: var(--surface-hover); }
 
 @media (max-width: 640px) {
