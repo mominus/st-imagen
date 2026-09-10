@@ -1799,6 +1799,20 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#authActivateBtn").addEventListener("click", submitInviteRegistration);
   $("#authLinuxdoBtn").addEventListener("click", () => startLinuxdoLogin(""));
   $("#authLinuxdoInviteBtn").addEventListener("click", submitInviteRegistration);
+  const userMenu = $("#userMenu");
+  const hoverUserMenu = window.matchMedia("(hover: hover) and (pointer: fine)");
+  userMenu.addEventListener("mouseenter", () => {
+    if (hoverUserMenu.matches) userMenu.setAttribute("open", "");
+  });
+  userMenu.addEventListener("mouseleave", () => {
+    if (hoverUserMenu.matches) userMenu.removeAttribute("open");
+  });
+  userMenu.addEventListener("focusout", (event) => {
+    if (!userMenu.contains(event.relatedTarget)) userMenu.removeAttribute("open");
+  });
+  $("#userMenuTrigger").addEventListener("click", (event) => {
+    if (hoverUserMenu.matches) event.preventDefault();
+  });
   $("#userLogoutBtn").addEventListener("click", logoutUser);
   $("#authLoginUsername").addEventListener("keydown", (e) => {
     if (e.key === "Enter") $("#authLoginPassword")?.focus();

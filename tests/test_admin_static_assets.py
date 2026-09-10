@@ -111,3 +111,5 @@ def test_announcement_page_and_public_account_menu_are_responsive_and_separate()
     assert 'id="userMenu"' in public_html
     assert public_html.index('id="userMenu"') > public_html.index('id="themeToggle"')
     assert 'id="userLogoutBtn"' in public_html.split('id="userMenu"', 1)[1].split("</details>", 1)[0]
+    assert 'class="user-menu-chevron"' in public_html
+    assert 'userMenu.addEventListener("mouseenter"' in (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
