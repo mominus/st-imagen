@@ -515,24 +515,77 @@ docker compose $COMPOSE_FILES exec app sh -c 'echo workers=$UVICORN_WORKERS http
 
 每次 SSH 登录都是新的 Shell，`COMPOSE_FILES` 不会跨会话保留。下面每个可独立复制的运维代码块都会先重新 `export COMPOSE_FILES`，后续 Compose 命令保持简短且含义一致。
 
-更新前先确认仓库干净并备份：
+### 9.1 更新前先确认仓库干净并备份：
 
 ```bash
+#!/bin/bash
 set -euo pipefail
+
+# ==================== 配置项 ====================
+# 需要保留的最新的备份文件个数（超出的旧备份会被自动清理）
+KEEP_BACKUPS=5
+# ================================================
+
 cd /opt/st-imagen
 export COMPOSE_FILES='-f compose.prod.yml -f compose.cloudflare.yml'
+
+# 1. 检查 Git 状态
+echo "==> 检查 Git 工作区状态..."
 test -d .git
 test -z "$(git status --porcelain)" || { echo "工作区有未提交修改，停止更新"; exit 1; }
+
+# 2. 运行应用数据导出
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+BACKUP_FILE="/home/deploy/st-imagen-$STAMP.tgz"
+
+echo "==> 正在导出数据库与上传文件..."
 docker compose $COMPOSE_FILES exec -T app \
   python scripts/backup_data.py --include-uploads
-sudo tar --acls --xattrs -C /opt -czf "/home/deploy/st-imagen-$STAMP.tgz" \
+
+# 3. 打包压缩与设置权限
+echo "==> 正在打包备份文件: $BACKUP_FILE"
+sudo tar --acls --xattrs -C /opt -czf "$BACKUP_FILE" \
   st-imagen/data st-imagen/.env st-imagen/deploy/certs
-sudo chown deploy:deploy "/home/deploy/st-imagen-$STAMP.tgz"
-chmod 600 "/home/deploy/st-imagen-$STAMP.tgz"
+sudo chown deploy:deploy "$BACKUP_FILE"
+chmod 600 "$BACKUP_FILE"
+
+# 4. 自动清理历史旧备份（兼容 set -euo pipefail 严谨模式）
+echo "==> 检查并清理历史旧备份（仅保留最新的 $KEEP_BACKUPS 个）..."
+# 提取按时间排序超出保留数量的旧备份列表
+OLD_BACKUPS=$(ls -t /home/deploy/st-imagen-*.tgz 2>/dev/null | tail -n +$((KEEP_BACKUPS + 1)) || true)
+
+if [ -n "$OLD_BACKUPS" ]; then
+  echo "$OLD_BACKUPS" | while IFS= read -r file; do
+    if [ -f "$file" ]; then
+      echo "  [删除旧备份] $file"
+      rm -f "$file"
+    fi
+  done
+else
+  echo "  没有需要清理的旧备份。"
+fi
+
+echo "==> 备份流程已成功完成！"
+```
+### 或者保存为脚本文件运行（推荐，方便后续多次使用）
+#### 1. 在 VPS 上新建文件：
+```
+nano backup.sh
+```
+将整段代码（包含第一行的 #!/bin/bash）粘贴进去并保存退出。
+
+#### 2. 赋予执行权限：
+```
+chmod +x backup.sh
 ```
 
-然后拉取明确的 `origin/main`、构建新镜像、执行迁移并重建两个服务：
+#### 3. 以后每次更新前，只需运行：
+```
+./backup.sh
+```
+
+
+### 9.2 然后拉取明确的 `origin/main`、构建新镜像、执行迁移并重建两个服务：
 
 ```bash
 set -euo pipefail
