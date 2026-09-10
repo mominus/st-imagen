@@ -276,7 +276,7 @@ button {
 
 .announcement-button { position: relative; display: grid; place-items: center; width: 38px; height: 38px; padding: 0; border: 1px solid var(--line); border-radius: 50%; color: var(--paper-dim); background: transparent; cursor: pointer; }
 .announcement-button svg { width: 18px; height: 18px; }
-.announcement-badge { position: absolute; top: 1px; right: 1px; width: 9px; height: 9px; border: 2px solid var(--ink); border-radius: 50%; background: #e5484d; }
+.announcement-badge { position: absolute; top: -5px; right: -7px; min-width: 18px; height: 18px; padding: 0 5px; border: 2px solid var(--ink); border-radius: 10px; background: #e5484d; color: #fff; font: 600 10px/14px Inter, sans-serif; text-align: center; }
 .announcement-modal { width: min(680px, 100%); }
 .announcement-modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
 .announcement-timeline { display: grid; gap: 0; margin-top: 20px; }

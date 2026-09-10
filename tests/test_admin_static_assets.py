@@ -87,6 +87,7 @@ def test_public_announcements_require_explicit_read_confirmation_without_polling
     app_js = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
 
     assert 'id="announcementBadge"' in html
+    assert 'badge.textContent = unread.length > 99 ? "99+" : String(unread.length)' in app_js
     assert 'id="announcementReadBtn"' in html
     assert "function confirmAnnouncementsRead()" in app_js
     assert "localStorage.setItem(ANNOUNCEMENT_READ_KEY" in app_js

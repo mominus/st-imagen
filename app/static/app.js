@@ -349,6 +349,8 @@ function renderAnnouncements() {
   const readIds = readAnnouncementIds();
   const unread = state.announcements.filter((item) => !readIds.has(item.id));
   const badge = $("#announcementBadge");
+  badge.textContent = unread.length > 99 ? "99+" : String(unread.length);
+  badge.setAttribute("aria-label", `${unread.length} 条未读公告`);
   badge.classList.toggle("is-hidden", unread.length === 0);
   const readButton = $("#announcementReadBtn");
   readButton.classList.toggle("is-hidden", unread.length === 0);
