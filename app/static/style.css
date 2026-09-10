@@ -2223,11 +2223,12 @@ kbd {
   color: var(--paper);
 }
 
-.preview-chip-row {
-  display: flex;
-  flex-wrap: wrap;
+.preview-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
-  padding: 14px;
+  margin: 0;
+  padding: 10px;
   border: 1px solid rgba(243, 238, 229, 0.06);
   border-radius: 18px;
   background:
@@ -2236,26 +2237,46 @@ kbd {
   box-shadow: inset 0 1px 0 rgba(243, 238, 229, 0.03);
 }
 
-.preview-chip {
-  display: inline-flex;
-  align-items: center;
-  min-height: 28px;
-  max-width: 100%;
-  padding: 5px 11px;
-  border-radius: 999px;
-  border: 1px solid rgba(243, 238, 229, 0.08);
-  background: rgba(243, 238, 229, 0.045);
-  color: var(--paper-dim);
-  font-size: 11.5px;
-  font-weight: 600;
+.preview-meta-item {
+  position: relative;
+  min-width: 0;
+  padding: 11px 12px 12px;
   overflow: hidden;
+  border: 1px solid rgba(243, 238, 229, 0.08);
+  border-radius: 13px;
+  background:
+    linear-gradient(145deg, rgba(243, 238, 229, 0.052), rgba(243, 238, 229, 0.022)),
+    rgba(255, 255, 255, 0.012);
+}
+
+.preview-meta-item-accent {
+  border-color: rgba(255, 107, 61, 0.19);
+  background:
+    linear-gradient(145deg, rgba(255, 107, 61, 0.13), rgba(255, 107, 61, 0.045)),
+    rgba(255, 255, 255, 0.012);
+}
+
+.preview-meta-label {
+  display: block;
+  margin: 0 0 6px;
+  color: var(--paper-muted);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+}
+
+.preview-meta-value {
+  display: block;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--paper);
+  font-size: 12.5px;
+  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.preview-chip-row .preview-chip:first-child {
-  border-color: rgba(255, 107, 61, 0.22);
-  background: rgba(255, 107, 61, 0.12);
+.preview-meta-item-accent .preview-meta-value {
   color: var(--accent);
 }
 
@@ -2529,6 +2550,10 @@ kbd {
     padding: 22px 22px 22px;
     box-shadow: inset 0 18px 28px -28px rgba(0, 0, 0, 0.72);
   }
+
+  .preview-meta-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 720px) {
@@ -2603,19 +2628,21 @@ kbd {
     padding: 16px 14px 14px;
   }
 
-  /* 规格标签在窄屏改为单行横滑,不再折行挤压提示词区。 */
-  .preview-chip-row {
-    flex-wrap: nowrap;
+  /* 创作参数在窄屏改为单行横滑,保留字段名且不挤压提示词区。 */
+  .preview-meta-grid {
+    display: flex;
     overflow-x: auto;
+    overscroll-behavior-inline: contain;
     scrollbar-width: none;
   }
 
-  .preview-chip-row::-webkit-scrollbar {
+  .preview-meta-grid::-webkit-scrollbar {
     display: none;
   }
 
-  .preview-chip {
-    flex: 0 0 auto;
+  .preview-meta-item {
+    flex: 0 0 116px;
+    padding: 9px 11px 10px;
   }
 
   .preview-panel {

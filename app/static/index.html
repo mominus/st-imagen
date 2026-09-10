@@ -329,8 +329,8 @@
     </div>
 
     <div class="modal-mask" id="previewModal" aria-hidden="true">
-      <div class="preview-modal" role="dialog" aria-modal="true" aria-label="图片预览">
-        <section class="preview-stage" aria-label="图片全屏预览">
+      <div class="preview-modal" role="dialog" aria-modal="true" aria-labelledby="previewModalTitle">
+        <section class="preview-stage" aria-label="生成图片预览">
           <figure class="preview-figure">
             <img id="previewImage" src="" alt="" loading="eager" />
             <div id="previewEmptyState" class="preview-stage-empty is-hidden">图片已被清理或丢失</div>
@@ -355,7 +355,7 @@
           <div class="preview-sidebar-top">
             <div class="preview-sidebar-intro">
               <span class="preview-sidebar-kicker">Preview · 预览</span>
-              <h3 class="preview-sidebar-title">创作详情</h3>
+              <h3 class="preview-sidebar-title" id="previewModalTitle">创作详情</h3>
             </div>
             <button class="preview-close" id="previewModalClose" type="button" aria-label="关闭预览">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -365,12 +365,24 @@
             </button>
           </div>
 
-          <div class="preview-chip-row">
-            <span id="previewModeChip" class="preview-chip"></span>
-            <span id="previewModelChip" class="preview-chip"></span>
-            <span id="previewAspectChip" class="preview-chip"></span>
-            <span id="previewResolutionChip" class="preview-chip"></span>
-          </div>
+          <dl class="preview-meta-grid" aria-label="创作参数">
+            <div class="preview-meta-item preview-meta-item-accent">
+              <dt class="preview-meta-label">生图类型</dt>
+              <dd id="previewModeChip" class="preview-meta-value"></dd>
+            </div>
+            <div class="preview-meta-item">
+              <dt class="preview-meta-label">模型</dt>
+              <dd id="previewModelChip" class="preview-meta-value"></dd>
+            </div>
+            <div class="preview-meta-item">
+              <dt id="previewAspectLabel" class="preview-meta-label">比例</dt>
+              <dd id="previewAspectChip" class="preview-meta-value mono"></dd>
+            </div>
+            <div class="preview-meta-item">
+              <dt id="previewResolutionLabel" class="preview-meta-label">分辨率</dt>
+              <dd id="previewResolutionChip" class="preview-meta-value mono"></dd>
+            </div>
+          </dl>
 
           <div class="preview-panel">
             <div class="preview-panel-head">
@@ -382,10 +394,10 @@
                   <rect x="9" y="9" width="11" height="11" rx="2" />
                   <path d="M5 15V6a2 2 0 0 1 2-2h9" />
                 </svg>
-                <span id="previewCopyBtnText">复制提示词</span>
+                <span id="previewCopyBtnText" aria-live="polite">复制提示词</span>
               </button>
             </div>
-            <div class="preview-prompt-scroll">
+            <div id="previewPromptScroll" class="preview-prompt-scroll" tabindex="0" aria-label="完整提示词">
               <p id="previewPrompt" class="preview-prompt"></p>
             </div>
           </div>

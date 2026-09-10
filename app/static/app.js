@@ -1243,6 +1243,7 @@ function renderPreviewModal() {
   const promptText = getPromptDisplayText(entry);
   const rawPromptText = String(entry.promptPreview || "").trim();
   const modeText = formatModeLabel(entry.mode);
+  const isGptImage2 = entry.model === GPT_IMAGE_2_MODEL;
   const resolutionText = entry.resolution || "未记录";
   const aspectRatioText = entry.aspectRatio || "未记录";
   const modelText = entry.model || "未记录";
@@ -1276,11 +1277,15 @@ function renderPreviewModal() {
   $("#previewPrompt").textContent = promptText;
   $("#previewModeChip").textContent = modeText;
   $("#previewModelChip").textContent = modelText;
+  $("#previewModelChip").title = modelText;
+  $("#previewAspectLabel").textContent = "比例";
   $("#previewAspectChip").textContent = aspectRatioText;
-  $("#previewAspectChip").classList.toggle("is-hidden", entry.mode === "img2img");
+  $("#previewResolutionLabel").textContent = isGptImage2 ? "质量" : "分辨率";
   $("#previewResolutionChip").textContent = resolutionText;
   $("#previewResponseTime").textContent = responseTimeText;
   $("#previewTimestamp").textContent = timestampText;
+  const promptScroll = $("#previewPromptScroll");
+  if (promptScroll) promptScroll.scrollTop = 0;
 
   prevBtn.disabled = navDisabled;
   nextBtn.disabled = navDisabled;

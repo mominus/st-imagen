@@ -5,7 +5,7 @@ const TINY_PNG = Buffer.from(
   "base64",
 );
 
-function recentItem(id, url, prompt) {
+function recentItem(id, url, prompt, overrides = {}) {
   return {
     id,
     generation_id: id.split(":")[0],
@@ -17,6 +17,7 @@ function recentItem(id, url, prompt) {
     aspect_ratio: "1:1",
     resolution: "1K",
     response_time_ms: 100,
+    ...overrides,
   };
 }
 
@@ -39,6 +40,13 @@ test.beforeEach(async ({ page }) => {
             "一只在月光下的雪山垭口奔跑的赤狐,电影感构图,35mm 胶片颗粒,超广角,清晨蓝色时刻,冷暖对比,毛发细节,尘埃与光斑;".repeat(
               16,
             ),
+            {
+              model: "GPT Image 2",
+              aspect_ratio: "1024x1536",
+              resolution: "high",
+              size: "1024x1536",
+              quality: "high",
+            },
           ),
         ],
         total: 2,
@@ -89,6 +97,27 @@ test("preview is visible when opening a loadable image after closing a failed pr
   await cards.nth(1).click();
   await expect(page.locator("#previewImage")).toBeVisible();
   await expect(page.locator("#previewEmptyState")).toBeHidden();
+});
+
+test("creation detail labels standard and GPT Image 2 parameters correctly", async ({ page }) => {
+  await page.goto("/");
+  const cards = page.locator(".gallery-card");
+  await expect(cards).toHaveCount(2);
+
+  await cards.nth(0).click();
+  await expect(page.locator("#previewModeChip")).toHaveText("文生图");
+  await expect(page.locator("#previewModelChip")).toHaveText("test-model");
+  await expect(page.locator("#previewAspectLabel")).toHaveText("比例");
+  await expect(page.locator("#previewAspectChip")).toHaveText("1:1");
+  await expect(page.locator("#previewResolutionLabel")).toHaveText("分辨率");
+  await expect(page.locator("#previewResolutionChip")).toHaveText("1K");
+
+  await page.locator("#previewNextBtn").click();
+  await expect(page.locator("#previewModelChip")).toHaveText("GPT Image 2");
+  await expect(page.locator("#previewAspectLabel")).toHaveText("比例");
+  await expect(page.locator("#previewAspectChip")).toHaveText("1024x1536");
+  await expect(page.locator("#previewResolutionLabel")).toHaveText("质量");
+  await expect(page.locator("#previewResolutionChip")).toHaveText("high");
 });
 
 test("creation detail keeps prompt, copy button and footer separated on phones", async ({
