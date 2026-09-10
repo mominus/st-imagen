@@ -28,7 +28,7 @@
       <nav class="topbar-nav">
         <button id="announcementBtn" class="announcement-button" type="button" aria-label="查看公告" title="公告">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg>
-          <span id="announcementBadge" class="announcement-badge is-hidden">0</span>
+          <span id="announcementBadge" class="announcement-badge is-hidden" aria-label="有未读公告"></span>
         </button>
         <button id="authEntryBtn" class="topbar-link" type="button">登录</button>
         <span id="userBadge" class="topbar-link is-hidden"></span>
@@ -226,6 +226,9 @@
       <div class="modal announcement-modal" role="dialog" aria-modal="true" aria-labelledby="announcementModalTitle">
         <div class="announcement-modal-head"><div><p class="eyebrow">News · 公告</p><h3 id="announcementModalTitle">公告时间线</h3></div><button id="announcementCloseBtn" class="auth-modal-close" type="button" aria-label="关闭公告">×</button></div>
         <div id="announcementTimeline" class="announcement-timeline"></div>
+        <div class="announcement-modal-actions">
+          <button id="announcementReadBtn" class="generate-btn" type="button">确认已读</button>
+        </div>
       </div>
     </div>
 

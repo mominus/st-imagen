@@ -80,3 +80,16 @@ def test_users_default_to_generation_count_sort_and_announcements_have_managemen
     assert 'id="announcementTitleInput"' in html
     assert 'id="adminAnnouncementList"' in html
     assert 'api("/api/admin/announcements")' in settings
+
+
+def test_public_announcements_require_explicit_read_confirmation_without_polling():
+    html = (STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+    app_js = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="announcementBadge"' in html
+    assert 'id="announcementReadBtn"' in html
+    assert "function confirmAnnouncementsRead()" in app_js
+    assert "localStorage.setItem(ANNOUNCEMENT_READ_KEY" in app_js
+    assert "setInterval(loadAnnouncements" not in app_js
+    close_body = app_js.split("function closeAnnouncements()", 1)[1].split("}\n", 1)[0]
+    assert "localStorage.setItem" not in close_body

@@ -349,8 +349,10 @@ function renderAnnouncements() {
   const readIds = readAnnouncementIds();
   const unread = state.announcements.filter((item) => !readIds.has(item.id));
   const badge = $("#announcementBadge");
-  badge.textContent = String(unread.length);
   badge.classList.toggle("is-hidden", unread.length === 0);
+  const readButton = $("#announcementReadBtn");
+  readButton.classList.toggle("is-hidden", unread.length === 0);
+  readButton.textContent = unread.length ? `确认已读（${unread.length}）` : "已全部阅读";
   $("#announcementTimeline").innerHTML = state.announcements.length
     ? state.announcements.map((item) => `<article class="announcement-item ${readIds.has(item.id) ? "" : "is-unread"}"><time>${escapeHtml(formatAnnouncementDate(item.published_at))}</time><h4>${escapeHtml(item.title)}</h4><p>${escapeHtml(item.content).replaceAll("\n", "<br>")}</p></article>`).join("")
     : '<p class="muted">暂无公告。</p>';
@@ -367,13 +369,17 @@ function openAnnouncements() {
 
 function closeAnnouncements() {
   state.announcementVisible = false;
-  const readIds = readAnnouncementIds();
-  state.announcements.forEach((item) => readIds.add(item.id));
-  localStorage.setItem(ANNOUNCEMENT_READ_KEY, JSON.stringify(Array.from(readIds).slice(-500)));
   $("#announcementModal").classList.remove("show");
   $("#announcementModal").setAttribute("aria-hidden", "true");
   syncModalBodyState();
   renderAnnouncements();
+}
+
+function confirmAnnouncementsRead() {
+  const readIds = readAnnouncementIds();
+  state.announcements.forEach((item) => readIds.add(item.id));
+  localStorage.setItem(ANNOUNCEMENT_READ_KEY, JSON.stringify(Array.from(readIds).slice(-500)));
+  closeAnnouncements();
 }
 
 async function loadAnnouncements() {
@@ -382,7 +388,7 @@ async function loadAnnouncements() {
     if (!response.ok) return;
     const data = await response.json();
     state.announcements = Array.isArray(data.items) ? data.items : [];
-    if (renderAnnouncements() > 0 && !state.announcementVisible) openAnnouncements();
+    renderAnnouncements();
   } catch (_) { /* 公告不可用不影响生图主流程。 */ }
 }
 
@@ -1777,6 +1783,7 @@ document.addEventListener("DOMContentLoaded", () => {
     openAuthGate({ mode: "login", focus: true, animate: true });
   });
   $("#announcementBtn").addEventListener("click", openAnnouncements);
+  $("#announcementReadBtn").addEventListener("click", confirmAnnouncementsRead);
   $("#announcementCloseBtn").addEventListener("click", closeAnnouncements);
   $("#announcementModal").addEventListener("click", (event) => { if (event.target === event.currentTarget) closeAnnouncements(); });
   $("#authModalClose").addEventListener("click", closeAuthGate);
@@ -1833,7 +1840,6 @@ document.addEventListener("DOMContentLoaded", () => {
   bindReferenceUpload();
   loadOptions();
   loadAnnouncements();
-  window.setInterval(loadAnnouncements, 60 * 1000);
   if (hasOauthError) {
     // loadAuthStatus() refreshes the auth modal and clears its message. Keep
     // OAuth registration failures readable for at least three seconds.
