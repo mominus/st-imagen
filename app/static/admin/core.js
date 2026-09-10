@@ -8,6 +8,7 @@ const PAGE_CONFIG = {
   accounts: { slug: "accounts", sectionId: "accountsPage" },
   users: { slug: "users", sectionId: "usersPage" },
   invites: { slug: "invites", sectionId: "invitesPage" },
+  announcements: { slug: "announcements", sectionId: "announcementsPage" },
   logs: { slug: "logs", sectionId: "logsPage" },
   settings: { slug: "settings", sectionId: "settingsPage" },
 };

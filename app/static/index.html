@@ -31,9 +31,7 @@
           <span id="announcementBadge" class="announcement-badge is-hidden" aria-label="0 条未读公告">0</span>
         </button>
         <button id="authEntryBtn" class="topbar-link" type="button">登录</button>
-        <span id="userBadge" class="topbar-link is-hidden"></span>
         <span id="quotaBadge" class="topbar-link topbar-status quota-badge is-hidden"></span>
-        <button id="userLogoutBtn" class="topbar-link is-hidden" type="button">退出</button>
         <button id="themeToggle" class="theme-toggle" type="button" aria-label="切换主题" title="切换主题">
           <svg class="theme-icon theme-icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
@@ -46,6 +44,12 @@
             <path d="m6.34 17.66-1.41 1.41" /><path d="m19.07 4.93-1.41 1.41" />
           </svg>
         </button>
+        <details id="userMenu" class="user-menu is-hidden">
+          <summary id="userBadge" class="topbar-link"></summary>
+          <div class="user-menu-popover">
+            <button id="userLogoutBtn" type="button">退出登录</button>
+          </div>
+        </details>
       </nav>
     </header>
 
@@ -224,7 +228,7 @@
 
     <div class="modal-mask" id="announcementModal" aria-hidden="true">
       <div class="modal announcement-modal" role="dialog" aria-modal="true" aria-labelledby="announcementModalTitle">
-        <div class="announcement-modal-head"><div><p class="eyebrow">News · 公告</p><h3 id="announcementModalTitle">公告时间线</h3></div><button id="announcementCloseBtn" class="auth-modal-close" type="button" aria-label="关闭公告">×</button></div>
+        <div class="announcement-modal-head"><div><p class="eyebrow">News · 公告</p><h3 id="announcementModalTitle">公告时间线</h3></div><button id="announcementCloseBtn" class="announcement-close" type="button" aria-label="关闭公告"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
         <div id="announcementTimeline" class="announcement-timeline"></div>
         <div class="announcement-modal-actions">
           <button id="announcementReadBtn" class="generate-btn" type="button">确认已读</button>

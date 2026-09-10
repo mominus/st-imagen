@@ -494,6 +494,7 @@ function applyAuthState(auth) {
   state.adminToken = authKind === "admin" ? (auth?.adminToken || getStoredAdminToken()) : null;
 
   const authEntryBtn = $("#authEntryBtn");
+  const userMenu = $("#userMenu");
   const badge = $("#userBadge");
   const quotaBadge = $("#quotaBadge");
   const logoutBtn = $("#userLogoutBtn");
@@ -510,6 +511,7 @@ function applyAuthState(auth) {
     setAuthGateVisible(state.authGateVisible);
   }
   authEntryBtn.classList.toggle("is-hidden", state.authenticated);
+  userMenu.classList.toggle("is-hidden", !state.authenticated);
   badge.classList.toggle("is-hidden", !badgeText);
   quotaBadge.classList.toggle("is-hidden", !quotaText);
   logoutBtn.classList.toggle("is-hidden", !state.authenticated);
@@ -647,6 +649,7 @@ function submitInviteRegistration() {
 }
 
 async function logoutUser() {
+  $("#userMenu")?.removeAttribute("open");
   try {
     await fetch("/api/auth/logout", { method: "POST" });
   } catch (_) {}

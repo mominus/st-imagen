@@ -109,6 +109,7 @@
               <a href="#" class="admin-nav-link" data-page-link="accounts"><span class="admin-nav-icon">◈</span><span class="admin-nav-copy">账号池</span><span id="navBadgeAccounts" class="console-nav-badge">—</span></a>
               <a href="#" class="admin-nav-link" data-page-link="users"><span class="admin-nav-icon">◎</span><span class="admin-nav-copy">用户</span><span id="navBadgeUsers" class="console-nav-badge">—</span></a>
               <a href="#" class="admin-nav-link" data-page-link="invites"><span class="admin-nav-icon">⌁</span><span class="admin-nav-copy">邀请码</span><span id="navBadgeInvites" class="console-nav-badge">—</span></a>
+              <a href="#" class="admin-nav-link" data-page-link="announcements"><span class="admin-nav-icon">◇</span><span class="admin-nav-copy">公告</span><span id="navBadgeAnnouncements" class="console-nav-badge">—</span></a>
             </div>
             <div class="admin-nav-group">
               <p class="admin-nav-label">观测</p>
@@ -536,24 +537,6 @@
               </div>
             </section>
 
-            <section class="panel console-panel">
-              <header class="panel-head">
-                <div><p class="panel-kicker">Announcements</p><h2>公告管理</h2><p class="panel-summary">发布后，未读用户会在前台自动看到。</p></div>
-              </header>
-              <div class="panel-body">
-                <div class="announcement-admin-form">
-                  <input id="announcementTitleInput" maxlength="120" placeholder="公告标题" />
-                  <textarea id="announcementContentInput" maxlength="10000" rows="4" placeholder="公告内容（纯文本）"></textarea>
-                  <label><input id="announcementPublishedInput" type="checkbox" checked /> 立即发布</label>
-                  <div class="panel-actions">
-                    <button id="announcementCancelBtn" class="btn btn-ghost is-hidden" type="button">取消编辑</button>
-                    <button id="announcementSaveBtn" class="btn btn-primary" type="button">发布公告</button>
-                  </div>
-                </div>
-                <div id="adminAnnouncementList" class="announcement-admin-list"><p class="muted">加载中…</p></div>
-              </div>
-            </section>
-
             <section id="storageSection" class="panel console-panel">
               <header class="panel-head">
                 <div>
@@ -596,11 +579,33 @@
             </section>
           </section>
 
+          <section id="announcementsPage" class="admin-page is-hidden">
+            <section class="panel console-panel">
+              <header class="panel-head">
+                <div><p class="panel-kicker">Announcements</p><h2>公告管理</h2><p class="panel-summary">创建、编辑和发布前台公告。</p></div><div class="panel-actions"><button id="reloadAnnouncementsBtn" class="btn btn-ghost" type="button">刷新</button></div>
+              </header>
+              <div class="panel-body">
+                <div class="announcement-admin-form">
+                  <input id="announcementTitleInput" maxlength="120" placeholder="公告标题" />
+                  <textarea id="announcementContentInput" maxlength="10000" rows="4" placeholder="公告内容（纯文本）"></textarea>
+                  <label><input id="announcementPublishedInput" type="checkbox" checked /> 立即发布</label>
+                  <div class="panel-actions">
+                    <button id="announcementCancelBtn" class="btn btn-ghost is-hidden" type="button">取消编辑</button>
+                    <button id="announcementSaveBtn" class="btn btn-primary" type="button">发布公告</button>
+                  </div>
+                </div>
+                <div id="adminAnnouncementList" class="announcement-admin-list"><p class="muted">加载中…</p></div>
+              </div>
+            </section>
+
+          </section>
+
           <nav class="admin-mobile-nav" aria-label="后台快捷导航">
             <a href="#" data-page-link="overview"><span aria-hidden="true">⌂</span><small>概览</small></a>
             <a href="#" data-page-link="accounts"><span aria-hidden="true">◈</span><small>账号</small></a>
             <a href="#" data-page-link="users"><span aria-hidden="true">◎</span><small>用户</small></a>
             <a href="#" data-page-link="invites"><span aria-hidden="true">✦</span><small>邀请码</small></a>
+            <a href="#" data-page-link="announcements"><span aria-hidden="true">◇</span><small>公告</small></a>
             <a href="#" data-page-link="logs"><span aria-hidden="true">◌</span><small>日志</small></a>
             <a href="#" data-page-link="settings"><span aria-hidden="true">⚙</span><small>设置</small></a>
           </nav>
@@ -901,6 +906,7 @@
     <script src="/static/admin/resources.js"></script>
     <script src="/static/admin/preview.js"></script>
     <script src="/static/admin/settings.js"></script>
+    <script src="/static/admin/announcements.js"></script>
     <script src="/static/admin/dialogs.js"></script>
     <script src="/static/admin/bootstrap.js"></script>
   </body>

@@ -7,6 +7,7 @@ document.addEventListener("DOMContentLoaded", () => {
   bindAdminNavigation();
   bindPreviewModal();
   bindSettingsPage();
+  bindAnnouncementsPage();
   renderInsightPanels();
 
   if (getToken()) showDashboard();
