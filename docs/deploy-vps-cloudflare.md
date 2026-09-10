@@ -610,7 +610,6 @@ docker compose $COMPOSE_FILES run --rm nginx nginx -t
 docker compose $COMPOSE_FILES up -d --force-recreate --remove-orphans nginx
 docker compose $COMPOSE_FILES ps
 docker compose $COMPOSE_FILES logs --tail=100 app nginx
-curl -fsS "https://$DOMAIN/health/ready"
 ```
 
 这里显式写 `origin main`，避免本地分支没有 upstream、错误跟踪功能分支或远程默认分支变化时，裸 `git pull --ff-only` 拉错目标。更新流程先完成配置检查、镜像拉取和构建，再停止入口与旧 app；因此构建失败不会造成停机。停止服务后迁移 SQLite，避免旧 app 并发写库；随后严格按“app → Nginx 校验 → 正式 Nginx”的顺序恢复服务，避免再次出现 upstream 域名无法解析的问题。
