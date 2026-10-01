@@ -1758,6 +1758,7 @@ async def generate(
                         session,
                         current_user_id,
                         count_usage=user_should_count_usage,
+                        reset_failure_streak=True,
                     )
                     user_slot_acquired = False
 
@@ -2231,7 +2232,7 @@ async def generate_stream(
     async def event_source() -> AsyncGenerator[str, None]:
         nonlocal generation_slot_acquired, user_slot_acquired, user_should_count_usage, admitted_account
 
-        async def _release_user_slot_if_needed() -> None:
+        async def _release_user_slot_if_needed(*, generation_succeeded: bool = False) -> None:
             nonlocal user_slot_acquired
             if not user_slot_acquired or current_user_id is None:
                 return
@@ -2243,6 +2244,7 @@ async def generate_stream(
                     session,
                     current_user_id,
                     count_usage=user_should_count_usage,
+                    reset_failure_streak=generation_succeeded,
                 )
             )
             try:
@@ -2716,7 +2718,7 @@ async def generate_stream(
                         guard.generation_admission.release(req.model)
                         generation_slot_acquired = False
 
-                    await _release_user_slot_if_needed()
+                    await _release_user_slot_if_needed(generation_succeeded=True)
                     try:
                         local_images = await _save_and_log_images(
                             {

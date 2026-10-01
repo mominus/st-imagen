@@ -85,7 +85,7 @@ def test_four_abnormal_failures_temporarily_disable_user_for_three_hours():
     asyncio.run(run())
 
 
-def test_success_resets_consecutive_abnormal_failure_count():
+def test_successful_generation_release_resets_consecutive_abnormal_failure_count():
     async def run():
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
         factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -108,15 +108,13 @@ def test_success_resets_consecutive_abnormal_failure_count():
                     )
                     await session.commit()
 
-                session.add(
-                    GenerationLog(
-                        id="successful-generation",
-                        user_id="temporary-user",
-                        mode="text2img",
-                        status="success",
-                    )
+                service = UserAuthService()
+                await service.release_generation_slot(
+                    session,
+                    "temporary-user",
+                    count_usage=True,
+                    reset_failure_streak=True,
                 )
-                await session.commit()
                 session.expire_all()
                 user = await session.get(User, "temporary-user")
                 assert user.abnormal_failure_count == 0

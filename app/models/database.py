@@ -284,16 +284,11 @@ def is_abnormal_generation_failure(message: object) -> bool:
 @event.listens_for(GenerationLog, "after_insert")
 def _track_abnormal_user_failure(_mapper, connection, target: GenerationLog) -> None:
     """Track consecutive abusive failures and impose a three-hour temporary ban."""
-    if not target.user_id:
-        return
-    if target.status == "success":
-        connection.execute(
-            User.__table__.update()
-            .where(User.id == target.user_id)
-            .values(abnormal_failure_count=0)
-        )
-        return
-    if not is_abnormal_generation_failure(target.error_message):
+    if (
+        not target.user_id
+        or target.status == "success"
+        or not is_abnormal_generation_failure(target.error_message)
+    ):
         return
     now = _utcnow()
     connection.execute(

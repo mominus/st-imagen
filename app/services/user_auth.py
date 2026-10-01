@@ -1015,9 +1015,16 @@ class UserAuthService:
         user_id: str,
         *,
         count_usage: bool,
+        reset_failure_streak: bool = False,
     ) -> None:
-        """Release volatile user capacity and optionally persist usage."""
-        del session
+        """Release volatile user capacity and persist successful-generation state."""
+        if reset_failure_streak:
+            await session.execute(
+                update(User)
+                .where(User.id == user_id)
+                .values(abnormal_failure_count=0)
+            )
+            await session.commit()
         async with self._runtime_lock:
             current = self.runtime_in_flight(user_id)
             if current <= 1:
