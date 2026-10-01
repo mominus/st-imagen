@@ -254,7 +254,7 @@ class UserAuthService:
             raise UserDisabledError("账号已停用")
         if getattr(user, "disabled_until", None) and user.disabled_until > current:
             raise UserDisabledError(
-                f"异常请求累计超过 3 次，账号禁用至{format_beijing_time(user.disabled_until)}"
+                f"连续异常生图失败达到 4 次，账号禁用至{format_beijing_time(user.disabled_until)}"
             )
         if is_user_expired(user, now=current):
             raise UserExpiredError("账号已过期")
