@@ -49,8 +49,8 @@ def test_temporary_ban_message_uses_beijing_time_format():
         UserAuthService._ensure_user_can_access(user, now=datetime(2026, 8, 30, 1, 0, 0))
     message = str(exc_info.value)
     # UTC 04:21:13 → 北京时间 12:21:13
-    assert message == "异常请求累计超过 3 次，账号禁用至08/30 12:21:13"
-    assert re.fullmatch(r"异常请求累计超过 3 次，账号禁用至\d{2}/\d{2} \d{2}:\d{2}:\d{2}", message)
+    assert message == "连续异常生图失败达到 4 次，账号禁用至08/30 12:21:13"
+    assert re.fullmatch(r"连续异常生图失败达到 4 次，账号禁用至\d{2}/\d{2} \d{2}:\d{2}:\d{2}", message)
 
 
 def test_four_abnormal_failures_temporarily_disable_user_for_three_hours():
@@ -79,6 +79,63 @@ def test_four_abnormal_failures_temporarily_disable_user_for_three_hours():
                 assert user.abnormal_failure_count == 4
                 remaining = user.disabled_until - utcnow_naive()
                 assert timedelta(hours=2, minutes=59) < remaining <= timedelta(hours=3)
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+def test_successful_generation_release_resets_consecutive_abnormal_failure_count():
+    async def run():
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        try:
+            async with factory() as session:
+                session.add(_user(daily_used=0, last_used_at=None))
+                await session.commit()
+
+                for index in range(3):
+                    session.add(
+                        GenerationLog(
+                            id=f"initial-failure-{index}",
+                            user_id="temporary-user",
+                            mode="text2img",
+                            status="error",
+                            error_message="Error in Node Text to Image: rejected by the safety system",
+                        )
+                    )
+                    await session.commit()
+
+                service = UserAuthService()
+                await service.release_generation_slot(
+                    session,
+                    "temporary-user",
+                    count_usage=True,
+                    reset_failure_streak=True,
+                )
+                session.expire_all()
+                user = await session.get(User, "temporary-user")
+                assert user.abnormal_failure_count == 0
+                assert user.disabled_until is None
+
+                for index in range(3):
+                    session.add(
+                        GenerationLog(
+                            id=f"later-failure-{index}",
+                            user_id="temporary-user",
+                            mode="text2img",
+                            status="error",
+                            error_message="Error in Node Text to Image: rejected by the safety system",
+                        )
+                    )
+                    await session.commit()
+
+                session.expire_all()
+                user = await session.get(User, "temporary-user")
+                assert user.abnormal_failure_count == 3
+                assert user.disabled_until is None
         finally:
             await engine.dispose()
 
